@@ -2,6 +2,7 @@
 // machine listed in ~/.ssh/config. Nothing is installed on the far side.
 
 import z from '@deepseek-ai/schemastery';
+import { readFileSync } from 'node:fs';
 import { PresencePool } from './src/pool.js';
 import { definePresenceTools } from './src/tools.js';
 import { presenceRoutes } from './src/api.js';
@@ -9,6 +10,16 @@ import { activeWorkspace } from './src/workspaces.js';
 import { shared } from './src/shared.js';
 import { mountsRoot, parseMountPath } from './src/mounts.js';
 import { installToolInterceptor } from './src/intercept.js';
+import { lookupObservation, recordObservation } from './src/observed-store.js';
+
+/** Bundle version, shown in the runtime context so agents notice capability changes. */
+const VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version ?? null;
+  } catch {
+    return null;
+  }
+})();
 
 /** Cordis plugin name. */
 export const name = 'presence';
@@ -78,15 +89,31 @@ export function apply(ctx, config = {}) {
   // are not the built-in fs tools, so they publish the observation themselves —
   // otherwise an agent that read a file with presence_read still hits
   // "file has not been read" when it tries the built-in edit.
-  const observe = async (exec, path) => {
+  //
+  // The guard's own store is a WeakMap keyed by the live Session, so a resumed or
+  // compacted agent loses it. We also persist (session, target) -> version and,
+  // just before a built-in edit/write, re-publish the observation when the file
+  // is still at that exact version. A changed file is never auto-approved.
+  const sessionIdOf = (exec) => exec?.agent?.session?.id ?? exec?.agent?.session?.header?.id ?? null;
+
+  const resolveTarget = async (exec, path) => {
+    const fs = late.fs;
+    if (!fs || typeof path !== 'string' || path === '') return null;
+    const cwd = await cwdOf(exec);
+    const target = await fs.resolve(path, cwd ? { cwd } : undefined);
+    return target ?? null;
+  };
+
+  const observe = async (exec, path, options = {}) => {
     try {
-      const fs = late.fs;
-      if (!fs || !exec?.agent || typeof path !== 'string' || path === '') return;
-      const cwd = await cwdOf(exec);
-      const target = await fs.resolve(path, cwd ? { cwd } : undefined);
-      const stat = await fs.stat(target);
+      const target = await resolveTarget(exec, path);
+      if (!target) return;
+      const stat = await late.fs.stat(target);
       const observation = stat ? { kind: 'present', version: stat.version } : { kind: 'absent' };
       ctx.emit('fs/observed', target, observation, { agent: exec.agent });
+      if (stat && options.remember !== false) {
+        recordObservation(sessionIdOf(exec), String(target.targetKey ?? ''), stat.version);
+      }
     } catch {
       /* the observation is an optimization, never a failure */
     }
@@ -97,6 +124,50 @@ export function apply(ctx, config = {}) {
     scope.effect(() => () => {
       late.fs = undefined;
     });
+  });
+
+  // Built-in read/read_image: remember what the session has seen, so the record
+  // survives compaction even though the guard's WeakMap does not.
+  ctx.on('tools/post-execute', async (exec, result, next) => {
+    try {
+      if (!result?.isError && (exec?.name === 'read' || exec?.name === 'read_image')) {
+        const path = exec.arguments?.file_path;
+        const target = await resolveTarget(exec, path);
+        if (target) {
+          const stat = await late.fs?.stat(target);
+          if (stat) recordObservation(sessionIdOf(exec), String(target.targetKey ?? ''), stat.version);
+        }
+      }
+    } catch {
+      /* best effort */
+    }
+    return next();
+  });
+
+  // Built-in edit/write on a remote target: if this session read the file at the
+  // same version we recorded, re-publish the observation so the guard passes.
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    try {
+      if (exec?.name === 'edit' || exec?.name === 'write') {
+        const path = exec.arguments?.file_path;
+        if (typeof path === 'string' && late.fs) {
+          const sessionId = sessionIdOf(exec);
+          const target = await resolveTarget(exec, path);
+          if (target && sessionId) {
+            const recorded = lookupObservation(sessionId, String(target.targetKey ?? ''));
+            if (recorded) {
+              const stat = await late.fs.stat(target);
+              if (stat && stat.version === recorded) {
+                ctx.emit('fs/observed', target, { kind: 'present', version: stat.version }, { agent: exec.agent });
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      /* best effort: a failed repair leaves the original guard behavior */
+    }
+    return next();
   });
 
   for (const definition of definePresenceTools(pool, settings, { cwdOf, observe })) {
@@ -141,16 +212,19 @@ export function apply(ctx, config = {}) {
           const connected = hosts.filter((host) => host.connected).map((host) => host.alias);
           const live = connected.length > 0 ? `connected now: ${connected.join(', ')}` : 'none connected yet';
           return (
-            `Presence: ${hosts.length} remote machines from ~/.ssh/config (${live}). ` +
+            `Presence ${VERSION ?? ''}${VERSION ? ':' : ''} ${hosts.length} remote machines from ~/.ssh/config (${live}). ` +
             'If your working directory is under the presence mounts root, this session runs against that remote machine: ' +
             'read/write/edit, the file tree, and grep/glob all reach it (grep/glob are routed to the remote machine automatically). ' +
             'TO CHANGE A REMOTE FILE use the built-in `edit`/`write` tools or presence_edit/presence_write — never `sed -i`, ' +
             '`perl -pi`, or shell redirects, which bypass the atomic write, the ambiguity check and the version guard. ' +
+            'DESTRUCTIVE shell commands (rm -r/-f, git clean -fdx, find -delete, shred, dd of=) are dry-run first and need confirm:true; ' +
+            'prefer presence_trash {action:"trash"} for a recoverable delete inside a workspace. ' +
             'Prefer presence_search (countOnly/truncation aware) and presence_glob (with size/mtime) for structured searches, ' +
             'presence_exec for commands, and presence_forward to reach a remote port. ' +
             'To get a LOCAL file (screenshot, attachment under ~/.dsh/attachments, build artifact) onto the remote machine, use presence_import — it is the local→remote direction, binary-safe, and returns the sha256; presence_export is the reverse. ' +
             'read_image works directly on remote images (mount path or presence:// URL) as long as the model accepts image input. ' +
-            'Built-in read/write/edit and presence_read/write/edit both reach the remote workspace and share the read-before-edit guard; prefer the built-in tools inside the workspace and presence_* outside it. ' +
+            'Built-in read/write/edit and presence_read/write/edit both reach the remote workspace and share the read-before-edit guard; ' +
+            'that guard is repaired automatically after compaction, so a file you already read stays editable. Prefer the built-in tools inside the workspace and presence_* outside it. ' +
             'For long work start it with presence_exec {background:true}, then use presence_jobs {action:"wait"} instead of sleep+poll, ' +
             'and presence_jobs {action:"list"|"stop"} to manage this session\'s jobs. ' +
             'The mount path is virtual: Explorer, Office, Python and native open cannot see remote files — call presence_export first, then present the returned local path. ' +

@@ -76,7 +76,8 @@ plugin_manager { action: "install_bundle", target: "D:\\04_Dev\\Presence" }
 | --- | --- |
 | `presence_hosts` | 列出 ssh config 里的机器与当前连接状态 |
 | `presence_connect` | 建立常驻连接并报告远端身份 |
-| `presence_exec` | 在远端执行命令；默认 `pipefail`，支持 `background:true`、`waitForPort`、`timeoutMs`（超时会真杀进程树）；内联输出默认 16KiB（`maxOutput` 可调），全量落盘并给路径 |
+| `presence_exec` | 在远端执行命令；默认 `pipefail`，支持 `background:true`、`waitForPort`、`timeoutMs`（超时会真杀进程树）；输出默认去 ANSI、首尾截断 16KiB（`maxOutput`/`raw` 可调），全量落盘并给路径；**危险命令先 dry-run，需 `confirm:true`** |
+| `presence_trash` | **可恢复删除**：把路径移入远端 `~/.dsh/presence-trash/<时间戳>/`，返回恢复路径；`action:'trash'|'list'|'restore'` |
 | `presence_jobs` | `list`（默认只看本会话）/ `wait`（返回退出码 + 末尾日志，替代 sleep+tail）/ `stop`（按 jobId 或 pgid） |
 | `presence_read` | 读远端文件，带行号与 offset/limit；大文件走远端窗口读取（行数真实）；二进制明确拒绝；读完会给 harness 记账，内置 `edit` 可直接用 |
 | `presence_write` | 原子整体写入，自动创建父目录；**保留原文件 mode**，可用 `mode:"755"` 显式指定 |
@@ -93,6 +94,25 @@ plugin_manager { action: "install_bundle", target: "D:\\04_Dev\\Presence" }
 **本地 ↔ 远程文件通道**：
 - 本地 → 远程：`presence_import {source: "C:\\Users\\...\\attachments\\...\\a.png", to: "docs/a.png"}`
 - 远程 → 本地：`presence_export {path: "docs/a.png"}` → 返回本机真实路径（再 `present` 才能被 GUI/预览看到）
+
+### 危险命令护栏（防误删）
+
+`presence_exec` 识别到 `rm -r/-f`、`git clean -fdx`、`find -delete`、`shred`、`truncate`、`dd of=/dev/...` 时**不会直接执行**：
+
+1. 在"只报告不删除"的 shell 里重跑一遍（`rm` 被函数遮蔽、`find -delete` 换成 `-print`、`git clean` 加 `-n`），拿到**展开后的绝对目标**
+2. 无变量未定义检查：命令里出现未设置的 `$VAR` 直接拒绝（这正是那次 `.tmesh` 被删的原因）
+3. 无条件拒绝：工作区根目录、工作区根的任何祖先、家目录、`/`、`.git` 元数据
+4. 其余情况返回报告（目标类型 / 文件数 / 体积），**要执行必须再调一次并带 `confirm:true`**
+
+```
+presence_exec {command: "rm -rf .tmesh/$J"}
+→ destructive command needs confirmation (rm) — nothing was executed yet
+  resolved targets:
+    dir  /srv/app/TensorMesh/.tmesh  128 files  42.1 MB
+  Pass confirm:true to execute it. Prefer presence_trash ...
+```
+
+工作区里要删东西，优先 `presence_trash {action:'trash', path:'build'}`：它是"移动到回收站 + 返回恢复路径"，零安装（就是远端 `mv`），后悔了 `action:'restore'` 放回去。
 
 **长任务推荐姿势**：`presence_exec {command, background:true}` → 拿到 jobId → `presence_jobs {action:'wait', jobId}` 等它结束（返回退出码和末尾日志）→ 需要时 `presence_jobs {action:'stop'}`。
 
@@ -227,6 +247,7 @@ node scripts/regression.mjs server   # 传输层：符号链接写、行数、�
 node scripts/job-probe.mjs server    # 后台任务 + 端口转发
 node scripts/feature-probe.mjs server # wait/会话过滤/pgid/就绪/搜索语义
 node scripts/import-probe.mjs server # 本地→远程二进制、mode、sha256
+node scripts/safety-probe.mjs server # 危险命令护栏 + 观测状态存储
 ```
 
 `scripts/isolated-check.mjs` 需要在 Electron-as-Node 下跑（路径矩阵 + 沙箱围栏），打包时不会带进 zip。

@@ -1,11 +1,12 @@
 // The model-facing surface. Every tool targets one machine by its ssh alias and
-// reuses that machine's persistent connection — there is no per-call handshake
+// reuses that machine's persistent connection 鈥?there is no per-call handshake
 // and nothing is installed on the far side.
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { activeWorkspace } from './workspaces.js';
 import { parseMountPath, parsePresenceUrl } from './mounts.js';
 import { remoteGlobDetailed, remoteGrep, splitGlobPattern } from './remote-search.js';
+import { guardDestructive } from './destructive.js';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -24,7 +25,29 @@ function shq(value) {
 function clip(text, cap = OUTPUT_CAP) {
   if (typeof text !== 'string') return '';
   if (text.length <= cap) return text;
-  return `${text.slice(0, cap)}\n… (${text.length - cap} more characters truncated)`;
+  return `${text.slice(0, cap)}\n鈥?(${text.length - cap} more characters truncated)`;
+}
+
+/** Head + tail clipping: keeps the start (what ran) and the end (why it failed). */
+function clipMiddle(text, cap = EXEC_OUTPUT_CAP) {
+  if (typeof text !== 'string') return '';
+  if (text.length <= cap) return text;
+  const head = Math.floor(cap * 0.4);
+  const tail = cap - head;
+  return (
+    `${text.slice(0, head)}\n鈥?(${text.length - cap} characters truncated; full output below) 鈥n` +
+    text.slice(text.length - tail)
+  );
+}
+
+const ANSI_RE = /[\u001B\u009B][[\]()#;?]*(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]|[0-?]*[ -/]*[@-~])/g;
+
+/** Drop ANSI escapes and other control characters that corrupt model-facing text. */
+function stripAnsi(text) {
+  return String(text ?? '')
+    .replace(ANSI_RE, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
 }
 
 function text(value) {
@@ -54,7 +77,7 @@ function isSandboxMessage(message) {
   return /sandbox|escalation available/i.test(String(message ?? ''));
 }
 
-/** "755" | "0755" | "0o755" | 0o755 → octal mode number, or undefined when unset. */
+/** "755" | "0755" | "0o755" | 0o755 鈫?octal mode number, or undefined when unset. */
 function parseMode(value) {
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
@@ -265,7 +288,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
 
   /**
    * Where this call belongs. Inside a workspace the session's own directory
-   * decides the machine — every workspace in the sidebar just works, with no
+   * decides the machine 鈥?every workspace in the sidebar just works, with no
    * "make it current" step. Explicit host still wins; a session outside any
    * remote workspace falls back to the last opened one.
    */
@@ -313,7 +336,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
   /**
    * Resolve any spelling of a remote path to one absolute remote path:
    * `presence://host/path`, a local mount path, `~/x`, an absolute path, or a
-   * workspace-relative path. One file, several names — all accepted.
+   * workspace-relative path. One file, several names 鈥?all accepted.
    */
   const remotePath = async (connection, workspace, path) => {
     const value = String(path);
@@ -390,7 +413,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_exec',
       description:
-        'Run a shell command on a remote machine and return its exit code, stdout and stderr. Inside a workspace the machine and working directory come from the session itself, so no host is needed. The connection persists between calls. Commands run with `set -o pipefail` by default, so `cmd | tail` reports cmd\'s real failure; pass pipefail:false to disable. For servers or long jobs use background:true instead of `&`: it returns a job id, takes an optional label, and can wait until a port is listening with waitForPort.',
+        'Run a shell command on a remote machine and return its exit code, stdout and stderr. Inside a workspace the machine and working directory come from the session itself, so no host is needed. The connection persists between calls. Commands run with `set -o pipefail` by default, so `cmd | tail` reports cmd\'s real failure; pass pipefail:false to disable. For servers or long jobs use background:true instead of `&`: it returns a job id, takes an optional label, and can wait until a port is listening with waitForPort.\n\nDESTRUCTIVE COMMANDS (`rm -r/-f`, `git clean -fdx`, `find -delete`, `shred`, `truncate`, `dd of=`) are dry-run first: the tool shows every resolved target and refuses workspace roots, ancestors, home, `/` and `.git` metadata. Re-run with confirm:true to execute; prefer presence_trash for recoverable deletes. Output is ANSI-stripped and middle-truncated by default.',
       parameters: {
         host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
         command: { type: 'string', required: true, description: 'Command line, interpreted by the remote shell.' },
@@ -399,10 +422,15 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         background: { type: 'boolean', description: 'Start detached and return immediately with pid and a remote log file. Use for servers and long-running jobs.' },
         label: { type: 'string', description: 'For background: short label shown by presence_jobs. Defaults to the command.' },
         pipefail: { type: 'boolean', description: 'Set the remote shell\'s pipefail so a failing left side of a pipeline is reported. Defaults to true; pass false to disable.' },
+        confirm: {
+          type: 'boolean',
+          description: 'Required to actually run a command classified as destructive; without it the tool returns a dry-run report of the resolved targets instead.',
+        },
         maxOutput: {
           type: 'number',
           description: 'Max characters of stdout/stderr shown inline. Defaults to 16384 (up to 262144); the full output is always written to a log file whose path is reported.',
         },
+        raw: { type: 'boolean', description: 'Keep ANSI escape sequences in the output. Defaults to false (stripped).' },
         waitForPort: {
           type: 'number',
           description: 'For background: TCP port to wait for on 127.0.0.1 (up to 15s) before returning, and report whether it is listening. Ignored for foreground commands.',
@@ -413,6 +441,30 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         const connection = await pool.connection(host);
         const directory = args.cwd ? await remotePath(connection, workspace, args.cwd) : workspace?.path;
         const pipefail = args.pipefail !== false;
+
+        // Destructive commands are dry-run first: show the resolved targets, and
+        // refuse the cases where an empty variable or stray glob would delete a
+        // whole tree. Nothing runs until the caller repeats the call with confirm.
+        if (!args.confirm) {
+          const guard = await guardDestructive({
+            connection,
+            command: args.command,
+            cwd: directory ?? null,
+            workspace,
+            host,
+            confirm: false,
+          });
+          if (guard) return guard.report;
+        } else {
+          await guardDestructive({
+            connection,
+            command: args.command,
+            cwd: directory ?? null,
+            workspace,
+            host,
+            confirm: true,
+          });
+        }
 
         if (args.background) {
           if (args.waitForPort !== undefined && args.waitForPort !== null) {
@@ -460,7 +512,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
 
           if (args.timeoutMs !== undefined && args.timeoutMs !== null) {
             parts.push(
-              'note: timeoutMs does not apply to background jobs — they are meant to outlive the call; ' +
+              'note: timeoutMs does not apply to background jobs 鈥?they are meant to outlive the call; ' +
                 `use presence_jobs {action:'wait', jobId:'${job.id}', timeoutMs} to wait for it`,
             );
           }
@@ -470,7 +522,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
             parts.push(
               outcome.ready
                 ? `port ${args.waitForPort} is listening on ${host} (after ${outcome.waitedMs}ms)`
-                : `port ${args.waitForPort} is NOT listening on ${host} after ${outcome.waitedMs}ms — check the log: tail -n 50 ${job.logPath}`,
+                : `port ${args.waitForPort} is NOT listening on ${host} after ${outcome.waitedMs}ms 鈥?check the log: tail -n 50 ${job.logPath}`,
             );
           }
           return parts.join('\n');
@@ -486,23 +538,24 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           throw new Error(withSandboxNote(error?.message ?? String(error)));
         }
         const parts = [`exit: ${result.code}  (${result.durationMs}ms)`];
-        if (result.timedOut) parts.push('timed out — the remote process tree was terminated');
+        if (result.timedOut) parts.push('timed out 鈥?the remote process tree was terminated');
         const inlineCap = Math.max(1000, Math.min(Number(args.maxOutput) || EXEC_OUTPUT_CAP, 256 * 1024));
+        const plain = (value) => (args.raw ? String(value ?? '') : stripAnsi(value));
         const note = (stream) => {
-          const captured = stream === 'stdout' ? result.stdout : result.stderr;
+          const captured = plain(stream === 'stdout' ? result.stdout : result.stderr);
           const truncated = stream === 'stdout' ? result.stdoutTruncated : result.stderrTruncated;
           const file = stream === 'stdout' ? result.stdoutFile : result.stderrFile;
           if (!truncated && captured.length <= inlineCap) return null;
           const where = file ? `full ${stream}: ${file} on ${host}` : `no ${stream} file could be saved`;
-          return `(${truncated ? `${stream} exceeded the 256 KiB capture cap; ` : ''}showing the first ${inlineCap} bytes here — ${where})`;
+          return `(${truncated ? `${stream} exceeded the 256 KiB capture cap; ` : ''}showing first/last ${inlineCap} characters 鈥?${where})`;
         };
         if (result.stdout) {
-          parts.push(`--- stdout ---\n${clip(result.stdout, inlineCap)}`);
+          parts.push(`--- stdout ---\n${clipMiddle(plain(result.stdout), inlineCap)}`);
           const hint = note('stdout');
           if (hint) parts.push(hint);
         }
         if (result.stderr) {
-          parts.push(`--- stderr ---\n${clip(result.stderr, inlineCap)}`);
+          parts.push(`--- stderr ---\n${clipMiddle(plain(result.stderr), inlineCap)}`);
           const hint = note('stderr');
           if (hint) parts.push(hint);
         }
@@ -516,7 +569,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         // atomic write, the ambiguity check and the version guard.
         if (EDIT_SHELL.test(args.command)) {
           parts.push(
-            'note: prefer presence_edit (or the built-in `edit` tool) for remote file changes — ' +
+            'note: prefer presence_edit (or the built-in `edit` tool) for remote file changes 鈥?' +
               '`sed -i`/`perl -pi`/`python -c` rewrites bypass the atomic write and the ambiguity check.',
           );
         }
@@ -634,7 +687,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         if (!info.exists) throw new Error(`${target} does not exist on ${host}`);
         if (info.isDir) throw new Error(`${target} is a directory; export files one by one, or use presence_exec with tar/scp`);
         if (info.size > EXPORT_CAP) {
-          throw new Error(`${target} is ${info.size} bytes; export is capped at ${EXPORT_CAP} bytes — use presence_exec with scp/rsync for larger files`);
+          throw new Error(`${target} is ${info.size} bytes; export is capped at ${EXPORT_CAP} bytes 鈥?use presence_exec with scp/rsync for larger files`);
         }
         const { buffer } = await connection.readBytes(target, { offset: 0, length: info.size });
         const name = target.split('/').filter(Boolean).pop() ?? 'export.bin';
@@ -669,7 +722,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_import',
       description:
-        'Upload a LOCAL file to the remote machine — the missing local→remote direction of presence_export, and the only way to create binary files remotely (images, PDFs, build artifacts, attachments under ~/.dsh/attachments). Writes atomically, creates parent directories, can set a mode, and returns the sha256 so both sides can be checked. Limit: 64 MiB; for larger files use presence_exec with scp/rsync.',
+        'Upload a LOCAL file to the remote machine 鈥?the missing local鈫抮emote direction of presence_export, and the only way to create binary files remotely (images, PDFs, build artifacts, attachments under ~/.dsh/attachments). Writes atomically, creates parent directories, can set a mode, and returns the sha256 so both sides can be checked. Limit: 64 MiB; for larger files use presence_exec with scp/rsync.',
       parameters: {
         source: {
           type: 'string',
@@ -698,7 +751,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         }
         if (!localStat.isFile()) throw new Error(`${localSource} is not a regular file`);
         if (localStat.size > EXPORT_CAP) {
-          throw new Error(`${localSource} is ${localStat.size} bytes; import is capped at ${EXPORT_CAP} bytes — use presence_exec with scp/rsync for larger files`);
+          throw new Error(`${localSource} is ${localStat.size} bytes; import is capped at ${EXPORT_CAP} bytes 鈥?use presence_exec with scp/rsync for larger files`);
         }
 
         const buffer = readFileSync(localSource);
@@ -729,9 +782,49 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     }),
 
     tool({
+      name: 'presence_trash',
+      description:
+        'Delete a remote path RECOVERABLY: it is moved into `~/.dsh/presence-trash/<timestamp>/` on the same machine (no install, no extra service) and the restore path is returned. Prefer this over `rm -rf` for anything inside a workspace. Actions: trash (move a path), list (recent trash containers), restore (move one back).',
+      parameters: {
+        action: { type: 'string', required: true, enum: ['trash', 'list', 'restore'], description: 'What to do.' },
+        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        path: { type: 'string', description: 'For trash: the remote path to move into the trash.' },
+        trashPath: { type: 'string', description: 'For restore: the path returned by trash (the container), not the original location.' },
+        to: { type: 'string', description: 'For restore: where to put it back, e.g. the original path.' },
+      },
+      async execute(args, exec) {
+        const { host, workspace } = await pickScope(args, exec);
+        const connection = await pool.connection(host);
+        if (args.action === 'trash') {
+          if (!args.path) throw new Error('trash requires a path');
+          if (typeof connection.trash !== 'function') throw new Error('this Presence build has no trash support; update the plugin');
+          const target = await remotePath(connection, workspace, args.path);
+          const result = await connection.trash(target);
+          return (
+            `moved to trash on ${host}\n` +
+            `original: ${target}\n` +
+            `trash: ${result.trashPath}\n` +
+            `${result.entries ?? '?'} files, ${result.size ?? '?'}\n` +
+            `restore with presence_trash {action:'restore', trashPath:'${result.trashPath}', to:'${target}'}`
+          );
+        }
+        if (args.action === 'list') {
+          if (typeof connection.listTrash !== 'function') throw new Error('this Presence build has no trash support; update the plugin');
+          const entries = await connection.listTrash({ limit: 20 });
+          if (entries.length === 0) return `trash is empty on ${host}`;
+          return entries.map((entry) => `${entry.movedAt ?? '?'}  ${entry.trashPath}`).join('\n');
+        }
+        if (!args.trashPath) throw new Error('restore requires trashPath');
+        if (typeof connection.restoreTrash !== 'function') throw new Error('this Presence build has no trash support; update the plugin');
+        const restored = await connection.restoreTrash(args.trashPath, { to: args.to });
+        return `restored ${args.trashPath} to ${restored.to ?? args.to} on ${host}`;
+      },
+    }),
+
+    tool({
       name: 'presence_edit',
       description:
-        'Replace exact text inside a file on a remote machine. Use this — or the built-in `edit` tool, which also reaches the remote workspace — instead of `sed -i`, `perl -pi`, or `python -c` for remote edits: it is atomic, refuses an anchor that occurs more than once unless replaceAll is set, and reports how many occurrences changed. The file keeps its mode (an executable stays executable). Inside a workspace, relative paths resolve against the workspace root.',
+        'Replace exact text inside a file on a remote machine. Use this 鈥?or the built-in `edit` tool, which also reaches the remote workspace 鈥?instead of `sed -i`, `perl -pi`, or `python -c` for remote edits: it is atomic, refuses an anchor that occurs more than once unless replaceAll is set, and reports how many occurrences changed. The file keeps its mode (an executable stays executable). Inside a workspace, relative paths resolve against the workspace root.',
       parameters: {
         host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
         path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
@@ -752,7 +845,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         const connection = await pool.connection(host);
         const target = await remotePath(connection, workspace, args.path);
         const info = await connection.stat(target);
-        if (!info.exists) throw new Error(`${target} does not exist on ${host} — nothing to edit (use presence_write to create it)`);
+        if (!info.exists) throw new Error(`${target} does not exist on ${host} 鈥?nothing to edit (use presence_write to create it)`);
         if (info.isDir) throw new Error(`${target} is a directory on ${host}`);
         const replaceAll = Boolean(args.replaceAll ?? args.replace_all);
         const result = await connection.editText(target, oldText, newText, { replaceAll });
@@ -764,7 +857,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_search',
       description:
-        'Search file contents on a remote machine with the tools that machine already has (ripgrep, falling back to grep). Smart-case: lowercase patterns match case-insensitively, any uppercase letter makes them exact — the same as the built-in grep. Inside a workspace the search root defaults to the workspace. `path` may be a single file or a directory; every match is reported as path:line:text. `include` accepts one glob (*.ts), a brace list (*.{js,jsx}) or a comma-separated list (*.txt,*.dat); spaces are trimmed. The result states the limit and whether it truncated; countOnly returns the exact number of matching lines instead. A bad regex or an unreadable/oversized tree is an error, never a silent empty result.',
+        'Search file contents on a remote machine with the tools that machine already has (ripgrep, falling back to grep). Smart-case: lowercase patterns match case-insensitively, any uppercase letter makes them exact 鈥?the same as the built-in grep. Inside a workspace the search root defaults to the workspace. `path` may be a single file or a directory; every match is reported as path:line:text. `include` accepts one glob (*.ts), a brace list (*.{js,jsx}) or a comma-separated list (*.txt,*.dat); spaces are trimmed. The result states the limit and whether it truncated; countOnly returns the exact number of matching lines instead. A bad regex or an unreadable/oversized tree is an error, never a silent empty result.',
       parameters: {
         host: { type: 'string', description: 'ssh alias. Defaults to the active workspace\'s machine.' },
         pattern: { type: 'string', required: true, description: 'Regular expression to search for (ripgrep syntax).' },
@@ -793,7 +886,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           smartCase: true,
           countOnly: Boolean(args.countOnly),
         });
-        const warn = warning ? `\n(warning: some paths were not searchable — ${warning.slice(0, 300)})` : '';
+        const warn = warning ? `\n(warning: some paths were not searchable 鈥?${warning.slice(0, 300)})` : '';
 
         if (args.countOnly) {
           return `${total} matching line(s) for ${args.pattern} under ${target} on ${host}${warn}`;
@@ -808,7 +901,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
             : `showing ${matches.length} of ${total} matches (truncated; limit ${limit}) on ${host}:`
           : `${total ?? matches.length} match(es) on ${host} (not truncated; limit ${limit}):`;
         const footer = truncated
-          ? '\n(more matches exist — use countOnly for an exact total, narrow path/include, or raise limit)'
+          ? '\n(more matches exist 鈥?use countOnly for an exact total, narrow path/include, or raise limit)'
           : '';
         return `${header}\n${clip(lines.join('\n'))}${footer}${warn}`;
       },
@@ -862,7 +955,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           : `${totalLabel} file(s) on ${host} under ${base} (not truncated; limit ${limit}${newest}):`;
         const footer = [];
         if (detailed.truncated) {
-          footer.push(`(more files match — raise limit or narrow the pattern)`);
+          footer.push(`(more files match 鈥?raise limit or narrow the pattern)`);
         }
         if (detailed.scanCapped) {
           footer.push('(the host-side scan stopped at its file cap, so the total is a lower bound)');
@@ -1009,7 +1102,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_terminal',
       description:
-        'Drive a persistent interactive terminal on a remote machine. open starts a shell that survives between tool calls; pass `session` to run it inside a named tmux session on the target, so it also survives an SSH drop or an app restart — reopen with the same name to reattach. write sends keystrokes, read returns new output since the last read, close ends it. Use this for REPLs, ssh sessions, long-running interactive programs and pagers — not for one-shot commands, which presence_exec handles.',
+        'Drive a persistent interactive terminal on a remote machine. open starts a shell that survives between tool calls; pass `session` to run it inside a named tmux session on the target, so it also survives an SSH drop or an app restart 鈥?reopen with the same name to reattach. write sends keystrokes, read returns new output since the last read, close ends it. Use this for REPLs, ssh sessions, long-running interactive programs and pagers 鈥?not for one-shot commands, which presence_exec handles.',
       parameters: {
         action: {
           type: 'string',
@@ -1083,7 +1176,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           }
           pool.closeTerminal(args.terminalId);
           if (args.killSession && session) return `closed ${args.terminalId} and killed tmux session "${session}"`;
-          if (session) return `closed ${args.terminalId}; tmux session "${session}" keeps running — reopen with session:"${session}" to reattach`;
+          if (session) return `closed ${args.terminalId}; tmux session "${session}" keeps running 鈥?reopen with session:"${session}" to reattach`;
           return `closed ${args.terminalId}`;
         }
         throw new Error(`unknown action ${args.action}`);

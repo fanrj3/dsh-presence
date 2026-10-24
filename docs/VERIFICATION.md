@@ -145,6 +145,45 @@ UI：工作区列表改为**按机器分组**，机器行显示连接状态（�
 
 **验证**：`regression` 5/5、`job-probe` 6/6、`feature-probe` 14/14、`import-probe` 3/3（二进制 sha256 一致、显式 mode 755、覆盖保留 755、新文件 644）。
 
+## 〇之七、第八轮：CPU-only 任务反馈 + 一次真实误删事故（0.8.0）
+
+### P0 危险命令护栏（真事故：`rm -rf .tmesh/$J`，`$J` 为空，整个 `.tmesh` 被删）
+
+`src/destructive.js` + `presence_exec` 的 `confirm` 门：
+
+1. 识别 `rm -r/-f`、`git clean -fdx`、`find -delete`、`shred`、`truncate -s 0`、`dd of=/dev/...`
+2. **dry-run**：在"只报告"的 shell 里重跑（`rm` 被 shell 函数遮蔽、`find -delete`→`-print`、`git clean` 加 `-n`），拿到展开后的目标
+3. 未定义变量（`set -u`）→ 直接拒绝
+4. 无条件拒绝：工作区根、工作区根的祖先、家目录、`/`、`.git`
+5. 其余返回目标报告（类型/文件数/体积），**必须 `confirm:true` 才执行**
+
+同轮新增 `presence_trash`：工作区内可恢复删除（远端 `mv` 到 `~/.dsh/presence-trash/<ts>/`，返回恢复路径；`restore` 放回）。零安装。
+
+**验证**：`node scripts/safety-probe.mjs` → 21/21，覆盖事故原型（空变量报告显示收敛到 `.tmesh` 且不执行）、根/祖先/家目录/`.git` 拒绝、`git clean` dry-run 只列不删、确认后仍先检查。
+
+### P1 已读状态压缩后丢失
+
+根因：harness 的守卫状态是 `WeakMap<Session, ...>`，会话被重建/压缩后丢失。修法：新增 `src/observed-store.js`，按 `(sessionId, presence://host/path) -> version` 持久化到 `~/.dsh/presence/observed.json`；
+- 内置 `read`/`read_image` 成功后记账（`tools/post-execute`）
+- `presence_read`/`write`/`edit` 也写入同一存储
+- 内置 `edit`/`write` 执行前（`tools/pre-execute`），若记录版本 == 当前版本，则重新发布 `fs/observed`，守卫通过；文件已变则不发布（守卫照常拦住）
+
+`read limit=1` 这类局部读取也算已读（记录的是读取时刻的版本）。
+
+### P1 远程写入丢可执行位（上一轮已修）
+
+0.7.0 起 `writeText` 覆盖前读原 mode、chmod 暂存文件后原子 rename；新文件 644（修正了远端 umask=0002 导致的 664）。本轮复核仍在，`safety`/`regression` 回归通过。
+
+### P2 exec 长输出
+
+内联输出默认 **16KiB**，改为**首尾截断**（保留开头命令输出 + 结尾错误），全量落盘并返回路径；默认**剥离 ANSI/控制字符**（`raw:true` 可保留），解决 htop/控制序列污染上下文。
+
+### P3 能力变化提示
+
+运行时上下文首行改为 `Presence <version>: ...`，并写入本轮新增能力（trash、危险命令 dry-run、guard 自修复）——升级后模型立刻能看到版本与新增能力。
+
+**验证**：`safety-probe` 21/21、`regression` 5/5、`job-probe` 6/6、`feature-probe` 14/14、`import-probe` 3/3。
+
 **验证**（全部在真实主机 server 上）：
 - `node scripts/regression.mjs server` → 5/5
 - `node scripts/job-probe.mjs server` → 6/6

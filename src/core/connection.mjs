@@ -82,6 +82,32 @@ const SIGNAL_NUMBERS = {
   PWR: 30,
   SYS: 31,
 };
+// The trash is a directory tree on the machine itself, so recovery needs no
+// service and nothing installed. `~` is expanded on the far side, never with
+// the local home directory. One container per trashed entry keeps the original
+// name, mode and ownership intact for a same-filesystem rename.
+const TRASH_DEFAULT_ROOT = '~/.dsh/presence-trash';
+// A large tree can take minutes to move or copy; a stalled one must not pin a
+// channel forever. The listing itself is small, so it gets a shorter budget.
+const TRASH_TIMEOUT_MS = 300_000;
+const TRASH_LIST_TIMEOUT_MS = 30_000;
+const TRASH_LIST_BYTES = 2 * 1024 * 1024;
+// A broader listing than this is noise for a "recent trash" view; callers may
+// ask for less, not for an unbounded dump.
+const TRASH_LIST_LIMIT = 1000;
+
+/**
+ * POSIX-sh fragment shared by the trash scripts: expand a leading `~` for the
+ * trash root remotely, from the login shell's HOME, falling back to the home
+ * directory this connection already resolved. Nothing here uses the local home.
+ */
+const TRASH_ROOT_EXPAND = [
+  'case $root in',
+  "  '~') root=${HOME:-$home} ;;",
+  "  '~/'*) root=${HOME:-$home}/${root#'~/'} ;;",
+  "  '~'*) echo 'presence: the trash root may only use ~ or ~/..., not another user home' >&2; exit 3 ;;",
+  'esac',
+].join('\n');
 
 /** POSIX single-quoting, so the remote shell sees exactly these bytes. */
 function shellQuote(value) {
@@ -1372,6 +1398,351 @@ export class PresenceConnection {
 
   async mkdir(path) {
     await this.#call('mkdir', path);
+  }
+
+  // ----------------------------------------------------------------- trash
+
+  /**
+   * Move a remote path into a trash container instead of deleting it. Nothing
+   * is installed on the far side: one `sh` script performs the checks, the
+   * metadata scan and the move in a single round trip.
+   *
+   * The default root is `~/.dsh/presence-trash`, expanded on the remote machine
+   * (`$HOME`, with the login directory as fallback) and never locally. Each
+   * call creates `<root>/<UTC timestamp>-<random>/` and moves the entry there
+   * as `<container>/<basename>`.
+   *
+   * Symlinks: only the parent directory is resolved (`realpath -m`); the
+   * literal basename is appended afterwards and that path is moved. `mv` acts
+   * on the directory entry itself, so trashing a symlink moves the LINK and
+   * leaves its target untouched — resolving the whole path would move the
+   * target instead.
+   *
+   * Refused (throws, nothing moves): `/`, the remote home, an ancestor of the
+   * remote home, a path that does not exist, and a path that still names `.`
+   * or `..` after resolution. A symlink whose target is missing still exists
+   * as a directory entry and can be trashed.
+   *
+   * `size` (`du -sb`) and `entries` (`find -type f | wc -l`) are best effort
+   * and `null` when the host cannot produce them. `strategy` is `'rename'` for
+   * a plain same-filesystem `mv`; `'copy'` when the entry crossed filesystems,
+   * either because `mv` reported a cross-device link and `cp -a` + `rm -rf`
+   * took over, or because the parent and the trash root are on different
+   * devices (`mv` then copies internally, which is not atomic).
+   *
+   * @returns {Promise<{ path: string, trashed: true, trashPath: string,
+   *   size: number|null, entries: number|null, strategy: 'rename'|'copy' }>}
+   */
+  async trash(path, { root = null } = {}) {
+    const literal = String(path ?? '');
+    if (literal === '') throw new Error('trash requires a path');
+    const home = await this.homePath();
+    const rawRoot = root === null || root === undefined ? TRASH_DEFAULT_ROOT : String(root);
+    const token = randomToken();
+    const script = [
+      'set -u',
+      'LC_ALL=C',
+      'export LC_ALL',
+      'literal=$1',
+      'home=$2',
+      'root=$3',
+      'token=$4',
+      'fail() {',
+      "  printf 'presence: refusing to trash %s: %s\\n' \"$literal\" \"$1\" >&2",
+      '  exit 3',
+      '}',
+      'if [ -z "$literal" ]; then fail "the path is empty"; fi',
+      'if [ "$literal" = / ]; then fail "it is the filesystem root"; fi',
+      'if [ ! -e "$literal" ] && [ ! -L "$literal" ]; then fail "no such file or directory"; fi',
+      'dir=$(dirname -- "$literal") || fail "could not parse the path"',
+      'base=$(basename -- "$literal") || fail "could not parse the path"',
+      'case $base in',
+      "  ''|.|..|/|*/*) fail \"it does not name a single directory entry\" ;;",
+      'esac',
+      'parent=$(realpath -m -- "$dir") || fail "could not resolve its parent directory"',
+      'case $parent in',
+      '  /*) ;;',
+      '  *) fail "its parent directory did not resolve to an absolute path" ;;',
+      'esac',
+      'if [ "$parent" = / ]; then resolved=/$base; else resolved=$parent/$base; fi',
+      'case $resolved in',
+      '  */../*|*/..|*/./*|*/.|*/) fail "it still contains . or .. after resolution" ;;',
+      'esac',
+      'case $home in',
+      '  */) home=${home%/} ;;',
+      'esac',
+      'if [ "$resolved" = "$home" ]; then fail "it is the remote home directory"; fi',
+      'case $home in',
+      '  "$resolved"/*) fail "it is an ancestor of the remote home directory" ;;',
+      'esac',
+      ...TRASH_ROOT_EXPAND.split('\n'),
+      'rootdir=$(realpath -m -- "$root") || { echo "presence: could not resolve the trash root $root" >&2; exit 4; }',
+      'case $rootdir in',
+      '  /*) ;;',
+      '  *) echo "presence: the trash root did not resolve to an absolute path" >&2; exit 4 ;;',
+      'esac',
+      'if [ "$rootdir" = / ]; then echo "presence: refusing to use / as the trash root" >&2; exit 4; fi',
+      'case $rootdir in',
+      '  "$resolved"|"$resolved"/*) fail "the trash root is inside it" ;;',
+      'esac',
+      'if ! mkdir -p -- "$rootdir" 2>/dev/null; then',
+      '  echo "presence: could not create the trash root $rootdir" >&2',
+      '  exit 4',
+      'fi',
+      'stamp=$(date -u "+%Y%m%dT%H%M%SZ") || { echo "presence: could not read the remote clock" >&2; exit 4; }',
+      'container=$rootdir/$stamp-$token',
+      'if ! mkdir -- "$container" 2>/dev/null; then',
+      '  echo "presence: could not create the trash container $container" >&2',
+      '  exit 4',
+      'fi',
+      'bounded() {',
+      '  if command -v timeout >/dev/null 2>&1; then timeout 30s "$@"; else "$@"; fi',
+      '}',
+      'size=$(bounded du -sb -- "$resolved" 2>/dev/null | cut -f1)',
+      'case $size in',
+      '  ""|*[!0-9]*) size= ;;',
+      'esac',
+      'entries=$(bounded find "$resolved" -type f 2>/dev/null | wc -l)',
+      'entries=$(printf "%s" "$entries" | tr -cd "0-9")',
+      'srcdev=$(stat -c %d -- "$parent" 2>/dev/null)',
+      'rootdev=$(stat -c %d -- "$rootdir" 2>/dev/null)',
+      'dest=$container/$base',
+      'strategy=rename',
+      'if mv_error=$(LC_ALL=C mv -- "$resolved" "$dest" 2>&1); then',
+      '  if [ -n "$srcdev" ] && [ -n "$rootdev" ] && [ "$srcdev" != "$rootdev" ]; then strategy=copy; fi',
+      'else',
+      '  case $mv_error in',
+      '    *"cross-device link"*)',
+      '      strategy=copy',
+      '      if ! cp_error=$(LC_ALL=C cp -a -- "$resolved" "$dest" 2>&1); then',
+      '        rm -rf -- "$container" 2>/dev/null',
+      '        printf "presence: could not copy %s into the trash: %s\\n" "$resolved" "$cp_error" >&2',
+      '        exit 5',
+      '      fi',
+      '      if ! rm_error=$(LC_ALL=C rm -rf -- "$resolved" 2>&1); then',
+      '        printf "presence: %s is copied into the trash but the original could not be removed: %s\\n" "$resolved" "$rm_error" >&2',
+      '        exit 5',
+      '      fi',
+      '      ;;',
+      '    *)',
+      '      rmdir -- "$container" 2>/dev/null',
+      '      printf "presence: could not move %s into the trash: %s\\n" "$resolved" "$mv_error" >&2',
+      '      exit 5',
+      '      ;;',
+      '  esac',
+      'fi',
+      'encoded=$(printf "%s" "$dest" | base64 | tr -d "\\n")',
+      'printf "__PRESENCE_TRASH__ %s %s %s %s\\n" "$strategy" "${size:--}" "${entries:--}" "$encoded"',
+    ].join('\n');
+    const result = await this.exec(
+      `sh -c ${shellQuote(script)} presence-trash ${shellQuote(literal)} ${shellQuote(home)} ${shellQuote(rawRoot)} ${shellQuote(token)}`,
+      { timeoutMs: TRASH_TIMEOUT_MS, maxOutputBytes: 16 * 1024 },
+    );
+    const match = /^__PRESENCE_TRASH__ (rename|copy) (\d+|-) (\d+|-) ([A-Za-z0-9+/=]+)$/m.exec(result.stdout);
+    if (!match) {
+      const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
+      const error = new Error(`could not trash ${literal} on ${this.target}: ${detail}`);
+      error.code = result.code === 3 ? 'refused' : 'trash_failed';
+      throw error;
+    }
+    return {
+      path: literal,
+      trashed: true,
+      trashPath: Buffer.from(match[4], 'base64').toString('utf8'),
+      size: match[2] === '-' ? null : Number(match[2]),
+      entries: match[3] === '-' ? null : Number(match[3]),
+      strategy: match[1],
+    };
+  }
+
+  /**
+   * Recent trash entries, newest container first. Each entry is
+   * `{ trashPath, movedAt, name }`: the complete path of the trashed item, the
+   * container's UTC timestamp as an ISO 8601 string, and the item's own name.
+   * Only containers created by `trash` (`<timestamp>-<random>`) are listed;
+   * empty containers and foreign directories under the root are skipped.
+   * `limit` is clamped to 1..1000, and `root` follows `trash`'s remote `~`
+   * expansion.
+   *
+   * @returns {Promise<Array<{ trashPath: string, movedAt: string|null, name: string }>>}
+   */
+  async listTrash({ root = null, limit = 20 } = {}) {
+    const requested = limit === null || limit === undefined ? 20 : Number(limit);
+    const wanted = Number.isFinite(requested) ? Math.floor(requested) : 20;
+    if (wanted <= 0) return [];
+    const capped = Math.min(wanted, TRASH_LIST_LIMIT);
+    const home = await this.homePath();
+    const rawRoot = root === null || root === undefined ? TRASH_DEFAULT_ROOT : String(root);
+    const script = [
+      'set -u',
+      'LC_ALL=C',
+      'export LC_ALL',
+      'home=$1',
+      'root=$2',
+      'limit=$3',
+      ...TRASH_ROOT_EXPAND.split('\n'),
+      'rootdir=$(realpath -m -- "$root") || { echo "presence: could not resolve the trash root $root" >&2; exit 3; }',
+      'if [ -e "$rootdir" ] && [ ! -d "$rootdir" ]; then',
+      '  echo "presence: the trash root is not a directory: $rootdir" >&2',
+      '  exit 3',
+      'fi',
+      '[ -d "$rootdir" ] || exit 0',
+      // Sort by the container's mtime, not by its name: two entries trashed in
+      // the same second would otherwise be ordered by their random suffix.
+      'find "$rootdir" -mindepth 1 -maxdepth 1 -type d -name "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-*" -printf "%T@ %f\\n" 2>/dev/null | sort -rn | head -n "$limit" | while IFS= read -r row; do',
+      '  name=${row#* }',
+      "  find \"$rootdir/$name\" -mindepth 1 -maxdepth 1 -exec sh -c 'for p do printf \"%s\\000\" \"$p\"; done' sh {} + 2>/dev/null",
+      'done',
+    ].join('\n');
+    const result = await this.exec(
+      `sh -c ${shellQuote(script)} presence-list-trash ${shellQuote(home)} ${shellQuote(rawRoot)} ${capped}`,
+      { timeoutMs: TRASH_LIST_TIMEOUT_MS, maxOutputBytes: TRASH_LIST_BYTES },
+    );
+    if (result.code !== 0) {
+      throw new Error(`could not list the trash on ${this.target}: ${result.stderr.trim() || `exit ${result.code}`}`);
+    }
+    if (result.stdoutTruncated) {
+      throw new Error(`the trash listing on ${this.target} is too large; lower the limit`);
+    }
+    return result.stdout
+      .split('\u0000')
+      .filter((entry) => entry !== '')
+      .slice(0, capped)
+      .map((trashPath) => {
+        const slash = trashPath.lastIndexOf('/');
+        const name = slash === -1 ? trashPath : trashPath.slice(slash + 1);
+        const container = slash === -1 ? '' : trashPath.slice(0, slash);
+        const containerName = container.slice(container.lastIndexOf('/') + 1);
+        const stamp = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-/.exec(containerName);
+        return {
+          trashPath,
+          movedAt: stamp
+            ? `${stamp[1]}-${stamp[2]}-${stamp[3]}T${stamp[4]}:${stamp[5]}:${stamp[6]}.000Z`
+            : null,
+          name,
+        };
+      });
+  }
+
+  /**
+   * Move a previously trashed path back. `to` is required: a container records
+   * when an entry was trashed, not where it came from, so guessing the original
+   * location from the leaf name would be unreliable. The destination's parent
+   * directory is created when missing; the destination itself must not exist
+   * (no silent overwrite). Like `trash`, only the parents are resolved with
+   * `realpath -m`, so a trashed symlink comes back as a link.
+   *
+   * @returns {Promise<{ restored: true, to: string }>} the resolved absolute
+   *   destination, which is where the entry actually landed.
+   */
+  async restoreTrash(trashPath, { to = null } = {}) {
+    const literal = String(trashPath ?? '');
+    if (literal === '') throw new Error('restoreTrash requires a trashPath');
+    if (to === null || to === undefined || String(to).trim() === '') {
+      throw new Error(
+        'restoreTrash requires the original location: pass { to: "<path>" }; the trash container does not record where the entry came from',
+      );
+    }
+    const wanted = String(to);
+    const home = await this.homePath();
+    const script = [
+      'set -u',
+      'LC_ALL=C',
+      'export LC_ALL',
+      'literal=$1',
+      'to=$2',
+      'home=$3',
+      'fail() {',
+      "  printf 'presence: refusing to restore %s: %s\\n' \"$literal\" \"$1\" >&2",
+      '  exit 3',
+      '}',
+      'if [ -z "$literal" ]; then fail "the trash path is empty"; fi',
+      'if [ "$literal" = / ]; then fail "it is the filesystem root"; fi',
+      'if [ ! -e "$literal" ] && [ ! -L "$literal" ]; then fail "no such file or directory in the trash"; fi',
+      'dir=$(dirname -- "$literal") || fail "could not parse the trash path"',
+      'base=$(basename -- "$literal") || fail "could not parse the trash path"',
+      'case $base in',
+      "  ''|.|..|/|*/*) fail \"it does not name a single directory entry\" ;;",
+      'esac',
+      'parent=$(realpath -m -- "$dir") || fail "could not resolve its parent directory"',
+      'case $parent in',
+      '  /*) ;;',
+      '  *) fail "its parent directory did not resolve to an absolute path" ;;',
+      'esac',
+      'if [ "$parent" = / ]; then resolved=/$base; else resolved=$parent/$base; fi',
+      'case $resolved in',
+      '  */../*|*/..|*/./*|*/.|*/) fail "it still contains . or .. after resolution" ;;',
+      'esac',
+      'case $home in',
+      '  */) home=${home%/} ;;',
+      'esac',
+      'if [ "$resolved" = "$home" ]; then fail "it is the remote home directory"; fi',
+      'case $home in',
+      '  "$resolved"/*) fail "it is an ancestor of the remote home directory" ;;',
+      'esac',
+      'if [ -z "$to" ]; then fail "no destination was given"; fi',
+      'todir=$(dirname -- "$to") || fail "could not parse the destination"',
+      'tobase=$(basename -- "$to") || fail "could not parse the destination"',
+      'case $tobase in',
+      "  ''|.|..|/|*/*) fail \"the destination does not name a single directory entry\" ;;",
+      'esac',
+      'toparent=$(realpath -m -- "$todir") || fail "could not resolve the destination parent directory"',
+      'case $toparent in',
+      '  /*) ;;',
+      '  *) fail "the destination parent did not resolve to an absolute path" ;;',
+      'esac',
+      'if [ "$toparent" = / ]; then dest=/$tobase; else dest=$toparent/$tobase; fi',
+      'case $dest in',
+      '  */../*|*/..|*/./*|*/.|*/) fail "the destination still contains . or .. after resolution" ;;',
+      'esac',
+      'if [ "$dest" = / ]; then fail "the destination is the filesystem root"; fi',
+      'if [ "$dest" = "$home" ]; then fail "the destination is the remote home directory"; fi',
+      'case $home in',
+      '  "$dest"/*) fail "the destination is an ancestor of the remote home directory" ;;',
+      'esac',
+      'if [ -e "$dest" ] || [ -L "$dest" ]; then fail "the destination already exists"; fi',
+      'if ! mkdir -p -- "$toparent" 2>/dev/null; then',
+      '  echo "presence: could not create the destination directory $toparent" >&2',
+      '  exit 4',
+      'fi',
+      'if ! mv_error=$(LC_ALL=C mv -- "$resolved" "$dest" 2>&1); then',
+      '  case $mv_error in',
+      '    *"cross-device link"*)',
+      '      if ! cp_error=$(LC_ALL=C cp -a -- "$resolved" "$dest" 2>&1); then',
+      '        rm -rf -- "$dest" 2>/dev/null',
+      '        printf "presence: could not copy %s to %s: %s\\n" "$resolved" "$dest" "$cp_error" >&2',
+      '        exit 5',
+      '      fi',
+      '      if ! rm_error=$(LC_ALL=C rm -rf -- "$resolved" 2>&1); then',
+      '        printf "presence: %s is copied to %s but the trashed copy could not be removed: %s\\n" "$resolved" "$dest" "$rm_error" >&2',
+      '        exit 5',
+      '      fi',
+      '      ;;',
+      '    *)',
+      '      printf "presence: could not move %s to %s: %s\\n" "$resolved" "$dest" "$mv_error" >&2',
+      '      exit 5',
+      '      ;;',
+      '  esac',
+      'fi',
+      'container=$(dirname -- "$resolved")',
+      'case $(basename -- "$container") in',
+      '  [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-*) rmdir -- "$container" 2>/dev/null ;;',
+      'esac',
+      'encoded=$(printf "%s" "$dest" | base64 | tr -d "\\n")',
+      'printf "__PRESENCE_RESTORED__ %s\\n" "$encoded"',
+    ].join('\n');
+    const result = await this.exec(
+      `sh -c ${shellQuote(script)} presence-restore ${shellQuote(literal)} ${shellQuote(wanted)} ${shellQuote(home)}`,
+      { timeoutMs: TRASH_TIMEOUT_MS, maxOutputBytes: 16 * 1024 },
+    );
+    const match = /^__PRESENCE_RESTORED__ ([A-Za-z0-9+/=]+)$/m.exec(result.stdout);
+    if (!match) {
+      const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
+      const error = new Error(`could not restore ${literal} on ${this.target}: ${detail}`);
+      error.code = result.code === 3 ? 'refused' : 'restore_failed';
+      throw error;
+    }
+    return { restored: true, to: Buffer.from(match[1], 'base64').toString('utf8') };
   }
 
   /** Literal replacement; refuses to guess when the anchor is ambiguous. */
