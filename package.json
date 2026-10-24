@@ -1,0 +1,52 @@
+{
+  "name": "dsh-presence",
+  "version": "0.7.1",
+  "private": true,
+  "type": "module",
+  "description": "Work on any machine in your ssh config as if it were local: persistent connections, native file editing, search, exec and terminals, with nothing installed on the remote host.",
+  "icon": "icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./fs": "./src/fs-provider.js",
+    "./selfcheck": "./src/fs-selfcheck.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "src/**/*.js",
+    "src/**/*.mjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "probe": "node scripts/probe.mjs"
+  },
+  "dependencies": {
+    "ssh2": "^1.17.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-fs": "*",
+    "@deepseek-ai/dsh-fs-sandbox": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "*"
+  }
+}

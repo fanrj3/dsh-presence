@@ -1,0 +1,21 @@
+# FS MODE: also mount the remote-path filesystem provider, so a remote folder
+# becomes a real DSH workspace (sidebar entry, file tree, built-in read/write).
+#
+# Risk: replacing `ctx.fs` is all-or-nothing for the whole profile. If the
+# provider row fails to activate, `ctx.fs` disappears and new sessions fail with
+# `sessionController is unavailable`. Install this mode with the app CLOSED and
+# keep scripts/uninstall-presence.ps1 at hand.
+- id: fs-sandbox
+  disabled: true
+
+- insert:
+    - id: presence-fs
+      name: dsh-presence/fs
+      config: {}
+    - id: presence
+      name: dsh-presence
+      config:
+        maxChannels: 8
+        connectTimeoutMs: 25000
+        idleTimeoutMs: 900000
+        readOnly: false

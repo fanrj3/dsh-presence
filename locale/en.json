@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Presence",
+    "description": "Work on any machine in your ssh config as if it were local: persistent connections, native file editing, search, exec and terminals, with nothing installed on the remote host."
+  }
+}

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Presence beacon">
+  <circle cx="32" cy="32" r="27" fill="none" stroke="#2f6bff" stroke-opacity="0.28" stroke-width="4" />
+  <circle cx="32" cy="32" r="17" fill="none" stroke="#2f6bff" stroke-width="4.5" />
+  <circle cx="32" cy="32" r="6.5" fill="#2f6bff" />
+  <circle cx="32" cy="5" r="3" fill="#2f6bff" fill-opacity="0.55" />
+</svg>

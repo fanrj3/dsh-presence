@@ -1,0 +1,19 @@
+# Runtime dependencies (reinstall with `npm install`; the shipped zip bundles them)
+node_modules/
+
+# Package-manager caches
+.pnpm-store/
+
+# Build artifacts
+dist/
+.pack/
+
+# Local scratch / test environments
+.dsh-isolated/
+.scratch/
+.dsh-acl/
+
+# Desktop or editor noise
+.DS_Store
+Thumbs.db
+*.log

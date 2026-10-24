@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Presence",
+    "description": "把 ssh config 里的服务器当作本地机器使用：常驻连接、原生文件编辑、搜索、执行与终端，远端不需要安装任何东西。"
+  }
+}

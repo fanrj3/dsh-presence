@@ -1,0 +1,10 @@
+# SAFE MODE: Presence adds tools and the panel only. The global filesystem
+# backend is untouched, so this can never take `ctx.fs` away from the harness.
+- insert:
+    - id: presence
+      name: dsh-presence
+      config:
+        maxChannels: 8
+        connectTimeoutMs: 25000
+        idleTimeoutMs: 900000
+        readOnly: false
