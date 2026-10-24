@@ -203,12 +203,33 @@ C:\Users\<你>\.dsh\presence\mounts\<主机>\<远端绝对路径>
 
 ## 已知边界
 
-- **不替换全局文件系统**：侧边栏自带的文件树不会显示远程文件。远程文件在 Presence 面板的「浏览文件」里看，agent 用 `presence_*` 工具操作。
-  - 为什么不做：`src/fs-provider.js` 实现了 `presence://` 路径的完整后端（自检 14 项里 13 项通过），但第三方插件 `import` 到的 `@deepseek-ai/dsh-fs-sandbox` 与宿主不是同一模块实例，继承出来的 `Service` 注册不进 Cordis，结果是 `ctx.fs` 消失、`sessionController` 连带起不来。这是插件模型的边界，不是能靠改代码绕过的 bug。要真正做「远程文件夹 = 真工作区」，需要改 DSH 本体或做自己的发行版。
+- **挂载路径是虚拟的**：`~/.dsh/presence/mounts/...` 只对 `ctx.fs` 生效，Explorer / Office / 宿主 Python 看不到远程文件（见上面的能力矩阵）。
 - **并发上限**：sshd 默认 `MaxSessions 10`，一条连接最多 10 个通道（已留一个给 SFTP，池子上限 8）。这是服务器策略，不是插件限制。
-- **终端生命周期**：PTY 跟随连接存活，进程退出后终端结束。这是「远端零安装」的必然代价——不落守护进程就无法跨连接保活；需要跨重启时，可检测目标机已有的 `tmux` 并复用（仍然零安装）。
-- **SFTP 语义**：写文件用 `writeFile` + OpenSSH `posix-rename` 扩展做原子替换；没有该扩展的服务器退化为「删除后重命名」。
-- **工作区是全局单例**：同一时刻只有一个「当前工作区」；多工作区并行会话的绑定需要后续做 per-session 映射。
+- **终端生命周期**：PTY 跟随连接存活；需要跨断线/重启时用 `presence_terminal {session}`，它在目标机复用 `tmux`（仍然零安装）。
+- **SFTP 语义**：写文件用 `writeFile` + OpenSSH `posix-rename` 扩展做原子替换；没有该扩展的服务器退化为「删除后重命名」。覆盖写保留原文件 mode；新文件 644（受远端 umask 影响，可用 `mode` 指定）。
+- **`present` 的原生打开**：卡片预览可用，但"原生打开"按钮要求宿主进程能映射该路径；虚拟挂载路径映射不了，需先 `presence_export`。
+- **`read-before-write` 守卫**：只对内置 fs 工具生效；`presence_write` 绕开它，但会通过 `fs/observed` 事件给内置 `write`/`edit` 记账，所以两边可以混用。
+
+## 开发与版本管理
+
+源码在 git 里（`main` 分支，版本用 tag 标记，例如 `v0.7.1`）。仓库只跟踪源码：
+
+```bash
+npm install                       # 依赖只有 ssh2；node_modules 不进 git
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.7.1
+# → dist/presence-plugin-0.7.1.zip（内含 node_modules，可直接被 DSH 安装）
+```
+
+改动后至少跑这些验证（都需要一台可 ssh 的主机）：
+
+```bash
+node scripts/regression.mjs server   # 传输层：符号链接写、行数、超时、落盘、二进制
+node scripts/job-probe.mjs server    # 后台任务 + 端口转发
+node scripts/feature-probe.mjs server # wait/会话过滤/pgid/就绪/搜索语义
+node scripts/import-probe.mjs server # 本地→远程二进制、mode、sha256
+```
+
+`scripts/isolated-check.mjs` 需要在 Electron-as-Node 下跑（路径矩阵 + 沙箱围栏），打包时不会带进 zip。
 
 ## 运行
 
