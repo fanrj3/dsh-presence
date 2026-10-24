@@ -26,6 +26,10 @@ foreach ($source in $sources) {
   if ($LASTEXITCODE -ne 0) { throw "syntax error in $source" }
 }
 
+# The terminal launcher is embedded in the patch files; refuse a stale embed.
+node (Join-Path $root 'scripts\embed-shell.mjs') --check | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'cordis patch launcher is stale: run node scripts/embed-shell.mjs' }
+
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 foreach ($item in @('index.js', 'client.js', 'package.json', 'icon.svg', 'README.md', 'INSTALL.md', 'locale', 'src', 'presets', 'docs', 'node_modules', 'scripts')) {

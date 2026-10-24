@@ -200,6 +200,22 @@ C:\Users\<你>\.dsh\presence\mounts\<主机>\<远端绝对路径>
   `PRESENCE_PASSWORD_<ALIAS>`（别名大写、非字母数字换成下划线）提供，例如 `PRESENCE_PASSWORD_SERVER_V6`。
 - **「记住这台」**：面板里的开关，默认关闭；打开后密码交给 DSH 的凭据服务保管（落盘方式由该服务决定），重启免输。
 
+### 面板终端 = 远程 shell
+
+DSH 右侧的终端面板原本只会起**本机** shell，cwd 被设成挂载路径（空壳目录）。Presence 把 `terminal-controller` 的默认 shell 换成了一个 launcher（`scripts/presence-shell.ps1`，以 `-EncodedCommand` 内嵌在 `cordis.patch.yml` 里）：
+
+| 打开终端的会话 | 实际启动 |
+| --- | --- |
+| 远程工作区（cwd 在 `~/.dsh/presence/mounts/<host>/...` 下） | `ssh -t <host> "cd '<远端目录>' && exec $SHELL -l"` —— 就是那台机器、那个目录 |
+| 本地工作区 / 其它 cwd | 本机 `cmd.exe`，与原生行为一致 |
+
+所以：**在远程工作区点「新终端」，直接看到远端目录的提示符**；`git`、`tmux`、补全、颜色都走远端环境，远端仍然零安装（只用 ssh 客户端）。
+
+- launcher 源码在 `scripts/presence-shell.ps1`；改完运行 `node scripts/embed-shell.mjs` 重新内嵌（打包脚本会做 `--check`，stale 直接失败）
+- 想恢复原生行为：删掉 `cordis.patch.yml` 里 `# >>> presence-shell ... <<<` 那一段，重启
+- 需要密码的机器：ssh 会在终端里提示输入；密钥/ssh-agent 的机器无感
+- 终端窗口关掉 = ssh 断开；需要跨断线的持久 shell 用 agent 的 `presence_terminal {session}`（远端 tmux）
+
 ## 当前状态
 
 - [x] 解析 `~/.ssh/config`（Host / HostName / Port / User / IdentityFile / Include / 全局默认 / 引号）

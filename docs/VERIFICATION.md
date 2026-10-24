@@ -191,6 +191,22 @@ UI：工作区列表改为**按机器分组**，机器行显示连接状态（�
 
 运行时上下文首行改为 `Presence <version>: ...`，并写入本轮新增能力（trash、危险命令 dry-run、guard 自修复）——升级后模型立刻能看到版本与新增能力。
 
+## 〇之八、第九轮：面板终端直连远程（0.9.0）
+
+问题：DSH 右侧终端面板由 `terminal-controller` 创建，它固定用**本地** `subprocess` 起 shell（`spawn` 里 `subprocess.spawnTerminal({argv:[shell.path,...], cwd})`），cwd 又是挂载路径（空壳目录）——所以打开的是本机 `cmd.exe`，与远程无关。`terminals` 服务的 `registerBackend` 只服务模型侧终端工具，面板不走它。
+
+方案（不改 DSH）：把 `terminal-controller` 的默认 shell 换成一个 launcher。
+
+- `scripts/presence-shell.ps1`：cwd 在 `~/.ssh` 挂载根下时解析出 `<host>` 与远端路径，执行 `ssh -t <host> "cd '<远端目录>' && exec $SHELL -l"`；否则起本地 `cmd.exe`（本地工作区行为不变）
+- 以 **`-EncodedCommand`（UTF-16LE base64）** 内嵌进 `cordis.patch.yml` / `presets/*.patch.yml`，因此**不需要绝对路径、不需要安装器步骤、可移植**；源码仍是 `.ps1`，用 `node scripts/embed-shell.mjs` 重新生成，`--check` 防 stale（打包脚本会校验）
+- 补丁写法：`- id: terminal-controller` + `config.shell`（按 Loader 方言，config 整体替换，其余字段走 schema 默认值）
+
+验证：
+- launcher dry-run（`PRESENCE_SHELL_DRY=1`）四类 cwd 全对：远端子目录 → `HOST=server / REMOTE=/srv/app`；host 根 → `/`；含空格与中文的嵌套路径 → 原样保留；本地 cwd → `LOCAL`
+- 远端命令引号实测：`cd '/srv/app' && exec "${SHELL:-/bin/bash}" -lc 'pwd; echo QUOTING_OK'` → 输出 `/srv/app` / `QUOTING_OK`
+- 补丁文件用 harness 自带 `js-yaml` 解析通过，`terminal-controller` patch 的 base64 可解码回 launcher 源码
+- 回归：`regression` 7/7、`safety-probe` 24/24
+
 **验证**：`safety-probe` 21/21、`regression` 5/5、`job-probe` 6/6、`feature-probe` 14/14、`import-probe` 3/3。
 
 **验证**（全部在真实主机 server 上）：
