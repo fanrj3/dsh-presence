@@ -75,6 +75,22 @@ try {
   await connection.exec(`printf '\\x89PNG\\x00\\x01\\x02' > ${dir}/image.png`);
   const binary = await connection.readText(`${dir}/image.png`).catch((error) => ({ error }));
   check('binary file is not decoded as text', Boolean(binary.error) || binary.content?.includes('\u0000'), binary.error?.message ?? 'content returned');
+
+  // 6. Overwriting an executable keeps its mode (the reported "old mode 100755 /
+  //    new mode 100644" regression).
+  await connection.exec(`printf '#!/bin/sh\\necho old\\n' > ${dir}/script.sh && chmod 755 ${dir}/script.sh`);
+  await connection.writeText(`${dir}/script.sh`, '#!/bin/sh\necho new\n', {});
+  const afterWrite = await connection.exec(`stat -c %a ${dir}/script.sh; tail -1 ${dir}/script.sh`);
+  check(
+    'overwrite keeps the executable bit',
+    afterWrite.stdout.split('\n')[0].trim() === '755',
+    afterWrite.stdout.trim().replace(/\n/g, ' | '),
+  );
+
+  // 7. A fresh file lands at 644 with an ordinary umask.
+  await connection.writeText(`${dir}/fresh.txt`, 'hello\n');
+  const freshMode = await connection.exec(`stat -c %a ${dir}/fresh.txt`);
+  check('new file lands at 644', freshMode.stdout.trim() === '644', freshMode.stdout.trim());
 } finally {
   await connection.exec(`rm -rf ${dir}`);
   connection.end();
