@@ -1,6 +1,6 @@
 {
   "name": "dsh-presence",
-  "version": "0.17.1",
+  "version": "0.17.2",
   "private": true,
   "type": "module",
   "description": "Work on any machine in your ssh config as if it were local: persistent connections, native file editing, search, exec and terminals, with nothing installed on the remote host.",
@@ -54,9 +54,27 @@
     "rollup": "^4.65.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-fs": "*",
-    "@deepseek-ai/dsh-fs-sandbox": "*",
-    "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/schemastery": "*"
-  }
+    "@deepseek-ai/dsh-fs": ">=0.0.1-rc.1 <0.2.0 || >=0.2.1-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-fs-sandbox": ">=0.0.1-rc.1 <0.2.0 || >=0.2.1-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1 <0.2.0 || >=0.2.1-rc.1 <0.3.0-0",
+    "@deepseek-ai/schemastery": ">=0.0.1-rc.1 <0.2.0 || >=0.2.1-rc.1 <0.3.0-0"
+  },
+  "license": "MIT",
+  "author": "fanrj3",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fanrj3/dsh-presence.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fanrj3/dsh-presence/issues"
+  },
+  "homepage": "https://github.com/fanrj3/dsh-presence#readme",
+  "keywords": [
+    "dsh-plugin",
+    "ssh",
+    "remote-development",
+    "terminal",
+    "mcp",
+    "agent-tools"
+  ]
 }

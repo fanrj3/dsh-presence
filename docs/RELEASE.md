@@ -1,5 +1,18 @@
 # Presence 发布说明（Release）
 
+## v0.17.2 — 2026-10-25
+
+发布准备版本（功能与 0.17.1 一致）：仓库开源（MIT）、元数据补全，便于插件市场收录。
+
+- MIT LICENSE；`package.json` 增加 `license` / `repository` / `bugs` / `homepage` / `keywords`
+- peerDependencies 改成显式预发布分支 `>=0.0.1-rc.1 <0.2.0 || >=0.2.1-rc.1 <0.3.0-0`，
+  避免静默排除 harness 的 `0.2.x-rc.*` 构建（awesome-dsh-plugin 收录指南的要求）
+- 新增市场图标 `assets/icon-180.png`（GitHub 托管位图）与 `screenshots.json`
+- README 顶部增加徽章、MCP 说明与封面截图
+
+产物：[presence-plugin-0.17.2.zip](../dist/presence-plugin-0.17.2.zip) ·
+`dsh-presence-0.17.2.tgz`（npm pack，附在 GitHub Release）
+
 ## v0.17.1 — 2026-10-25
 
 产物：[`dist/presence-plugin-0.17.1.zip`](../dist/presence-plugin-0.17.1.zip) · SHA-256 `3ac6d54bc967f3e464dad5532b5de9ae4b7c212c2f389bc232fb67e198db8cfb` · 1.10 MB
