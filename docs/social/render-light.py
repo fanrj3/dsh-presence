@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parents[2]
 SHOTS = ROOT / "docs" / "image"
+ICONS = Path(__file__).resolve().parent / "icons"
 OUT = Path(__file__).resolve().parent / "light"
 W, H = 1080, 1440
 FONT_DIR = Path("C:/Windows/Fonts")
@@ -35,6 +36,13 @@ LINE = (203, 213, 225)
 
 def font(path, size):
     return ImageFont.truetype(str(path), size) if path.exists() else ImageFont.load_default()
+
+
+def icon_img(key: str, size: int = 30) -> Image.Image | None:
+    path = ICONS / f"{key}.png"
+    if not path.exists():
+        return None
+    return Image.open(path).convert("RGBA").resize((size, size), Image.LANCZOS)
 
 
 def has_cjk(text: str) -> bool:
@@ -101,12 +109,16 @@ def brand(c: Image.Image, badge="DSH 插件") -> None:
     id_.line([(35, 44), (45, 44)], fill=(255, 255, 255), width=4)
     c.alpha_composite(icon, (96, 92))
     d.text((186, 104), "Presence", font=font(FONT_CN_BOLD, 34), fill=INK)
-    bf = font(FONT_CN, 21)
-    bw = tw(d, badge, bf) + 40
+    scale = 4
+    bf = font(FONT_CN, 21 * scale)
+    bw = int(tw(d, badge, bf) / scale) + 40
     bx, by = W - 96 - bw, 96
-    d.rounded_rectangle([bx, by, bx + bw, by + 42], radius=999, fill=(255, 255, 255, 220),
-                        outline=(47, 107, 255, 46), width=1)
-    d.text((bx + 20, by + 8), badge, font=bf, fill=SLATE)
+    layer = Image.new("RGBA", (bw * scale, 44 * scale), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(layer)
+    ld.rounded_rectangle([0, 0, bw * scale - 1, 44 * scale - 1], radius=999 * scale,
+                         fill=(255, 255, 255, 220), outline=(47, 107, 255, 46), width=scale)
+    ld.text((20 * scale, 9 * scale), badge, font=bf, fill=SLATE)
+    c.alpha_composite(layer.resize((bw, 44), Image.LANCZOS), (bx, by))
 
 
 def headline(d, lines, top, size=86):
@@ -266,9 +278,9 @@ def build_cover() -> Image.Image:
     c.alpha_composite(term, (x, y0))
 
     cx = 96
-    for label in ["零安装", "断线重连", "端口转发"]:
+    for label in ["远程机器零安装", "断线重连", "端口转发"]:
         cx += pill(d, cx, 1130, label) + 12
-    footer(d, "01 / 07")
+    footer(d, "")
     c.alpha_composite(grain())
     return c.convert("RGB")
 
@@ -346,7 +358,7 @@ def build_tools() -> Image.Image:
     d = ImageDraw.Draw(c)
     brand(c)
     y = headline(d, [("14 个工具", False), ("和本地一样顺手", True)], 210, 88)
-    sub(d, y + 4, "全部走同一条常驻连接 · 远端零安装", 26)
+    sub(d, y + 4, "全部走同一条常驻连接 · 远程机器零安装", 26)
     col_x = [96, 558]
     card_w, card_h, gap = 426, 72, 10
     top = 620
@@ -364,10 +376,12 @@ def build_tools() -> Image.Image:
         d = ImageDraw.Draw(c)
         d.rounded_rectangle([x + 12, cy + 12, x + 60, cy + 60], radius=14, fill=(239, 246, 255, 255),
                             outline=(191, 219, 254, 200), width=1)
-        icon(d, x + 22, cy + 22, 28, key, color=BLUE)
+        glyph = icon_img(key, 30)
+        if glyph is not None:
+            c.alpha_composite(glyph, (x + 21, cy + 21))
         d.text((x + 74, cy + 13), name, font=font(FONT_MONO, 20), fill=INK)
         d.text((x + 74, cy + 40), desc, font=font(FONT_CN, 17), fill=SLATE)
-    footer(d, "02 / 07")
+    footer(d, "")
     c.alpha_composite(grain())
     return c.convert("RGB")
 
@@ -405,22 +419,10 @@ def build_workflow() -> Image.Image:
         d.ellipse([x_line - 11, cy + 61, x_line + 11, cy + 83], fill=BLUE, outline=(255, 255, 255, 200), width=2)
         d.ellipse([x_card + 26, cy + 40, x_card + 94, cy + 108], fill=(239, 246, 255, 255),
                   outline=(191, 219, 254, 220), width=1)
-        # node glyphs
-        cx, cyc = x_card + 60, cy + 74
-        if kind == "chat":
-            d.rounded_rectangle([cx - 16, cyc - 12, cx + 16, cyc + 12], radius=8, outline=BLUE, width=3)
-            d.line([(cx - 6, cyc + 12), (cx - 2, cyc + 20)], fill=BLUE, width=3)
-        elif kind == "agent":
-            d.rounded_rectangle([cx - 16, cyc - 12, cx + 16, cyc + 14], radius=8, outline=BLUE, width=3)
-            d.ellipse([cx - 8, cyc - 8, cx - 3, cyc - 3], fill=BLUE)
-            d.ellipse([cx + 3, cyc - 8, cx + 8, cyc - 3], fill=BLUE)
-        elif kind == "link":
-            d.line([(cx - 16, cyc), (cx + 16, cyc)], fill=BLUE, width=3)
-            d.arc([cx - 20, cyc - 16, cx + 20, cyc + 16], start=200, end=340, fill=BLUE, width=3)
-        else:
-            d.rounded_rectangle([cx - 16, cyc - 14, cx + 16, cyc + 14], radius=5, outline=BLUE, width=3)
-            d.line([(cx - 8, cyc + 2), (cx - 2, cyc + 8), (cx - 8, cyc + 13)], fill=BLUE, width=3, joint="curve")
-            d.line([(cx - 1, cyc + 13), (cx + 9, cyc + 13)], fill=BLUE, width=3)
+        # node icon (real icon set)
+        glyph = icon_img(kind, 34)
+        if glyph is not None:
+            c.alpha_composite(glyph, (x_card + 43, cy + 57))
         d.text((x_card + 116, cy + 26), num, font=font(FONT_MONO, 18), fill=BLUE)
         d.text((x_card + 160, cy + 20), title, font=font(FONT_CN_BOLD, 34), fill=INK)
         d.text((x_card + 116, cy + 84), desc, font=font(FONT_CN, 21), fill=SLATE)
@@ -429,7 +431,7 @@ def build_workflow() -> Image.Image:
     cx = 96
     for label in ["零安装", "断线重连", "端口转发"]:
         cx += pill(d, cx, 1300, label) + 12
-    footer(d, "07 / 07")
+    footer(d, "")
     c.alpha_composite(grain())
     return c.convert("RGB")
 
@@ -441,8 +443,6 @@ def build_shot(name: str) -> Image.Image:
     brand(c)
     y = headline(d, cfg["title"], 196, 84)
     sub(d, y + 2, cfg["sub"], 26)
-    d.text((96, y + 48), "截图来自真实使用界面",
-           font=font(FONT_CN, 18), fill=MUTED)
 
     src = Image.open(SHOTS / cfg["file"]).convert("RGBA")
     cx0, cy0, cx1, cy1 = cfg.get("crop", (0, 0, src.width, src.height))
@@ -455,10 +455,7 @@ def build_shot(name: str) -> Image.Image:
     x = (W - card_w) // 2
     top = 512
     shot_card(c, (x, top, card_w, card_h), src)
-    d = ImageDraw.Draw(c)
-    for number, (nx, ny) in enumerate(cfg["marks"], start=1):
-        callout(d, x + 10 + int(nx * inner_w), top + 10 + int(ny * inner_h), number)
-    footer(d, cfg["page"])
+    footer(d, "")
     c.alpha_composite(grain())
     return c.convert("RGB")
 

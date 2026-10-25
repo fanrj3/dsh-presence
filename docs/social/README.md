@@ -178,6 +178,9 @@ Presence 建议视觉系统（模板里已经用上）：
 | `workflow.png` | 你说 → Agent → 常驻 SSH → 远程机器 |
 
 说明：
-- 截图**未做打码**（你后续自己处理）；重新生成：`python docs/social/render-light.py`。
+- 图标改为 **Lucide** 开源图标集（SVG 经 resvg 转 PNG，`docs/social/icons/`），不再是手绘；
+- 去掉了截图上的 ①②③ 序号与页码，胶囊徽章改为 4x 超采样绘制（无锯齿）；
+- 文案把“零安装”明确为**远程机器零安装**；
+- 截图**未做打码**（你后续自己处理）；重新生成：`python docs/social/render-light.py`（图标需先跑 `node .scratch/render-icons.mjs`）。
 - 原截图是 1x（452–800px 宽），放进卡片会**放大 1.0–1.6 倍**，文字略软。想要更锐利，重截时用 2x/Retina（或把窗口放大到 1200–1600px 宽再截），我再重出。
 - 卡片页布局：标题区 196–500px、截图卡片 512 起、页脚 1292、底部安全区 200px 全部留空。
