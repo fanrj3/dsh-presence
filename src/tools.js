@@ -17,6 +17,9 @@ const EXEC_OUTPUT_CAP = 16 * 1024;
 const READ_CAP = 32 * 1024 * 1024;
 const EXPORT_CAP = 64 * 1024 * 1024;
 const WAIT_PORT_TIMEOUT_MS = 15_000;
+const READ_MANY_MAX_FILES = 50;
+const DIFF_LINE_CAP = 100;
+const DIFF_BYTE_CAP = 8 * 1024;
 
 function shq(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -174,6 +177,132 @@ function formatMtime(milliseconds) {
   return new Date(value).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, 'Z');
 }
 
+/** A compact octal mode such as "0644", or null when the exact mode is unknown. */
+function modeLabel(mode) {
+  if (!Number.isInteger(mode) || mode < 0) return null;
+  return `0${(mode & 0o7777).toString(8).padStart(3, '0')}`;
+}
+
+/**
+ * Trash entries carry movedAt as an ISO string, but older callers may pass
+ * epoch milliseconds (or a numeric string). Normalize both to milliseconds so
+ * formatMtime never receives a string and renders an empty cell.
+ */
+function toMtimeMs(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return null;
+    if (/^-?\d+(?:\.\d+)?$/u.test(text)) {
+      const numeric = Number(text);
+      return Number.isFinite(numeric) ? numeric : null;
+    }
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function toISO(milliseconds) {
+  const value = Number(milliseconds);
+  if (!Number.isFinite(value)) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+// Common-prefix/common-suffix diff with +/- context lines. No LCS: this is
+// meant to let an agent verify one exact replacement, not to merge files.
+function diffLines(before, after, { context = 2, maxLines = DIFF_LINE_CAP, maxBytes = DIFF_BYTE_CAP } = {}) {
+  if (before === after) return '(no changes)';
+  const oldLines = String(before ?? '').split('\n');
+  const newLines = String(after ?? '').split('\n');
+  const shared = Math.min(oldLines.length, newLines.length);
+  let prefix = 0;
+  while (prefix < shared && oldLines[prefix] === newLines[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < shared - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  const oldChangeStart = prefix;
+  const newChangeStart = prefix;
+  const oldChangeEnd = oldLines.length - suffix;
+  const newChangeEnd = newLines.length - suffix;
+  const oldStart = Math.max(0, oldChangeStart - context);
+  const newStart = Math.max(0, newChangeStart - context);
+  const oldEnd = Math.min(oldLines.length, oldChangeEnd + context);
+  const newEnd = Math.min(newLines.length, newChangeEnd + context);
+  const num = (value) => String(value).padStart(5);
+  const rows = [`@@ -${oldStart + 1},${oldEnd - oldStart} +${newStart + 1},${newEnd - newStart} @@`];
+  for (let index = oldStart; index < oldChangeStart; index += 1) {
+    rows.push(`${num(index + 1)}   ${oldLines[index]}`);
+  }
+  for (let index = oldChangeStart; index < oldChangeEnd; index += 1) {
+    rows.push(`${num(index + 1)} - ${oldLines[index]}`);
+  }
+  for (let index = newChangeStart; index < newChangeEnd; index += 1) {
+    rows.push(`${num(index + 1)} + ${newLines[index]}`);
+  }
+  for (let index = 0; index < context && oldChangeEnd + index < oldEnd; index += 1) {
+    const line = oldChangeEnd + index;
+    rows.push(`${num(line + 1)}   ${oldLines[line]}`);
+  }
+  const total = rows.length;
+  const text = rows.length > maxLines
+    ? `${rows.slice(0, maxLines).join('\n')}\n... diff truncated (${total - maxLines} more lines)`
+    : rows.join('\n');
+  return clip(text, maxBytes);
+}
+
+/**
+ * One remote text file as the read tools see it: the raw window (byte-exact
+ * within the window), the same window as clean display lines, and the paging
+ * facts. Files past READ_CAP are windowed on the far side so the line count is
+ * true instead of invented.
+ */
+async function readFileWindow(connection, target, { offset = 1, limit = 2000 } = {}) {
+  const first = Math.max(1, Number(offset) || 1);
+  const count = Math.max(1, Number(limit) || 2000);
+  const info = await connection.stat(target);
+  if (!info.exists) throw new Error(`${target} does not exist`);
+  if (info.isDir) throw new Error(`${target} is a directory; use presence_exec with ls`);
+  if (info.size > READ_CAP) {
+    const windowed = await connection.readTextWindow(target, { lineOffset: first, lineLimit: count });
+    const totalLines = windowed.totalLines;
+    if (first > totalLines && totalLines > 0) {
+      throw new Error(`offset ${first} is past the end of ${target} (${totalLines} lines)`);
+    }
+    const rawWindow = String(windowed.content ?? '');
+    const display = rawWindow.replace(/\r/g, '');
+    const lines = display === '' ? [] : display.split('\n');
+    const endLine = first + lines.length - 1;
+    return { info, totalLines, rawWindow, lines, offset: first, truncated: endLine < totalLines || windowed.truncated === true };
+  }
+  const { content } = await connection.readText(target, { length: Math.min(info.size, READ_CAP) });
+  if (content.includes('\u0000')) {
+    throw new Error(
+      `${target} looks binary (${info.size} bytes, contains NUL). This tool reads text only. ` +
+        'Use presence_exec with `head -c`, `file`, or `presence_terminal` to inspect it.',
+    );
+  }
+  const lines = content.split('\n').map((line) => line.replace(/\r$/, ''));
+  if (lines.at(-1) === '') lines.pop();
+  const totalLines = lines.length;
+  const rawWindow = content.split('\n').slice(first - 1, first - 1 + count).join('\n');
+  const window = lines.slice(first - 1, first - 1 + count);
+  return { info, totalLines, rawWindow, lines: window, offset: first, truncated: first - 1 + window.length < totalLines };
+}
+
+/** The footer presence_read appends when numbering is on. */
+function readFooter({ offset, lines, totalLines }) {
+  const end = offset + lines.length - 1;
+  return end < totalLines
+    ? `(Showing lines ${offset}-${end} of ${totalLines}. Use offset=${end + 1} to continue.)`
+    : `(End of file - ${totalLines} lines)`;
+}
+
 const DEFAULT_TAIL_LINES = 40;
 const MAX_TAIL_LINES = 500;
 // A full-screen replay is worth recognizing as such: a tty dump of a few
@@ -253,6 +382,44 @@ function formatWaitReport(job, { timeoutMs, tailLines }) {
   parts.push(`--- last ${tailLines} line(s) ---`);
   parts.push(job.logTail ? clip(job.logTail) : '(log is empty or unreadable)');
   return parts.join('\n');
+}
+
+/** One background job in a stable, model-facing shape (also the JSON payload). */
+function jobRecord(job) {
+  return {
+    id: job.id,
+    host: job.host,
+    state: job.state ?? 'unknown',
+    exitCode: job.exitCode ?? null,
+    exitSignal: job.exitSignal ?? null,
+    pid: job.pid ?? null,
+    label: job.label ? stripPipefailPrelude(job.label) : null,
+    startedAt: job.startedAt ?? null,
+    logPath: job.logPath ?? null,
+    logSize: job.logSize ?? null,
+    command: job.command ? stripPipefailPrelude(job.command) : null,
+    cwd: job.cwd ?? null,
+  };
+}
+
+/** Whether a pid still exists on its host; `verified` is false when the probe failed. */
+async function verifyPidAlive(pool, host, pid) {
+  const value = Number(pid);
+  if (!Number.isInteger(value) || value <= 1) return { alive: null, verified: false };
+  try {
+    const connection = await pool.connection(host);
+    const probe = await connection.exec(`ps -p ${value} -o pid= 2>/dev/null`, { timeoutMs: 5_000 });
+    return { alive: String(probe.stdout ?? '').trim() !== '', verified: true };
+  } catch {
+    return { alive: null, verified: false };
+  }
+}
+
+/** A verified stop is reported the same way for a jobId and a raw pgid. */
+function stopSummary(result, check) {
+  const exit = `exit=${result.exitCode ?? '-'}${result.exitSignal ? ` signal=${result.exitSignal}` : ''}`;
+  const verify = `pid ${result.pid ?? '?'} alive=${check.alive === null ? 'unknown' : check.alive} verified=${check.verified}`;
+  return `${verify}  ${exit}`;
 }
 
 const textOutput = (description) => ({
@@ -413,7 +580,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_exec',
       description:
-        'Run a shell command on a remote machine and return its exit code, stdout and stderr. Inside a workspace the machine and working directory come from the session itself, so no host is needed. The connection persists between calls. Commands run with `set -o pipefail` by default, so `cmd | tail` reports cmd\'s real failure; pass pipefail:false to disable. For servers or long jobs use background:true instead of `&`: it returns a job id, takes an optional label, and can wait until a port is listening with waitForPort.\n\nDESTRUCTIVE COMMANDS (`rm -r/-f`, `git clean -fdx`, `find -delete`, `shred`, `truncate`, `dd of=`) are dry-run first: the tool shows every resolved target and refuses workspace roots, ancestors, home, `/` and `.git` metadata. Re-run with confirm:true to execute; prefer presence_trash for recoverable deletes. Output is ANSI-stripped and middle-truncated by default.',
+        'Run a shell command on a remote machine and return its exit code, stdout and stderr. Inside a workspace the machine and working directory come from the session itself, so no host is needed. The connection persists between calls. Commands run with `set -o pipefail` by default, so `cmd | tail` reports cmd\'s real failure; pass pipefail:false to disable. For servers or long jobs use background:true instead of `&`: it returns a job id, takes an optional label, and can wait until a port is listening with waitForPort. format:\'json\' returns one text block of JSON ({cwd, command, exitCode, signal, durationMs, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated}) with stdout/stderr clipped to 16 KiB each; saveStdout writes a successful foreground command\'s stdout to a remote file.\n\nDESTRUCTIVE COMMANDS (`rm -r/-f`, `git clean -fdx`, `find -delete`, `shred`, `truncate`, `dd of=`) are dry-run first: the tool shows every resolved target and refuses workspace roots, ancestors, home, `/` and `.git` metadata. Re-run with confirm:true to execute; prefer presence_trash for recoverable deletes. Output is ANSI-stripped and middle-truncated by default.',
       parameters: {
         host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
         command: { type: 'string', required: true, description: 'Command line, interpreted by the remote shell.' },
@@ -431,6 +598,15 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           description: 'Max characters of stdout/stderr shown inline. Defaults to 16384 (up to 262144); the full output is always written to a log file whose path is reported.',
         },
         raw: { type: 'boolean', description: 'Keep ANSI escape sequences in the output. Defaults to false (stripped).' },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: {cwd, command, exitCode, signal, durationMs, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated}. Streams are clipped to 16 KiB each. Defaults to text.',
+        },
+        saveStdout: {
+          type: 'string',
+          description: 'After a successful (exit 0) foreground command, write stdout to this remote path atomically (parent directories are created) and report path+bytes. Skipped with a note for a non-zero exit or a background job.',
+        },
         waitForPort: {
           type: 'number',
           description: 'For background: TCP port to wait for on 127.0.0.1 (up to 15s) before returning, and report whether it is listening. Ignored for foreground commands.',
@@ -525,9 +701,13 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
                 : `port ${args.waitForPort} is NOT listening on ${host} after ${outcome.waitedMs}ms 鈥?check the log: tail -n 50 ${job.logPath}`,
             );
           }
+          if (args.saveStdout) {
+            parts.push('stdout not saved: a background job already writes its output to the log above');
+          }
           return parts.join('\n');
         }
 
+        const saveTarget = args.saveStdout ? await remotePath(connection, workspace, args.saveStdout) : null;
         let command = args.command;
         if (directory) command = `cd ${shq(directory)} && ${command}`;
         if (pipefail) command = `${pipefailPrelude()}${command}`;
@@ -537,10 +717,52 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         } catch (error) {
           throw new Error(withSandboxNote(error?.message ?? String(error)));
         }
+
+        let savedStdout = null;
+        let saveError = null;
+        if (saveTarget && result.code === 0) {
+          try {
+            const parent = saveTarget.includes('/') ? saveTarget.slice(0, saveTarget.lastIndexOf('/')) : '';
+            if (parent) {
+              const made = await connection.exec(`mkdir -p ${shq(parent)}`, { timeoutMs: 30_000 });
+              if (made.code !== 0) {
+                throw new Error(`cannot create ${parent}: ${made.stderr.trim() || `exit ${made.code}`}`);
+              }
+            }
+            const written = await connection.writeText(saveTarget, result.stdout ?? '');
+            savedStdout = { path: saveTarget, sizeBytes: written.bytes };
+          } catch (error) {
+            saveError = error?.message ?? String(error);
+          }
+        }
+
+        const plain = (value) => (args.raw ? String(value ?? '') : stripAnsi(value));
+        if (args.format === 'json') {
+          const stdoutRaw = plain(result.stdout);
+          const stderrRaw = plain(result.stderr);
+          const payload = {
+            cwd: directory ?? null,
+            command: args.command,
+            exitCode: result.code ?? null,
+            signal: result.signal ?? null,
+            durationMs: result.durationMs ?? null,
+            timedOut: result.timedOut === true,
+            stdout: clip(stdoutRaw, EXEC_OUTPUT_CAP),
+            stderr: clip(stderrRaw, EXEC_OUTPUT_CAP),
+            stdoutTruncated: result.stdoutTruncated === true || stdoutRaw.length > EXEC_OUTPUT_CAP,
+            stderrTruncated: result.stderrTruncated === true || stderrRaw.length > EXEC_OUTPUT_CAP,
+          };
+          if (savedStdout) payload.savedStdout = savedStdout;
+          if (saveError) payload.savedStdoutError = saveError;
+          if (saveTarget && !savedStdout && !saveError) {
+            payload.savedStdoutSkipped = { path: saveTarget, reason: `exit ${result.code ?? '?'} is not 0` };
+          }
+          return JSON.stringify(payload, null, 2);
+        }
+
         const parts = [`exit: ${result.code}  (${result.durationMs}ms)`];
         if (result.timedOut) parts.push('timed out 鈥?the remote process tree was terminated');
         const inlineCap = Math.max(1000, Math.min(Number(args.maxOutput) || EXEC_OUTPUT_CAP, 256 * 1024));
-        const plain = (value) => (args.raw ? String(value ?? '') : stripAnsi(value));
         const note = (stream) => {
           const captured = plain(stream === 'stdout' ? result.stdout : result.stderr);
           const truncated = stream === 'stdout' ? result.stdoutTruncated : result.stderrTruncated;
@@ -573,6 +795,13 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
               '`sed -i`/`perl -pi`/`python -c` rewrites bypass the atomic write and the ambiguity check.',
           );
         }
+        if (savedStdout) {
+          parts.push(`stdout saved to ${savedStdout.path} (${savedStdout.sizeBytes} bytes)`);
+        } else if (saveError) {
+          parts.push(`stdout save to ${saveTarget} failed: ${saveError}`);
+        } else if (saveTarget) {
+          parts.push(`stdout not saved to ${saveTarget}: exit ${result.code ?? '?'} is not 0`);
+        }
         return parts.join('\n');
       },
     }),
@@ -580,70 +809,89 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_read',
       description:
-        'Read a text file on a remote machine. Inside a workspace, relative paths resolve against the workspace root and the machine comes from the workspace. Returns line-numbered content, like reading a local file. Use offset/limit for large files.',
+        'Read a text file on a remote machine. Inside a workspace, relative paths resolve against the workspace root and the machine comes from the workspace. Returns line-numbered content with a line-count footer, like reading a local file. Use offset/limit for large files. Pass `raw:true` for the exact file content with no path header, no line numbers and no footer; pass `numbered:false` for unnumbered content that keeps the path header.',
       parameters: {
         host: { type: 'string', description: 'ssh alias. Defaults to the active workspace\'s machine.' },
         path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
         offset: { type: 'number', description: '1-based first line to return. Defaults to 1.' },
         limit: { type: 'number', description: 'Maximum lines to return. Defaults to 2000.' },
+        numbered: {
+          type: 'boolean',
+          description: 'Prefix each line with its line number and append the line-count footer. Defaults to true; pass false for unnumbered content with no footer.',
+        },
+        raw: {
+          type: 'boolean',
+          description: 'Return exactly the file content: no path header, no line numbers and no line-count footer. Defaults to false.',
+        },
       },
       async execute(args, exec) {
         const { host, workspace } = await pickScope(args, exec);
         const connection = await pool.connection(host);
         const target = await remotePath(connection, workspace, args.path);
-        const info = await connection.stat(target);
-        if (!info.exists) throw new Error(`${target} does not exist on ${host}`);
-        if (info.isDir) throw new Error(`${target} is a directory; use presence_exec with ls`);
-
-        const offset = Math.max(1, args.offset ?? 1);
-        const limit = Math.max(1, args.limit ?? 2000);
-
-        // Large files: read the requested window on the remote side and ask the
-        // remote for the true line count, instead of truncating the content and
-        // then reporting a made-up total.
-        if (info.size > READ_CAP) {
-          const windowed = await connection.readTextWindow(target, { lineOffset: offset, lineLimit: limit });
-          const totalLines = windowed.totalLines;
-          if (offset > totalLines && totalLines > 0) {
-            throw new Error(`offset ${offset} is past the end of ${target} (${totalLines} lines)`);
-          }
-          const body = String(windowed.content ?? '').replace(/\r/g, '').replace(/\n$/, '');
-          const window = body === '' ? [] : body.split('\n');
-          const numbered = window.map((line, index) => `${offset + index}: ${line}`).join('\n');
-          const endLine = offset + window.length - 1;
-          const footer =
-            endLine < totalLines
-              ? `(Showing lines ${offset}-${endLine} of ${totalLines}. Use offset=${endLine + 1} to continue.)`
-              : `(End of file - ${totalLines} lines)`;
-          await markObserved(exec, args.path);
-          return `<path>${target}</path>\n${numbered}\n\n${footer}`;
-        }
-
-        const { content } = await connection.readText(target, { length: Math.min(info.size, READ_CAP) });
-        if (content.includes('\u0000')) {
-          throw new Error(
-            `${target} looks binary (${info.size} bytes, contains NUL). This tool reads text only. ` +
-              'Use presence_exec with `head -c`, `file`, or `presence_terminal` to inspect it.',
-          );
-        }
-        const lines = content.split('\n').map((line) => line.replace(/\r$/, ''));
-        if (lines.at(-1) === '') lines.pop();
-        const window = lines.slice(offset - 1, offset - 1 + limit);
-        const end = Math.min(lines.length, offset - 1 + window.length);
-        const numbered = window.map((line, index) => `${offset + index}: ${line}`).join('\n');
-        const footer =
-          end < lines.length
-            ? `(Showing lines ${offset}-${end} of ${lines.length}. Use offset=${end + 1} to continue.)`
-            : `(End of file - ${lines.length} lines)`;
+        const view = await readFileWindow(connection, target, { offset: args.offset, limit: args.limit });
+        const raw = args.raw === true;
+        const numbered = !raw && args.numbered !== false;
+        const body = numbered
+          ? view.lines.map((line, index) => `${view.offset + index}: ${line}`).join('\n')
+          : view.rawWindow;
         await markObserved(exec, args.path);
-        return `<path>${target}</path>\n${numbered}\n\n${footer}`;
+        if (raw) return body;
+        const footer = numbered ? `\n\n${readFooter(view)}` : '';
+        return `<path>${target}</path>\n${body}${footer}`;
+      },
+    }),
+
+    tool({
+      name: 'presence_read_many',
+      description:
+        'Read several text files on one remote machine in a single call (1-50 paths). Each file becomes one "=== <path> ===" section: numbered lines by default, verbatim with raw:true, and only the first limit lines. An unreadable file is reported inline as "error: ..." instead of failing the whole call. The total output is clipped to 32 KiB with a truncation note.',
+      parameters: {
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          required: true,
+          description: 'Remote paths (absolute, ~/..., presence://host/path, or workspace-relative). 1-50 entries.',
+        },
+        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        raw: { type: 'boolean', description: 'Return verbatim content without line numbers. Defaults to false (numbered lines).' },
+        limit: { type: 'number', description: 'Maximum lines per file. Defaults to 2000.' },
+      },
+      async execute(args, exec) {
+        const { host, workspace } = await pickScope(args, exec);
+        const connection = await pool.connection(host);
+        const inputs = Array.isArray(args.paths) ? args.paths : [];
+        if (inputs.length === 0) throw new Error('paths is required: pass 1-50 remote paths');
+        if (inputs.length > READ_MANY_MAX_FILES) {
+          throw new Error(`presence_read_many reads at most ${READ_MANY_MAX_FILES} files per call, got ${inputs.length}`);
+        }
+        const limit = Math.max(1, Number(args.limit) || 2000);
+        const raw = args.raw === true;
+        const sections = [];
+        for (const input of inputs) {
+          let target = String(input);
+          try {
+            target = await remotePath(connection, workspace, input);
+            const view = await readFileWindow(connection, target, { offset: 1, limit });
+            const body = raw
+              ? view.rawWindow
+              : view.lines.map((line, index) => `${index + 1}: ${line}`).join('\n');
+            const note = view.truncated
+              ? `\n... [truncated: showing ${view.lines.length} of ${view.totalLines} lines]`
+              : '';
+            sections.push(`=== ${target} ===\n${body}${note}`);
+            await markObserved(exec, input);
+          } catch (error) {
+            sections.push(`=== ${target} ===\nerror: ${error?.message ?? String(error)}`);
+          }
+        }
+        return clip(sections.join('\n\n'));
       },
     }),
 
     tool({
       name: 'presence_write',
       description:
-        'Create or fully replace a file on a remote machine. Missing parent directories are created. Inside a workspace, relative paths resolve against the workspace root. The write is atomic (temp file + rename), so a reader never sees a half-written file. An existing file keeps its mode (e.g. 0755 stays executable); pass `mode` to set one explicitly.',
+        'Create or fully replace a file on a remote machine. Missing parent directories are created. Inside a workspace, relative paths resolve against the workspace root. The write is atomic (temp file + rename), so a reader never sees a half-written file. An existing file keeps its mode (e.g. 0755 stays executable); pass `mode` to set one explicitly. After writing, the remote file is stat-ed and the result reports its actual size, octal mode and sha256.',
       parameters: {
         host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
         path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
@@ -651,6 +899,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         mode: {
           type: 'string',
           description: 'Octal file mode to set, e.g. "755" or "644". Defaults to the existing file\'s mode, or 644 for a new file.',
+        },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: {path, sizeBytes, mode, sha256}. `mode` is the actual octal string such as "0644". Defaults to text.',
         },
       },
       async execute(args, exec) {
@@ -663,10 +916,18 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           const made = await connection.exec(`mkdir -p ${shq(parent)}`, { timeoutMs: 30_000 });
           if (made.code !== 0) throw new Error(`cannot create parent directory ${parent}: ${made.stderr.trim()}`);
         }
-        const result = await connection.writeText(target, args.content, { mode: parseMode(args.mode) });
+        const payload = Buffer.from(args.content ?? '', 'utf8');
+        const digest = createHash('sha256').update(payload).digest('hex');
+        const result = await connection.writeText(target, payload, { mode: parseMode(args.mode) });
+        const info = await connection.stat(target);
+        const sizeBytes = info.exists ? info.size : result.bytes;
+        const mode = info.exists ? info.mode : result.mode;
+        const octal = modeLabel(mode);
         await markObserved(exec, args.path);
-        const modeText = typeof result.mode === 'number' ? ` mode ${result.mode.toString(8).padStart(3, '0')}` : '';
-        return `wrote ${result.bytes} bytes to ${target} on ${host}${modeText}`;
+        if (args.format === 'json') {
+          return JSON.stringify({ path: target, sizeBytes, mode: octal, sha256: digest }, null, 2);
+        }
+        return `wrote ${sizeBytes} bytes to ${target} on ${host} mode ${octal ?? 'unknown'} sha256 ${digest.slice(0, 16)}`;
       },
     }),
 
@@ -788,9 +1049,14 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
       parameters: {
         action: { type: 'string', required: true, enum: ['trash', 'list', 'restore'], description: 'What to do.' },
         host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
-        path: { type: 'string', description: 'For trash: the remote path to move into the trash.' },
+        path: { type: 'string', description: 'For trash: the remote path to move into the trash. For list: substring filter on trashPath/name.' },
         trashPath: { type: 'string', description: 'For restore: the path returned by trash (the container), not the original location.' },
         to: { type: 'string', description: 'For restore: where to put it back, e.g. the original path.' },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON. trash => {trashPath, sizeBytes, sourceRemoved, strategy, restoreHint}; list => array of {trashPath, name, movedAt, movedAtMs, movedAtISO}; restore => {restored, from, to}. Defaults to text.',
+        },
       },
       async execute(args, exec) {
         const { host, workspace } = await pickScope(args, exec);
@@ -800,23 +1066,55 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           if (typeof connection.trash !== 'function') throw new Error('this Presence build has no trash support; update the plugin');
           const target = await remotePath(connection, workspace, args.path);
           const result = await connection.trash(target);
+          const after = await connection.stat(target).catch(() => null);
+          const sourceRemoved = after ? after.exists !== true : false;
+          const sizeBytes = result.size ?? null;
+          const restoreHint = `presence_trash {action:'restore', trashPath:${JSON.stringify(result.trashPath)}, to:${JSON.stringify(target)}}`;
+          if (args.format === 'json') {
+            return JSON.stringify(
+              { trashPath: result.trashPath, sizeBytes, sourceRemoved, strategy: result.strategy, restoreHint },
+              null,
+              2,
+            );
+          }
           return (
             `moved to trash on ${host}\n` +
             `original: ${target}\n` +
             `trash: ${result.trashPath}\n` +
-            `${result.entries ?? '?'} files, ${result.size ?? '?'}\n` +
-            `restore with presence_trash {action:'restore', trashPath:'${result.trashPath}', to:'${target}'}`
+            `${result.entries ?? '?'} files, ${sizeBytes === null ? 'size unknown' : formatBytes(sizeBytes)}\n` +
+            `source removed: ${sourceRemoved ? 'yes' : 'no'}\n` +
+            `restore with ${restoreHint}`
           );
         }
         if (args.action === 'list') {
           if (typeof connection.listTrash !== 'function') throw new Error('this Presence build has no trash support; update the plugin');
-          const entries = await connection.listTrash({ limit: 20 });
-          if (entries.length === 0) return `trash is empty on ${host}`;
-          return entries.map((entry) => `${entry.movedAt ?? '?'}  ${entry.trashPath}`).join('\n');
+          const needle = args.path === undefined || args.path === null ? '' : String(args.path).trim();
+          // A filter should search more than the newest page, then sort/trim.
+          const entries = await connection.listTrash({ limit: needle ? 1000 : 20 });
+          const rows = entries
+            .filter((entry) => !needle || entry.trashPath.includes(needle) || String(entry.name ?? '').includes(needle))
+            .map((entry) => {
+              const movedAtMs = toMtimeMs(entry.movedAt);
+              return {
+                trashPath: entry.trashPath,
+                name: entry.name,
+                movedAt: entry.movedAt ?? null,
+                movedAtMs,
+                movedAtISO: toISO(movedAtMs),
+              };
+            })
+            .sort((a, b) => (b.movedAtMs ?? 0) - (a.movedAtMs ?? 0));
+          if (args.format === 'json') return JSON.stringify(rows, null, 2);
+          if (rows.length === 0) return `trash is empty on ${host}${needle ? ` for "${needle}"` : ''}`;
+          return clip(rows.map((row) => `${formatMtime(row.movedAtMs ?? Number.NaN)}  ${row.trashPath}`).join('\n'));
         }
         if (!args.trashPath) throw new Error('restore requires trashPath');
+        if (!args.to) throw new Error('restore requires to (the original location; the container does not record it)');
         if (typeof connection.restoreTrash !== 'function') throw new Error('this Presence build has no trash support; update the plugin');
         const restored = await connection.restoreTrash(args.trashPath, { to: args.to });
+        if (args.format === 'json') {
+          return JSON.stringify({ restored: true, from: args.trashPath, to: restored.to ?? args.to }, null, 2);
+        }
         return `restored ${args.trashPath} to ${restored.to ?? args.to} on ${host}`;
       },
     }),
@@ -824,7 +1122,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_edit',
       description:
-        'Replace exact text inside a file on a remote machine. Use this 鈥?or the built-in `edit` tool, which also reaches the remote workspace 鈥?instead of `sed -i`, `perl -pi`, or `python -c` for remote edits: it is atomic, refuses an anchor that occurs more than once unless replaceAll is set, and reports how many occurrences changed. The file keeps its mode (an executable stays executable). Inside a workspace, relative paths resolve against the workspace root.',
+        'Replace exact text inside a file on a remote machine. Use this 鈥?or the built-in `edit` tool, which also reaches the remote workspace 鈥?instead of `sed -i`, `perl -pi`, or `python -c` for remote edits: it is atomic, refuses an anchor that occurs more than once unless replaceAll is set, and reports how many occurrences changed. Returns a compact diff of the changed lines (context +/-2, max 100 lines/8 KiB); dryRun:true validates the anchor and computes the same diff without writing. The file keeps its mode (an executable stays executable). Inside a workspace, relative paths resolve against the workspace root.',
       parameters: {
         host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
         path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
@@ -834,13 +1132,23 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         newString: { type: 'string', description: 'Alias for `new` (same spelling as the built-in edit tool).' },
         replaceAll: { type: 'boolean', description: 'Replace every occurrence. Defaults to false.' },
         replace_all: { type: 'boolean', description: 'Alias for replaceAll (same spelling as the built-in edit tool).' },
+        dryRun: {
+          type: 'boolean',
+          description: 'Validate the anchor and show the compact diff without writing the file. Defaults to false.',
+        },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: {path, replaced, dryRun, bytesBefore, bytesAfter, diff}. Defaults to text.',
+        },
       },
       async execute(args, exec) {
-        ensureWritable();
         const oldText = args.old ?? args.oldString;
         const newText = args.new ?? args.newString;
         if (typeof oldText !== 'string' || oldText === '') throw new Error('old (or oldString) is required');
         if (typeof newText !== 'string') throw new Error('new (or newString) is required');
+        const dryRun = args.dryRun === true;
+        if (!dryRun) ensureWritable();
         const { host, workspace } = await pickScope(args, exec);
         const connection = await pool.connection(host);
         const target = await remotePath(connection, workspace, args.path);
@@ -848,9 +1156,30 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         if (!info.exists) throw new Error(`${target} does not exist on ${host} 鈥?nothing to edit (use presence_write to create it)`);
         if (info.isDir) throw new Error(`${target} is a directory on ${host}`);
         const replaceAll = Boolean(args.replaceAll ?? args.replace_all);
-        const result = await connection.editText(target, oldText, newText, { replaceAll });
+        const before = (await connection.readText(target, { length: Number.MAX_SAFE_INTEGER })).content;
+        const occurrences = before.split(oldText).length - 1;
+        if (occurrences === 0) throw new Error('text to replace was not found');
+        if (occurrences > 1 && !replaceAll) {
+          throw new Error(`text occurs ${occurrences} times; pass replaceAll or a longer anchor`);
+        }
+        let replaced = replaceAll ? occurrences : 1;
+        let after = replaceAll ? before.split(oldText).join(newText) : before.replace(oldText, newText);
+        const bytesBefore = Buffer.byteLength(before, 'utf8');
+        let bytesAfter = Buffer.byteLength(after, 'utf8');
+        if (!dryRun) {
+          const result = await connection.editText(target, oldText, newText, { replaceAll });
+          replaced = result.replaced;
+          after = (await connection.readText(target, { length: Number.MAX_SAFE_INTEGER })).content;
+          bytesAfter = result.bytes;
+        }
+        const diff = diffLines(before, after);
         await markObserved(exec, args.path);
-        return `replaced ${result.replaced} occurrence(s) in ${target} on ${host} (${result.bytes} bytes now)`;
+        if (args.format === 'json') {
+          return JSON.stringify({ path: target, replaced, dryRun, bytesBefore, bytesAfter, diff }, null, 2);
+        }
+        const verb = dryRun ? 'would edit' : 'edited';
+        const note = dryRun ? ' (dry run; nothing written)' : '';
+        return `${verb} ${target} on ${host}: ${replaced} occurrence(s), ${bytesBefore} -> ${bytesAfter} bytes${note}\n${diff}`;
       },
     }),
 
@@ -970,20 +1299,25 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_jobs',
       description:
-        'List, wait for, or stop background commands started with presence_exec {background:true}. Jobs are detached process groups on the remote machine, so they survive the SSH connection. list is scoped to this session by default (all:true shows every session); wait follows a job until it exits or the timeout, returning its state, exit code, log size and log tail; stop takes a jobId, or a raw pgid + host when the job id was lost.',
+        'List, inspect, wait for, or stop background commands started with presence_exec {background:true}. Jobs are detached process groups on the remote machine, so they survive the SSH connection. list is scoped to this session by default (all:true shows every session); status shows one job\'s state, exit code, pid, label, start time and log; wait follows a job until it exits or the timeout, returning its state, exit code, log size and log tail; stop takes a jobId, or a raw pgid + host when the job id was lost, then verifies whether the pid is still alive and reports the exit summary. format:\'json\' returns structured data for list/status/stop.',
       parameters: {
         action: {
           type: 'string',
           required: true,
-          enum: ['list', 'wait', 'stop'],
-          description: 'What to do: list jobs, wait for one to exit, or stop one.',
+          enum: ['list', 'wait', 'status', 'stop'],
+          description: 'What to do: list jobs, show one job\'s status, wait for one to exit, or stop one.',
         },
-        jobId: { type: 'string', description: 'For wait/stop: the job id returned when it started.' },
+        jobId: { type: 'string', description: 'For wait/status/stop: the job id returned when it started.' },
         timeoutMs: { type: 'number', description: 'For wait: how long to wait for the job to exit. Defaults to 120000.' },
         tailLines: { type: 'number', description: 'For wait: how many log lines to return, clamped to 1-500 (0 or omitted = 40). Defaults to 40.' },
         all: { type: 'boolean', description: 'For list: include jobs from every session, not just this one. Defaults to false.' },
         pgid: { type: 'number', description: 'For stop: a process group id to signal directly, as an alternative to jobId. Requires host.' },
         host: { type: 'string', description: 'For stop with pgid: the ssh alias of the machine that owns the process group.' },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'For list/status/stop: return one text block containing JSON instead of human-readable text. Defaults to text.',
+        },
       },
       async execute(args, exec) {
         const action = args.action;
@@ -1001,10 +1335,12 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
             );
           }
           if (visible.length === 0) {
+            if (args.format === 'json') return '[]';
             return args.all
               ? 'no background jobs'
               : 'no background jobs for this session (use all:true to list every session)';
           }
+          if (args.format === 'json') return JSON.stringify(visible.map((job) => jobRecord(job)), null, 2);
           const lines = visible.map((job) => {
             // The stored command carries the pool's pipefail probe; the list
             // should show what the caller actually asked to run.
@@ -1018,6 +1354,28 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
             );
           });
           return `${visible.length} job(s):\n${lines.join('\n')}`;
+        }
+
+        if (action === 'status') {
+          if (!args.jobId) throw new Error('status requires a jobId');
+          let jobs = await pool.listJobs();
+          if (!Array.isArray(jobs)) jobs = [];
+          const job = jobs.find((entry) => entry.id === args.jobId);
+          if (!job) throw new Error(`no background job "${args.jobId}"`);
+          const body = jobRecord(job);
+          if (args.format === 'json') return JSON.stringify(body, null, 2);
+          const lines = [
+            `job ${body.id} on ${body.host}: ${body.state}`,
+            `pid: ${body.pid ?? '-'}  started: ${body.startedAt ? formatMtime(body.startedAt) : '-'}`,
+            `exit=${body.exitCode ?? '-'}${body.exitSignal ? ` signal=${body.exitSignal}` : ''}`,
+          ];
+          if (body.label) lines.push(`label: ${body.label}`);
+          if (body.command) lines.push(`command: ${body.command}`);
+          if (body.cwd) lines.push(`cwd: ${body.cwd}`);
+          if (body.logPath) {
+            lines.push(`log: ${body.logPath}${body.logSize !== null ? ` (${formatBytes(body.logSize)})` : ''}`);
+          }
+          return clip(lines.join('\n'));
         }
 
         if (action === 'wait') {
@@ -1034,10 +1392,29 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         if (action === 'stop') {
           if (args.jobId) {
             const result = await pool.stopJob(args.jobId);
-            if (result.stopped) return `stopped ${result.id} (pid ${result.pid}) on ${result.host}`;
+            const check = await verifyPidAlive(pool, result.host, result.pid);
+            if (args.format === 'json') {
+              return JSON.stringify(
+                {
+                  id: result.id,
+                  host: result.host,
+                  pid: result.pid,
+                  stopped: result.stopped,
+                  wasAlive: result.wasAlive ?? null,
+                  reason: result.reason ?? null,
+                  survivors: result.survivors ?? null,
+                  exitCode: result.exitCode ?? null,
+                  exitSignal: result.exitSignal ?? null,
+                  verified: check.verified,
+                  alive: check.alive,
+                },
+                null,
+                2,
+              );
+            }
+            if (result.stopped) return `stopped ${result.id} (pid ${result.pid}) on ${result.host}\n${stopSummary(result, check)}`;
             const reason = result.reason ?? `survivors ${(result.survivors ?? []).join(', ') || 'unknown'}`;
-            const code = result.exitCode !== undefined && result.exitCode !== null ? ` (exit ${result.exitCode})` : '';
-            return `nothing to stop for ${result.id}: ${reason}${code}`;
+            return `nothing to stop for ${result.id}: ${reason}\n${stopSummary(result, check)}`;
           }
           if (args.pgid === undefined || args.pgid === null) {
             throw new Error('stop requires a jobId, or pgid plus host');
@@ -1056,9 +1433,30 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
             result = await connection.stopBackground(pgid);
           }
           const survivors = Array.isArray(result?.survivors) ? result.survivors : [];
-          return result?.stopped === false || survivors.length > 0
-            ? `could not stop process group ${pgid} on ${args.host}: survivors ${survivors.join(', ') || 'unknown'}`
-            : `stopped process group ${pgid} on ${args.host}`;
+          const stopped = result?.stopped !== false && survivors.length === 0;
+          const check = await verifyPidAlive(pool, args.host, pgid);
+          if (args.format === 'json') {
+            return JSON.stringify(
+              {
+                id: result?.id ?? null,
+                host: args.host,
+                pid: pgid,
+                stopped,
+                wasAlive: result?.wasAlive ?? null,
+                reason: result?.reason ?? null,
+                survivors,
+                exitCode: result?.exitCode ?? null,
+                exitSignal: result?.exitSignal ?? null,
+                verified: check.verified,
+                alive: check.alive,
+              },
+              null,
+              2,
+            );
+          }
+          return stopped
+            ? `stopped process group ${pgid} on ${args.host}\n${stopSummary({ ...result, pid: pgid }, check)}`
+            : `could not stop process group ${pgid} on ${args.host}: survivors ${survivors.join(', ') || 'unknown'}\n${stopSummary({ ...result, pid: pgid }, check)}`;
         }
 
         throw new Error(`unknown action ${action}`);
@@ -1076,10 +1474,26 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         remoteHost: { type: 'string', description: 'For open: remote bind host. Defaults to 127.0.0.1.' },
         forwardId: { type: 'string', description: 'For close: the id returned by open.' },
         host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: open => {id, localHost, localPort, remoteHost, remotePort, url, requestedLocalPort, localPortFallback, state}; list => array; close => {id, closed}. Defaults to text.',
+        },
       },
       async execute(args, exec) {
         if (args.action === 'list') {
           const tunnels = pool.listTunnels();
+          const rows = tunnels.map((tunnel) => ({
+            id: tunnel.id,
+            host: tunnel.host,
+            localHost: '127.0.0.1',
+            localPort: tunnel.localPort,
+            remoteHost: tunnel.remoteHost,
+            remotePort: tunnel.remotePort,
+            url: tunnel.url,
+            state: 'open',
+          }));
+          if (args.format === 'json') return JSON.stringify(rows, null, 2);
           if (tunnels.length === 0) return 'no active forwards';
           return [
             `${tunnels.length} active forward(s) — the right-sidebar 端口转发 panel shows these too:`,
@@ -1090,6 +1504,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         if (args.action === 'close') {
           if (!args.forwardId) throw new Error('close requires a forwardId');
           const closed = await pool.closeTunnel(args.forwardId);
+          if (args.format === 'json') return JSON.stringify({ id: args.forwardId, closed }, null, 2);
           return closed ? `closed forward ${args.forwardId} (the Ports panel updated too)` : `no forward ${args.forwardId}`;
         }
         if (!args.remotePort) throw new Error('open requires remotePort');
@@ -1100,6 +1515,23 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           remotePort: args.remotePort,
         });
         const url = `http://127.0.0.1:${tunnel.localPort}`;
+        if (args.format === 'json') {
+          return JSON.stringify(
+            {
+              id: tunnel.id,
+              localHost: '127.0.0.1',
+              localPort: tunnel.localPort,
+              remoteHost: tunnel.remoteHost,
+              remotePort: tunnel.remotePort,
+              url,
+              requestedLocalPort: tunnel.requestedLocalPort,
+              localPortFallback: tunnel.localPortFallback === true,
+              state: 'open',
+            },
+            null,
+            2,
+          );
+        }
         return [
           `opened forward ${tunnel.id}`,
           `local:  ${url}`,

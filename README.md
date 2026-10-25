@@ -85,17 +85,18 @@ plugin_manager { action: "install_bundle", target: "D:\\04_Dev\\Presence" }
 | --- | --- |
 | `presence_hosts` | 列出 ssh config 里的机器与当前连接状态 |
 | `presence_connect` | 建立常驻连接并报告远端身份 |
-| `presence_exec` | 在远端执行命令；默认 `pipefail`，支持 `background:true`、`waitForPort`、`timeoutMs`（超时会真杀进程树）；输出默认去 ANSI、首尾截断 16KiB（`maxOutput`/`raw` 可调），全量落盘并给路径；**危险命令先 dry-run，需 `confirm:true`** |
-| `presence_trash` | **可恢复删除**：把路径移入远端 `~/.dsh/presence-trash/<时间戳>/`，返回恢复路径；`action:'trash'|'list'|'restore'` |
-| `presence_jobs` | `list`（默认只看本会话）/ `wait`（返回退出码 + 末尾日志，替代 sleep+tail）/ `stop`（按 jobId 或 pgid） |
-| `presence_read` | 读远端文件，带行号与 offset/limit；大文件走远端窗口读取（行数真实）；二进制明确拒绝；读完会给 harness 记账，内置 `edit` 可直接用 |
-| `presence_write` | 原子整体写入，自动创建父目录；**保留原文件 mode**，可用 `mode:"755"` 显式指定 |
-| `presence_edit` | 精确文本替换（`old`/`new` 与 `replace_all` 别名都认），锚点不唯一就报错，保留 mode |
+| `presence_exec` | 在远端执行命令；默认 `pipefail`，支持 `background:true`、`waitForPort`、`timeoutMs`（超时会真杀进程树）；输出默认去 ANSI、首尾截断 16KiB（`maxOutput`/`raw` 可调），全量落盘并给路径；`format:"json"` 返回结构化 `{cwd, command, exitCode, signal, durationMs, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated}`（stdout/stderr 各截 16KiB，仍是合法 JSON）；`saveStdout` 在 exit 0 后把 stdout 原子写到远端文件并报告字节数；**危险命令先 dry-run，需 `confirm:true`** |
+| `presence_trash` | **可恢复删除**：把路径移入远端 `~/.dsh/presence-trash/<时间戳>/`，返回恢复路径；`action:'trash'` 会回查源是否已消失（`sourceRemoved`）并给 `restoreHint`/`sizeBytes`；`list` 时间正确格式化、最新在前、可用 `path` 过滤，支持 `format:"json"`；`restore` 也支持 `format:"json"` |
+| `presence_jobs` | `list`（默认只看本会话）/ `status`（单任务：state/exit/pid/startedAt/logPath/logSize/command/cwd）/ `wait`（返回退出码 + 末尾日志，替代 sleep+tail）/ `stop`（按 jobId 或 pgid；停止后用远端 `ps -p` 验证 `alive`/`verified` 并给 exitCode/exitSignal）；`list`/`status`/`stop` 支持 `format:"json"` |
+| `presence_read` | 读远端文件，带行号与 offset/limit；大文件走远端窗口读取（行数真实）；二进制明确拒绝；`raw:true` 返回逐字节原样内容（无路径头/行号/footer），`numbered:false` 去行号与 footer 但保留路径头；读完会给 harness 记账，内置 `edit` 可直接用 |
+| `presence_read_many` | 一次读 1-50 个远端文件，按 `=== <path> ===` 分段；默认带行号、`raw:true` 原样，每文件最多 `limit` 行（默认 2000）；某个文件读不了只在该段报 `error: ...`，不会拖垮整次调用；总输出按 32KiB 截断 |
+| `presence_write` | 原子整体写入，自动创建父目录；**保留原文件 mode**，可用 `mode:"755"` 显式指定；写后 `stat` 回读，报告真实字节数、八进制 mode（如 `0644`，未显式设置也绝不会显示 `0`）和 sha256 前 16 位；`format:"json"` => `{path, sizeBytes, mode, sha256}` |
+| `presence_edit` | 精确文本替换（`old`/`new` 与 `replace_all` 别名都认），锚点不唯一就报错，保留 mode；返回上下文 ±2 行、最多 100 行/8KiB 的紧凑 diff；`dryRun:true` 只校验锚点并出 diff、不写文件；`format:"json"` => `{path, replaced, dryRun, bytesBefore, bytesAfter, diff}` |
 | `presence_search` | 远端 rg 搜索；`countOnly` 只返回数量，超限返回 `truncated`/总数，路径不存在或正则非法直接报错 |
 | `presence_glob` | 远端按 glob 找文件（支持绝对 pattern，返回 size/mtime，按新→旧排序） |
 | `presence_export` | 远端 → 本地真实文件（内容寻址去重、自动清理、返回 sha256），供 `present` / Explorer / Office 使用 |
 | `presence_import` | **本地 → 远端**（截图、附件、构建产物等），二进制安全、可设 mode、返回 sha256；上限 64 MiB |
-| `presence_forward` | 本地端口转发到远端端口（建立前预检端口）；`http://127.0.0.1:<port>` 访问远端服务 |
+| `presence_forward` | 本地端口转发到远端端口（建立前预检端口）；`http://127.0.0.1:<port>` 访问远端服务；open/list/close 支持 `format:"json"` |
 | `presence_terminal` | open / write / read / close 持久终端；带 `session` 时用 tmux，断线可重连；`close {killSession}` 彻底结束 |
 
 > 远程会话里内置 `grep`/`glob` 由插件**接管并转发到远端**（路径、大小写、截断规则与 `presence_search` 一致），不再出现"扫本地盘、静默空"的情况。
@@ -161,6 +162,7 @@ ssh -CAXY user@server
 | --- | --- |
 | `presence_exec(command)` | 在那台机器的那个工作区根目录下执行 |
 | `presence_read('src/app.ts')` | 解析成 `<工作区根>/src/app.ts` |
+| `presence_read_many(['src/a.ts', 'src/b.ts'])` | 一次读多个文件，各自解析到 `<工作区根>/...` |
 | `presence_write` / `presence_edit` / `presence_search` / `presence_glob` | 同上，相对路径都相对工作区根 |
 | 绝对路径 / `~/路径` / `presence://host/path` / 本地挂载路径 | 全部等价可用；跨主机路径会明确报错 |
 
@@ -309,7 +311,7 @@ presence_forward { "action": "open", "remotePort": 8000 }
 - [x] exec：独立通道、超时、取消、退出码、stdout/stderr 分离
 - [x] 通道池（受 sshd `MaxSessions` 约束）
 - [x] PTY 终端，随连接存活
-- [x] DSH Bundle：8 个工具，已装进 profile 并实测
+- [x] DSH Bundle：15 个工具，已装进 profile 并实测
 - [x] 密码认证（进程内存 / 环境变量），已接入连接层
 - [x] 设置页面板：服务器选择 → 远程目录浏览 → 创建远程工作区
 - [x] 工作区作用域：设为当前后，工具不需要 host，相对路径相对工作区根，上下文自动切换

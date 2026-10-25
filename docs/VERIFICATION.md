@@ -479,6 +479,25 @@ ssh2 1.17 **同步抛 `Not connected`**，异常从 EventEmitter 回调冒泡成
 4) pool 记录转发；5) `disconnect(host)` 关闭该 host 的转发且列表清空。
 另：手动添加主机表单改紧凑（单行 42px 命令框 + 别名/备注并排 + 标签），client 重建后冒烟通过。
 
+## 〇之二十一、第二十二轮：agent 工具 UX 补齐（0.17.4）
+
+来源：一个 OpenCode agent 在长任务里通过 Presence MCP 使用同一套内核，报告了 8 类工具摩擦；本轮把这些行为移植回 DSH 插件的 `src/tools.js`（内核未改，未指定的默认行为保持不变）。
+
+- `presence_read`：新增 `raw:true`（逐字节原样，无路径头/行号/footer）与 `numbered:false`（去行号与 footer、保留路径头）；默认仍是行号 + `(End of file - N lines)`。
+- 新增 `presence_read_many`：一次读 1-50 个文件，按 `=== <path> ===` 分段，`raw`/`limit` 可选；单个文件读不了只在该段报 `error: ...`，不会失败整次调用；总输出按 32 KiB 截断。
+- `presence_exec`：`format:"json"` 返回 `{cwd, command, exitCode, signal, durationMs, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated}`，stdout/stderr 各截 16 KiB 且保持合法 JSON；`saveStdout` 在 exit 0 的前台命令后原子写 stdout（自动建父目录，报告 path/bytes），非 0 或后台任务带 note 跳过。
+- `presence_write`：写后 `stat` 回读并报告真实字节数、八进制 mode（`0644`，未显式设置时不再出现 `0`）和 sha256 前 16 位；`format:"json"` => `{path, sizeBytes, mode, sha256}`。
+- `presence_edit`：返回上下文 ±2 行、最多 100 行/8 KiB 的紧凑 diff；`dryRun:true` 只校验锚点、不写文件；`format:"json"` => `{path, replaced, dryRun, bytesBefore, bytesAfter, diff}`；歧义拒绝与 replaceAll 语义不变。
+- `presence_jobs`：新增 `status`（id/host/state/exitCode/exitSignal/pid/label/startedAt/logPath/logSize/command/cwd）；`stop` 后用远端 `ps -p <pid> -o pid=` 复核并给出 `alive`/`verified` 和退出摘要；list/status/stop 支持 `format:"json"`。
+- `presence_forward`：open/list/close 支持 `format:"json"`（open 含 `requestedLocalPort`/`localPortFallback`）。
+- `presence_trash`：trash 后回查源已消失（`sourceRemoved`）并给 `restoreHint`/`sizeBytes`；list 把 ISO 时间归一化为毫秒、最新在前、支持 `path` 子串过滤和 `format:"json"`；restore 支持 `format:"json"`。
+
+**验证**（server，2026-10-25）：
+- `node --check src/tools.js` 通过。
+- 临时工具级探针（stub `defineTool`，直接调用每个 `execute()`）：**29/29**，覆盖 read/read_many、exec JSON + saveStdout、write stat、edit dryRun、jobs status/stop、forward JSON、trash JSON。
+- 仓库既有探针：regression **7/7**、safety **24/24**、feature **14/14**、job **6/6**、import **3/3**、tunnel-crash **5/5**（合计 **59/59**）。
+- `scripts/package.ps1 -Version 0.17.4` 生成 `dist/presence-plugin-0.17.4.zip`（1.15 MB，含 node_modules 与重建后的 client.js）。
+
 ## 一、最初提出的问题 → 现在的结果
 
 | # | 原始要求 | 结果 | 证据 |
