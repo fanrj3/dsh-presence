@@ -209,6 +209,31 @@ UI：工作区列表改为**按机器分组**，机器行显示连接状态（�
 
 **验证**：`safety-probe` 21/21、`regression` 5/5、`job-probe` 6/6、`feature-probe` 14/14、`import-probe` 3/3。
 
+## 〇之九、第十轮：侧边栏文件浏览器（XFTP 风格）0.10.0
+
+右侧栏「开始」页新增 **远程文件** 标签页（注册 `sidebarRightTabs`，kind `presence-files`），打开时自动跟随当前会话的工作区（没有就用第一个工作区）。
+
+host 端新增 6 个 API（`src/api.js`，双前缀注册）：
+
+| 端点 | 作用 |
+| --- | --- |
+| `GET /entries?host=&path=` | 目录列表：name/kind/size/mtime/mode/hidden + crumbs，目录优先排序 |
+| `GET /raw?host=&path=&download=1` | 二进制直出：按扩展猜 content-type、支持 Range、SVG 加 CSP sandbox、64 MiB 上限 |
+| `POST /upload?host=&dir=&name=&mode=` | 原始 body 写入远端（二进制安全、mkdir -p、返回 sha256 与 mode） |
+| `POST /mkdir?host=&path=` | 新建目录（含父级） |
+| `POST /remove?host=&path=` | 走 `connection.trash`，返回回收站路径（可恢复） |
+| `GET /context?sessionId=` | 会话 cwd → 工作区 `{host, path, title}`，非挂载返回 null，服务缺失返回 503 |
+
+客户端能力：
+- 拖拽本机文件到列表（或 `＋`）→ 逐个上传并显示百分比进度
+- 双击图片 → 弹窗预览；双击文本/代码 → 预览前 256 KiB；其余 → 「另存为」对话框（File System Access API，不可用时回退浏览器下载）
+- 行尾 `↓` 保存到本地、`🗑` 移入远端回收站、`▣` 新建文件夹、`⟳` 刷新、筛选框、面包屑、机器下拉
+- 设置面板首次加载/切换目录显示旋转加载动画（此前空白无提示）
+
+诚实边界：**浏览器 → 资源管理器「拖出」不可靠**（渲染进程无 Electron 主进程拖出能力），只尽力设置 `DownloadURL`；保存请用双击或 `↓`。反方向（资源管理器 → 页面）是标准 HTML5 拖放，稳定。
+
+**验证**：直接调用 route handler（真实 ssh 连接）7/7 —— entries 有目录+文件且带 mtime、upload 二进制 sha256 与字节数一致、raw 返回完全相同的字节且 disposition=attachment、mkdir 嵌套成功、remove 进回收站且目录里消失、context 在无 DSH 服务时 503、`/api/presence/*` 双前缀存在。
+
 **验证**（全部在真实主机 server 上）：
 - `node scripts/regression.mjs server` → 5/5
 - `node scripts/job-probe.mjs server` → 6/6

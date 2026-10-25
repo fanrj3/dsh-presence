@@ -66,7 +66,13 @@ export function apply(ctx, config = {}) {
 
   // Late-bound services. Each is captured by its own inject, so callers never
   // depend on activation order and a one-shot `ctx.get` can't miss them.
-  const late = { credentials: undefined, registry: undefined, workingDirectory: undefined, fs: undefined };
+  const late = { credentials: undefined, registry: undefined, workingDirectory: undefined, fs: undefined, agents: undefined };
+  ctx.inject(['agents'], (scope) => {
+    late.agents = scope.agents;
+    scope.effect(() => () => {
+      late.agents = undefined;
+    });
+  });
   ctx.inject(['workingDirectory'], (scope) => {
     late.workingDirectory = scope.workingDirectory;
     scope.effect(() => () => {

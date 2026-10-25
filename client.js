@@ -7,7 +7,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
-    const { useCallback, useEffect, useState } = React;
+    const { useCallback, useEffect, useRef, useState } = React;
 
     const API = '/api/presence';
 
@@ -204,6 +204,26 @@ window.__ModuleLoader__.load({
         }
         .dp-btn:hover:not(:disabled) { transform: none; }
       }
+
+      /* loading spinner (settings panel + remote file pane) */
+      @keyframes dp-spin { to { transform: rotate(360deg); } }
+      .dp-spin {
+        border-radius: 50%;
+        border: 2px solid var(--dsw-alias-border-l1);
+        border-top-color: var(--dsw-alias-brand-primary);
+        animation: dp-spin .8s linear infinite;
+      }
+
+      /* remote file pane */
+      .dp-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--dsw-alias-label-primary); font-size: 13px; }
+      .dp-pane-toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1); flex: 0 0 auto; }
+      .dp-pane-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 6px 12px; }
+      .dp-pane-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background-color 130ms cubic-bezier(.2,0,0,1); }
+      .dp-pane-row:hover { background: var(--dsw-alias-bg-layer-2); }
+      .dp-pane-row.is-selected { background: var(--dsw-alias-bg-layer-2); }
+      .dp-drop { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); border: 2px dashed var(--dsw-alias-brand-primary); border-radius: 12px; color: var(--dsw-alias-label-primary); font-size: 13px; pointer-events: none; }
+      .dp-overlay { position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .45); }
+      .dp-modal { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: 14px; box-shadow: 0 18px 48px rgba(0, 0, 0, .32); width: min(92%, 720px); max-height: 86%; display: flex; flex-direction: column; overflow: hidden; }
     `;
     function ensureStyles() {
       if (typeof document === 'undefined' || document.getElementById(STYLE_ID)) return;
@@ -422,6 +442,528 @@ window.__ModuleLoader__.load({
       ]);
     }
 
+    // ------------------------------------------------------------- spinner
+    function Spinner({ label, size = 16 }) {
+      return h('span', {
+        style: { display: 'inline-flex', alignItems: 'center', gap: 8, color: C.muted, fontSize: 12 },
+      }, [
+        h('span', {
+          key: 'ring',
+          className: 'dp-spin',
+          style: { width: size, height: size, display: 'inline-block', flex: '0 0 auto' },
+        }),
+        label ? h('span', { key: 'label' }, label) : null,
+      ]);
+    }
+
+    // ------------------------------------------------- remote file browser
+    const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'svg']);
+    const TEXT_EXTENSIONS = new Set([
+      'txt', 'md', 'markdown', 'json', 'jsonc', 'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'py', 'rb', 'go', 'rs',
+      'java', 'kt', 'c', 'h', 'cc', 'cpp', 'hpp', 'cs', 'php', 'sh', 'bash', 'zsh', 'ps1', 'psm1', 'yml', 'yaml',
+      'toml', 'ini', 'conf', 'cfg', 'log', 'csv', 'tsv', 'sql', 'html', 'htm', 'css', 'scss', 'less', 'xml', 'tex',
+      'dockerfile', 'gitignore', 'env', 'lock', 'properties', 'gradle', 'make', 'mk',
+    ]);
+
+    function extensionOf(name) {
+      if (typeof name !== 'string') return '';
+      const index = name.lastIndexOf('.');
+      return index < 0 ? '' : name.slice(index + 1).toLowerCase();
+    }
+
+    function isImageName(name) {
+      return IMAGE_EXTENSIONS.has(extensionOf(name));
+    }
+
+    function isTextName(name) {
+      const extension = extensionOf(name);
+      return TEXT_EXTENSIONS.has(extension) || extension === '';
+    }
+
+    function rawUrlFor(host, path, download) {
+      const query = `host=${encodeURIComponent(host)}&path=${encodeURIComponent(path)}`;
+      return `${API}/raw?${query}${download ? '&download=1' : ''}`;
+    }
+
+    function formatMoment(ms) {
+      if (typeof ms !== 'number' || !Number.isFinite(ms)) return '';
+      const date = new Date(ms);
+      const now = Date.now();
+      const ago = now - ms;
+      if (ago >= 0 && ago < 60_000) return '刚刚';
+      if (ago >= 0 && ago < 3_600_000) return `${Math.floor(ago / 60_000)} 分钟前`;
+      if (ago >= 0 && ago < 86_400_000) return `${Math.floor(ago / 3_600_000)} 小时前`;
+      return date.toLocaleDateString() + ' ' + date.toLocaleTimeString().slice(0, 5);
+    }
+
+    /** Upload one File to the remote directory with progress. */
+    function uploadRemoteFile(host, dir, file, onProgress) {
+      return new Promise((resolve, reject) => {
+        const query =
+          `host=${encodeURIComponent(host)}&dir=${encodeURIComponent(dir)}` +
+          `&name=${encodeURIComponent(file.name)}`;
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${API}/upload?${query}`);
+        xhr.responseType = 'json';
+        xhr.upload.onprogress = (event) => {
+          if (onProgress && event.lengthComputable) onProgress(event.loaded);
+        };
+        xhr.onload = () => {
+          const data = xhr.response;
+          if (xhr.status >= 200 && xhr.status < 300 && data && data.ok !== false) resolve(data);
+          else reject(new Error((data && data.error) || `HTTP ${xhr.status}`));
+        };
+        xhr.onerror = () => reject(new Error('上传失败：网络错误'));
+        xhr.send(file);
+      });
+    }
+
+    /**
+     * Save one remote file locally. Chromium's File System Access API shows a
+     * real Save-As dialog; when it is unavailable (or cancelled) fall back to a
+     * plain download link.
+     */
+    async function saveRemoteFile(host, path, name) {
+      try {
+        if (typeof window.showSaveFilePicker === 'function') {
+          const handle = await window.showSaveFilePicker({ suggestedName: name });
+          const writable = await handle.createWritable();
+          const response = await fetch(rawUrlFor(host, path, true));
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          await response.body.pipeTo(writable);
+          return true;
+        }
+      } catch (error) {
+        if (error && error.name === 'AbortError') return false;
+        // Unavailable or blocked by the shell: fall through to the anchor below.
+      }
+      const anchor = document.createElement('a');
+      anchor.href = rawUrlFor(host, path, true);
+      anchor.download = name;
+      anchor.rel = 'noopener';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      return true;
+    }
+
+    /**
+     * The right-bar file browser: a remote directory pane that accepts dropped
+     * local files (upload), previews images/text on double click, and saves
+     * anything else with a native dialog.
+     */
+    function RemoteFilesPanel({ sessionId }) {
+      const [hosts, setHosts] = useState([]);
+      const [host, setHost] = useState(null);
+      const [path, setPath] = useState('/');
+      const [crumbs, setCrumbs] = useState([]);
+      const [entries, setEntries] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+      const [filter, setFilter] = useState('');
+      const [dragOver, setDragOver] = useState(false);
+      const [uploads, setUploads] = useState([]);
+      const [preview, setPreview] = useState(null);
+      const [selected, setSelected] = useState(null);
+      const [creatingFolder, setCreatingFolder] = useState(null);
+      const fileInput = useRef(null);
+
+      const load = useCallback(async (nextHost, nextPath) => {
+        if (!nextHost) return;
+        setLoading(true);
+        setError(null);
+        try {
+          const query = `host=${encodeURIComponent(nextHost)}&path=${encodeURIComponent(nextPath)}`;
+          const data = await request(`/entries?${query}`);
+          setHost(nextHost);
+          setPath(data.path);
+          setCrumbs(data.crumbs ?? []);
+          setEntries(data.entries ?? []);
+          setSelected(null);
+        } catch (err) {
+          setError(err.message);
+        } finally {
+          setLoading(false);
+        }
+      }, []);
+
+      // First open: follow the session's workspace, else the first registered one.
+      useEffect(() => {
+        let cancelled = false;
+        (async () => {
+          try {
+            const state = await request('/state');
+            if (cancelled) return;
+            setHosts(state.hosts ?? []);
+            let target = null;
+            if (sessionId) {
+              try {
+                const context = await request(`/context?sessionId=${encodeURIComponent(sessionId)}`);
+                target = context.workspace ?? null;
+              } catch {
+                target = null;
+              }
+            }
+            if (!target) {
+              const listing = await request('/workspaces');
+              target = (listing.workspaces ?? [])[0] ?? null;
+            }
+            if (cancelled) return;
+            if (target) await load(target.host, target.path);
+            else {
+              setLoading(false);
+              setError('还没有远程工作区：先到「设置 → Presence」新建一个。');
+            }
+          } catch (err) {
+            if (!cancelled) {
+              setError(err.message);
+              setLoading(false);
+            }
+          }
+        })();
+        return () => {
+          cancelled = true;
+        };
+      }, [sessionId, load]);
+
+      const visible = entries.filter((entry) => {
+        if (!filter.trim()) return true;
+        return entry.name.toLowerCase().includes(filter.trim().toLowerCase());
+      });
+
+      const openEntry = async (entry) => {
+        if (entry.kind === 'dir') {
+          await load(host, entry.path);
+          return;
+        }
+        if (isImageName(entry.name)) {
+          setPreview({ name: entry.name, path: entry.path, size: entry.size, kind: 'image', url: rawUrlFor(host, entry.path, false) });
+          return;
+        }
+        if (isTextName(entry.name) || entry.size <= 256 * 1024) {
+          try {
+            setPreview({ name: entry.name, path: entry.path, size: entry.size, kind: 'loading' });
+            const query = `host=${encodeURIComponent(host)}&path=${encodeURIComponent(entry.path)}`;
+            const data = await request(`/file?${query}`);
+            setPreview({
+              name: entry.name,
+              path: entry.path,
+              size: entry.size,
+              kind: 'text',
+              content: data.content,
+              truncated: data.truncated,
+            });
+            return;
+          } catch (err) {
+            setPreview(null);
+            setError(`${err.message}（将改用保存对话框）`);
+          }
+        }
+        setPreview(null);
+        await saveRemoteFile(host, entry.path, entry.name).catch((err) => setError(err.message));
+      };
+
+      const uploadFiles = async (files) => {
+        if (files.length === 0) return;
+        if (!host) {
+          setError('还没有选择远程目录');
+          return;
+        }
+        setUploads(files.map((file) => ({ name: file.name, total: file.size, loaded: 0, state: 'pending' })));
+        for (let index = 0; index < files.length; index += 1) {
+          const file = files[index];
+          setUploads((list) => list.map((item, i) => (i === index ? { ...item, state: 'uploading' } : item)));
+          try {
+            await uploadRemoteFile(host, path, file, (loaded) => {
+              setUploads((list) => list.map((item, i) => (i === index ? { ...item, loaded } : item)));
+            });
+            setUploads((list) => list.map((item, i) => (i === index ? { ...item, state: 'done' } : item)));
+          } catch (err) {
+            setError(err.message);
+            setUploads((list) => list.map((item, i) => (i === index ? { ...item, state: 'failed' } : item)));
+          }
+        }
+        await load(host, path);
+        setTimeout(() => setUploads([]), 1500);
+      };
+
+      const handleDrop = (event) => {
+        event.preventDefault();
+        setDragOver(false);
+        uploadFiles(Array.from(event.dataTransfer?.files ?? []));
+      };
+
+      const createFolder = async () => {
+        const name = (creatingFolder ?? '').trim();
+        if (!name) {
+          setCreatingFolder(null);
+          return;
+        }
+        const target = `${path.replace(/\/+$/, '')}/${name}`;
+        try {
+          await request(`/mkdir?host=${encodeURIComponent(host)}&path=${encodeURIComponent(target)}`, {});
+          setCreatingFolder(null);
+          await load(host, path);
+        } catch (err) {
+          setError(err.message);
+        }
+      };
+
+      const removeEntry = async (entry) => {
+        if (!window.confirm(`把「${entry.name}」移到远端回收站？（可用 presence_trash 恢复）`)) return;
+        try {
+          await request(`/remove?host=${encodeURIComponent(host)}&path=${encodeURIComponent(entry.path)}`, {});
+          await load(host, path);
+        } catch (err) {
+          setError(err.message);
+        }
+      };
+
+      const trailing = (entry) => {
+        if (entry.kind === 'dir') return null;
+        return [
+          h('button', {
+            key: 'save',
+            type: 'button',
+            title: '保存到本地',
+            className: 'dp-iconbtn',
+            style: { width: 24, height: 24, lineHeight: '24px', fontSize: 12 },
+            onClick: (event) => {
+              event.stopPropagation();
+              saveRemoteFile(host, entry.path, entry.name).catch((err) => setError(err.message));
+            },
+          }, '↓'),
+          h('button', {
+            key: 'delete',
+            type: 'button',
+            title: '移到回收站',
+            className: 'dp-iconbtn',
+            style: { width: 24, height: 24, lineHeight: '24px', fontSize: 12 },
+            onClick: (event) => {
+              event.stopPropagation();
+              removeEntry(entry);
+            },
+          }, '🗑'),
+        ];
+      };
+
+      return h('div', {
+        className: 'dp-pane',
+        style: { position: 'relative', flex: '1 1 auto', minHeight: 0, height: '100%' },
+        onDragOver: (event) => {
+          if (event.dataTransfer?.types?.includes('Files')) {
+            event.preventDefault();
+            setDragOver(true);
+          }
+        },
+        onDragLeave: () => setDragOver(false),
+        onDrop: handleDrop,
+      }, [
+        // toolbar
+        h('div', { key: 'toolbar', className: 'dp-pane-toolbar' }, [
+          h('select', {
+            key: 'host',
+            className: 'dp-input',
+            style: { width: 'auto', maxWidth: 130, padding: '3px 6px', fontSize: 12 },
+            value: host ?? '',
+            onChange: (event) => {
+              const next = event.target.value;
+              if (next) load(next, '/');
+            },
+          }, hosts.map((item) => h('option', { key: item.alias, value: item.alias }, item.alias))),
+          h('div', { key: 'spacer', style: { flex: 1 } }),
+          h('button', {
+            key: 'upload',
+            type: 'button',
+            className: 'dp-iconbtn',
+            title: '上传文件到当前目录',
+            onClick: () => fileInput.current?.click(),
+          }, '＋'),
+          h('button', {
+            key: 'folder',
+            type: 'button',
+            className: 'dp-iconbtn',
+            title: '新建文件夹',
+            onClick: () => setCreatingFolder(''),
+          }, '▣'),
+          h('button', {
+            key: 'refresh',
+            type: 'button',
+            className: 'dp-iconbtn',
+            title: '刷新',
+            onClick: () => load(host, path),
+          }, '⟳'),
+          h('input', {
+            key: 'file',
+            ref: fileInput,
+            type: 'file',
+            multiple: true,
+            style: { display: 'none' },
+            onChange: (event) => {
+              const files = Array.from(event.target.files ?? []);
+              event.target.value = '';
+              uploadFiles(files);
+            },
+          }),
+        ]),
+        // breadcrumbs + filter
+        h('div', {
+          key: 'pathbar',
+          style: { display: 'flex', alignItems: 'center', gap: 2, padding: '6px 10px', borderBottom: `1px solid ${C.border}`, flexWrap: 'wrap' },
+        }, crumbs.map((crumb, index) => h('span', { key: `${crumb.path}#${index}`, style: { display: 'inline-flex', alignItems: 'center' } }, [
+          index > 0 ? h('span', { key: 'sep', style: { color: C.muted, fontSize: 11, padding: '0 1px' } }, '›') : null,
+          h('button', {
+            key: 'crumb',
+            type: 'button',
+            className: index === crumbs.length - 1 ? 'dp-crumb dp-crumb--current' : 'dp-crumb',
+            onClick: () => load(host, crumb.path),
+          }, index === 0 ? '/' : crumb.name),
+        ]))),
+        h('div', { key: 'filter', style: { padding: '6px 10px', borderBottom: `1px solid ${C.border}` } },
+          h('input', {
+            className: 'dp-input',
+            value: filter,
+            placeholder: '筛选当前目录…',
+            onChange: (event) => setFilter(event.target.value),
+          })),
+        // body
+        error
+          ? h('div', {
+              key: 'error',
+              style: { margin: '8px 10px', padding: '6px 10px', borderRadius: 8, background: C.soft, color: C.error, fontSize: 12 },
+            }, error)
+          : null,
+        creatingFolder !== null
+          ? h('div', { key: 'newfolder', style: { display: 'flex', gap: 6, padding: '8px 10px', borderBottom: `1px solid ${C.border}` } }, [
+              h('input', {
+                key: 'name',
+                className: 'dp-input',
+                autoFocus: true,
+                placeholder: '文件夹名称',
+                value: creatingFolder,
+                onChange: (event) => setCreatingFolder(event.target.value),
+                onKeyDown: (event) => {
+                  if (event.key === 'Enter') createFolder();
+                  if (event.key === 'Escape') setCreatingFolder(null);
+                },
+              }),
+              Button({ label: '创建', onClick: createFolder, primary: true, small: true }),
+            ])
+          : null,
+        uploads.length > 0
+          ? h('div', { key: 'uploads', style: { padding: '4px 10px', fontSize: 11, color: C.muted } },
+              uploads.map((item) => h('div', { key: item.name, style: { display: 'flex', gap: 6 } }, [
+                h('span', { key: 'name', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.name),
+                h('span', { key: 'state' }, item.state === 'uploading'
+                  ? `${Math.round((item.loaded / Math.max(1, item.total)) * 100)}%`
+                  : item.state),
+              ])))
+          : null,
+        h('div', { key: 'list', className: 'dp-pane-list' },
+          loading
+            ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: '28px 0' } }, h(Spinner, { label: '加载中…' }))
+            : visible.length === 0
+              ? h('div', { style: { textAlign: 'center', color: C.muted, padding: '28px 0', fontSize: 12 } }, '这个目录是空的')
+              : visible.map((entry) => h('div', {
+                  key: entry.path,
+                  className: `dp-pane-row${selected === entry.path ? ' is-selected' : ''}`,
+                  role: 'button',
+                  tabIndex: 0,
+                  title: entry.path,
+                  draggable: entry.kind !== 'dir',
+                  onDragStart: (event) => {
+                    if (entry.kind === 'dir') return;
+                    try {
+                      event.dataTransfer.setData('DownloadURL',
+                        `application/octet-stream:${entry.name}:${new URL(rawUrlFor(host, entry.path, true), window.location.href).href}`);
+                      event.dataTransfer.effectAllowed = 'copy';
+                    } catch {
+                      /* the OS may refuse; the ↓ button still works */
+                    }
+                  },
+                  onClick: () => setSelected(entry.path),
+                  onDoubleClick: () => openEntry(entry),
+                  onKeyDown: (event) => {
+                    if (event.key === 'Enter') openEntry(entry);
+                  },
+                }, [
+                  h('span', { key: 'icon', style: { width: 18, textAlign: 'center', flex: '0 0 auto' } }, entry.kind === 'dir' ? '📁' : (isImageName(entry.name) ? '🖼' : '📄')),
+                  h('span', {
+                    key: 'name',
+                    style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                  }, entry.name),
+                  h('span', { key: 'size', style: { color: C.muted, fontSize: 11, flex: '0 0 auto' } },
+                    entry.kind === 'dir' ? '' : humanSize(entry.size)),
+                  h('span', { key: 'time', style: { color: C.muted, fontSize: 11, flex: '0 0 auto', width: 58, textAlign: 'right' } },
+                    formatMoment(entry.mtime)),
+                  ...(trailing(entry) ?? []),
+                ]))),
+        // drop hint
+        dragOver
+          ? h('div', {
+              key: 'drop',
+              className: 'dp-drop',
+              style: { margin: 8 },
+            }, `松开把文件上传到 ${path}`)
+          : null,
+        // preview overlay
+        preview
+          ? h('div', {
+              key: 'overlay',
+              className: 'dp-overlay',
+              onClick: () => setPreview(null),
+            }, h('div', {
+              key: 'modal',
+              className: 'dp-modal',
+              onClick: (event) => event.stopPropagation(),
+            }, [
+              h('div', {
+                key: 'head',
+                style: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: `1px solid ${C.border}` },
+              }, [
+                h('span', {
+                  key: 'name',
+                  style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13, fontWeight: 600 },
+                }, preview.name),
+                h('span', { key: 'size', style: { color: C.muted, fontSize: 11 } },
+                  preview.kind === 'image' ? '图片' : preview.kind === 'text' ? '文本' : ''),
+                h('button', {
+                  key: 'close',
+                  type: 'button',
+                  className: 'dp-iconbtn',
+                  onClick: () => setPreview(null),
+                }, '×'),
+              ]),
+              h('div', {
+                key: 'body',
+                style: { padding: 12, overflow: 'auto', minHeight: 80 },
+              }, preview.kind === 'loading'
+                ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: 20 } }, h(Spinner, { label: '读取中…' }))
+                : preview.kind === 'image'
+                  ? h('img', { src: preview.url, style: { maxWidth: '100%', display: 'block', margin: '0 auto' } })
+                  : h('pre', {
+                      style: {
+                        margin: 0, fontSize: 12, lineHeight: '18px', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      },
+                    }, preview.content ?? '')),
+              h('div', {
+                key: 'foot',
+                style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderTop: `1px solid ${C.border}` },
+              }, [
+                h('span', { key: 'hint', style: { flex: 1, color: C.muted, fontSize: 11 } },
+                  preview.kind === 'text' && preview.truncated ? '仅显示前 256 KiB' : '双击关闭或点右上角 ×'),
+                Button({
+                  label: '保存到本地',
+                  small: true,
+                  onClick: () => saveRemoteFile(host, preview.path, preview.name).catch((err) => setError(err.message)),
+                }),
+              ]),
+            ]))
+          : null,
+      ]);
+    }
+
     function PresencePanel() {
       const [mode, setMode] = useState('list');
       const [hosts, setHosts] = useState([]);
@@ -435,6 +977,7 @@ window.__ModuleLoader__.load({
       const [remember, setRemember] = useState(false);
       const [files, setFiles] = useState(null);
       const [preview, setPreview] = useState(null);
+      const [loadingList, setLoadingList] = useState(true);
 
       const loadList = useCallback(async () => {
         try {
@@ -445,6 +988,8 @@ window.__ModuleLoader__.load({
           setError(null);
         } catch (err) {
           setError(err.message);
+        } finally {
+          setLoadingList(false);
         }
       }, []);
 
@@ -785,19 +1330,68 @@ window.__ModuleLoader__.load({
           style: { color: C.muted, fontSize: 12, margin: '2px 0 0' },
         }, '选一台机器和一个远程文件夹，agent 就只在这个文件夹里工作，连接常驻复用，远端不安装任何东西。'),
         error ? h(Banner, { key: 'error' }, error) : null,
-        body,
+        loadingList
+          ? h('div', {
+              key: 'loading',
+              style: { display: 'flex', justifyContent: 'center', padding: '44px 0' },
+            }, h(Spinner, { label: '正在加载工作区…', size: 18 }))
+          : h('div', { key: 'content' }, [busy && mode !== 'list'
+              ? h('div', {
+                  key: 'busy',
+                  style: { display: 'flex', justifyContent: 'center', padding: '12px 0' },
+                }, h(Spinner, { label: '加载中…' }))
+              : null, body]),
       ]);
     }
 
     return {
       inject: ['slots'],
       apply(ctx) {
+        ensureStyles();
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',
           id: 'presence',
           order: 55,
           label: 'Presence',
         }, PresencePanel));
+
+        // Right-sidebar file browser (like an Xftp pane). Optional: it mounts
+        // only when the shipped sidebar services are present, and a failure here
+        // must never take the settings panel down with it.
+        const tabId = 'dsh-presence/files';
+        ctx.inject(['sidebarRightTabs'], (scope) => {
+          scope.effect(() => {
+            try {
+              return scope.sidebarRightTabs.register({
+                id: tabId,
+                kind: 'presence-files',
+                multiple: false,
+                priority: 'extension',
+                title: () => '远程文件',
+                guide: [{
+                  id: 'open',
+                  order: 40,
+                  title: () => '远程文件',
+                  description: () => '拖拽上传/下载远程文件，双击预览图片与文本',
+                }],
+              });
+            } catch (error) {
+              console.error('[presence] sidebar tab registration failed', error);
+              return () => {};
+            }
+          }, 'presence.sidebar.tab');
+          scope.effect(() => {
+            try {
+              return scope.slots.inject('sidebar.right.pane.tab', () => scope.slots.register({
+                name: 'sidebar.right.pane.tab',
+                key: tabId,
+              }, RemoteFilesPanel));
+            } catch (error) {
+              console.error('[presence] sidebar pane registration failed', error);
+              return () => {};
+            }
+          }, 'presence.sidebar.pane');
+        });
       },
     };
   },
