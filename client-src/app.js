@@ -404,6 +404,65 @@ export function createApp({ React }) {
         background: var(--dsw-alias-bg-module-platform);
         color: var(--dsw-alias-label-secondary);
       }
+      .dp-empty-hint { font-size: 11.5px; line-height: 1.7; max-width: 250px; text-align: center; }
+
+      /* ------------------------------------------------- port forwards */
+      .dp-form {
+        display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+        padding: 8px; border-bottom: 1px solid var(--dsw-alias-border-l2);
+        flex: 0 0 auto;
+      }
+      .dp-pane .dp-form .dp-select { flex: 1 1 100%; max-width: none; }
+      .dp-pane .dp-form .dp-input { width: auto; padding: 0 10px; }
+      .dp-pane .dp-form .dp-input--host { flex: 1 1 120px; }
+      .dp-pane .dp-form .dp-input--port { flex: 0 0 76px; }
+      .dp-pane .dp-form .dp-tool { flex: 0 0 auto; }
+      .dp-form .dp-tool[disabled] { opacity: .45; cursor: default; }
+      .dp-mono {
+        font-family: var(--ds-font-family-code, "Cascadia Code", Consolas, ui-monospace, monospace);
+        font-variant-numeric: tabular-nums;
+      }
+      .dp-link { color: var(--dsw-alias-state-business-primary); text-decoration: none; }
+      .dp-link:hover { text-decoration: underline; }
+
+      .dp-group { margin-top: 10px; }
+      .dp-group-head {
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 8px 4px; color: var(--dsw-alias-label-tertiary); font-size: 11.5px;
+      }
+      .dp-group-name { color: var(--dsw-alias-label-primary); font-weight: 600; font-size: 12px; }
+      .dp-group-chip {
+        padding: 0 7px; border-radius: 999px; line-height: 16px;
+        background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary);
+        font-size: 10.5px;
+      }
+      .dp-entry--tunnel { min-height: 42px; }
+      .dp-tunnel-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+      .dp-tunnel-route { font-size: 12.5px; }
+      .dp-tunnel-arrow { color: var(--dsw-alias-label-tertiary); margin: 0 4px; }
+      .dp-tunnel-url {
+        display: block; min-width: 0; font-size: 11.5px;
+        color: var(--dsw-alias-state-business-primary);
+        text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .dp-tunnel-url:hover { text-decoration: underline; }
+      .dp-tunnel-actions { display: flex; gap: 2px; flex: 0 0 auto; }
+      .dp-pane .dp-iconbtn--danger:hover { color: var(--dsw-alias-state-error-primary); }
+      .dp-pane .dp-iconbtn:disabled { opacity: .4; cursor: default; }
+      .dp-tile--live { color: var(--dsw-alias-state-success-primary); }
+      .dp-pane a.dp-iconbtn { text-decoration: none; }
+      .dp-spin-wrap { display: inline-flex; }
+      .dp-group-note { font-size: 10.5px; }
+      .dp-spinning { animation: dp-spin 900ms linear infinite; }
+      .dp-toolbar-title { font-size: 12px; font-weight: 600; }
+      .dp-dot {
+        width: 6px; height: 6px; border-radius: 999px; flex: 0 0 auto;
+        background: var(--dsw-alias-label-tertiary);
+      }
+      .dp-dot--on {
+        background: var(--dsw-alias-state-success-primary);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-success-primary) 20%, transparent);
+      }
 
       .dp-drop {
         position: absolute; inset: 8px; z-index: 8;
@@ -824,6 +883,7 @@ export function createApp({ React }) {
       play: ['M8 5l11 7-11 7z'],
       external: ['M14 4h6v6', 'M20 4l-9 9', 'M10 5H5v14h14v-5'],
       copy: ['M9 9h11v11H9z', 'M5 15V4h11'],
+      power: ['M12 3v9', 'M6.4 6.4a8 8 0 1 0 11.2 0'],
       music: ['M9 17V5l10-2v12', 'M9 17a3 3 0 1 1-6 0a3 3 0 0 1 6 0z', 'M19 15a3 3 0 1 1-6 0a3 3 0 0 1 6 0z'],
     };
 
@@ -1767,8 +1827,9 @@ export function createApp({ React }) {
 
     /**
      * Port forwards: remote services exposed on 127.0.0.1 locally. The registry
-     * is shared with the agent's presence_forward tool, so tunnels opened from
-     * a session or from this panel both show up here.
+     * is shared with the agent's presence_forward tool, so tunnels opened from a
+     * session or from this panel both show up here. Styling follows the file
+     * browser: theme tokens only (no ad-hoc colours), 4px grid, icon buttons.
      */
     function TunnelPanel({ sessionId }) {
       const [hosts, setHosts] = useState([]);
@@ -1776,6 +1837,7 @@ export function createApp({ React }) {
       const [host, setHost] = useState('');
       const [remoteHost, setRemoteHost] = useState('127.0.0.1');
       const [remotePort, setRemotePort] = useState('');
+      const [loading, setLoading] = useState(true);
       const [busy, setBusy] = useState(false);
       const [error, setError] = useState(null);
       const [copied, setCopied] = useState(null);
@@ -1790,6 +1852,8 @@ export function createApp({ React }) {
           setHost((current) => current || list.find((item) => item.connected)?.alias || list[0]?.alias || '');
         } catch (err) {
           setError(err.message);
+        } finally {
+          setLoading(false);
         }
       }, []);
 
@@ -1819,6 +1883,7 @@ export function createApp({ React }) {
       }, [load]);
 
       const startTunnel = async () => {
+        if (busy) return;
         if (!host) {
           setError('先选一台机器');
           return;
@@ -1839,7 +1904,9 @@ export function createApp({ React }) {
           setRemotePort('');
           await load();
         } catch (err) {
-          setError(err.message);
+          setError(isAuthMessage(err.message)
+            ? `${host} 需要密码登录：先到「远程文件」面板连接一次（可勾选记住），再回来转发。`
+            : err.message);
         } finally {
           setBusy(false);
         }
@@ -1870,11 +1937,53 @@ export function createApp({ React }) {
         return map;
       }, new Map())].sort((a, b) => a[0].localeCompare(b[0]));
 
-      const field = {
-        height: 28, font: 'inherit', fontSize: 12, padding: '0 8px',
-        borderRadius: 8, border: `1px solid ${C.border}`,
-        background: 'var(--dsw-alias-bg-layer-1)', color: C.text,
-      };
+      const hostConnected = (alias) => Boolean(hosts.find((item) => item.alias === alias)?.connected);
+
+      const tunnelRow = (tunnel) => h('div', {
+        key: tunnel.id,
+        className: 'dp-entry dp-entry--tunnel',
+      }, [
+        h('span', { key: 'icon', className: 'dp-tile dp-tile--live' }, h(Icon, { name: 'external', size: 16 })),
+        h('div', { key: 'text', className: 'dp-tunnel-text' }, [
+          h('div', { key: 'route', className: 'dp-tunnel-route dp-mono' }, [
+            `${tunnel.remoteHost}:${tunnel.remotePort}`,
+            h('span', { key: 'arrow', className: 'dp-tunnel-arrow' }, '→'),
+            `127.0.0.1:${tunnel.localPort}`,
+          ]),
+          h('a', {
+            key: 'url',
+            className: 'dp-tunnel-url dp-mono',
+            href: tunnel.url,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            title: '在浏览器里打开',
+          }, tunnel.url),
+        ]),
+        h('div', { key: 'actions', className: 'dp-tunnel-actions' }, [
+          h('a', {
+            key: 'open',
+            className: 'dp-iconbtn',
+            href: tunnel.url,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            title: '打开',
+          }, h(Icon, { name: 'external', size: 15 })),
+          h('button', {
+            key: 'copy',
+            type: 'button',
+            className: 'dp-iconbtn',
+            title: copied === tunnel.id ? '已复制' : '复制 URL',
+            onClick: () => copyUrl(tunnel),
+          }, h(Icon, { name: copied === tunnel.id ? 'check' : 'copy', size: 15 })),
+          h('button', {
+            key: 'stop',
+            type: 'button',
+            className: 'dp-iconbtn dp-iconbtn--danger',
+            title: '停止转发',
+            onClick: () => stopTunnel(tunnel.id),
+          }, h(Icon, { name: 'power', size: 15 })),
+        ]),
+      ]);
 
       return h('div', {
         className: 'dp-pane',
@@ -1882,8 +1991,10 @@ export function createApp({ React }) {
       }, [
         h('div', { key: 'toolbar', className: 'dp-toolbar' }, [
           h('span', { key: 'icon', className: 'dp-toolbar-icon' }, h(Icon, { name: 'server', size: 15 })),
-          h('span', { key: 'title', style: { fontSize: 12, fontWeight: 600 } },
-            tunnels.length > 0 ? `端口转发 · ${tunnels.length}` : '端口转发'),
+          h('span', { key: 'title', className: 'dp-toolbar-title' }, '端口转发'),
+          tunnels.length > 0
+            ? h('span', { key: 'count', className: 'dp-group-chip' }, `${tunnels.length} 个`)
+            : null,
           h('div', { key: 'spacer', style: { flex: 1 } }),
           h('button', {
             key: 'refresh',
@@ -1891,36 +2002,36 @@ export function createApp({ React }) {
             className: 'dp-tool',
             title: '刷新',
             onClick: load,
-          }, [h(Icon, { key: 'i', name: 'refresh', size: 15 })]),
+          }, h('span', { key: 'spin', className: loading ? 'dp-spin-wrap dp-spinning' : 'dp-spin-wrap' }, h(Icon, { name: 'refresh', size: 15 }))),
         ]),
-        h('div', {
-          key: 'form',
-          style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '8px', borderBottom: `1px solid ${C.border}` },
-        }, [
+        h('div', { key: 'form', className: 'dp-form' }, [
           h('select', {
             key: 'host',
+            className: 'dp-select',
             value: host,
+            title: '远程机器',
             onChange: (event) => setHost(event.target.value),
-            style: field,
           }, hosts.map((item) => h('option', { key: item.alias, value: item.alias }, item.alias))),
           h('input', {
             key: 'remoteHost',
+            className: 'dp-input dp-input--host dp-mono',
             value: remoteHost,
-            title: '远程主机（默认 127.0.0.1）',
+            title: '远程主机地址（默认 127.0.0.1）',
+            placeholder: '127.0.0.1',
             onChange: (event) => setRemoteHost(event.target.value),
-            style: { ...field, width: 100, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
           }),
+          h('span', { key: 'arrow', className: 'dp-tunnel-arrow dp-mono' }, '→'),
           h('input', {
             key: 'remotePort',
+            className: 'dp-input dp-input--port dp-mono',
             value: remotePort,
             inputMode: 'numeric',
-            placeholder: '端口',
+            placeholder: '8080',
             title: '远程端口',
             onChange: (event) => setRemotePort(event.target.value.replace(/[^\d]/gu, '')),
             onKeyDown: (event) => {
               if (event.key === 'Enter') startTunnel();
             },
-            style: { ...field, width: 78, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
           }),
           h('button', {
             key: 'go',
@@ -1928,70 +2039,33 @@ export function createApp({ React }) {
             className: 'dp-tool dp-tool--primary',
             disabled: busy || !host || !remotePort,
             onClick: startTunnel,
-          }, busy ? '转发中…' : '开始转发'),
+          }, busy
+            ? [h('span', { key: 'spin', className: 'dp-spin-wrap dp-spinning' }, h(Icon, { name: 'refresh', size: 14 })), h('span', { key: 't' }, '转发中…')]
+            : '开始转发'),
         ]),
-        error ? h('div', { key: 'error', className: 'dp-banner' }, error) : null,
+        error ? h('div', { key: 'error', className: 'dp-banner' }, [
+          h(Icon, { key: 'i', name: 'alert', size: 14 }),
+          h('span', { key: 't' }, error),
+        ]) : null,
         h('div', { key: 'list', className: 'dp-list' },
-          groups.length === 0
-            ? h('div', { key: 'empty', className: 'dp-empty' }, [
-                h('span', { key: 'icon', className: 'dp-empty-icon' }, h(Icon, { name: 'server', size: 22 })),
-                h('span', { key: 'a' }, '还没有端口转发'),
-                h('span', { key: 'b', style: { fontSize: 11.5 } },
-                  '在上面选机器、填远程端口（如 8080），就会得到一个本地 http://127.0.0.1:<端口> 地址'),
-              ])
-            : groups.map(([alias, items]) => h('div', { key: alias, style: { marginTop: 6 } }, [
-                h('div', {
-                  key: 'head',
-                  style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', color: C.muted, fontSize: 11.5 },
-                }, [
-                  h('span', { key: 'dot', style: { width: 6, height: 6, borderRadius: '50%', background: C.ok } }),
-                  h('span', { key: 'name', style: { fontWeight: 600 } }, alias),
-                  h('span', { key: 'count' }, `${items.length} 个`),
-                ]),
-                ...items.map((tunnel) => h('div', {
-                  key: tunnel.id,
-                  style: {
-                    display: 'flex', alignItems: 'center', gap: 8, padding: '8px',
-                    borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 6,
-                    background: 'var(--dsw-alias-bg-layer-1)',
-                  },
-                }, [
-                  h('div', { key: 'text', style: { flex: 1, minWidth: 0 } }, [
-                    h('div', {
-                      key: 'route',
-                      style: { fontSize: 12.5, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
-                    }, `${tunnel.remoteHost}:${tunnel.remotePort}  →  127.0.0.1:${tunnel.localPort}`),
-                    h('a', {
-                      key: 'url',
-                      href: tunnel.url,
-                      target: '_blank',
-                      rel: 'noopener noreferrer',
-                      style: { fontSize: 11.5, color: 'var(--dsw-alias-state-business-primary)', textDecoration: 'none' },
-                    }, tunnel.url),
+          loading
+            ? h('div', { className: 'dp-loading' }, h(Spinner, { label: '加载中…' }))
+            : groups.length === 0
+              ? h('div', { key: 'empty', className: 'dp-empty' }, [
+                  h('span', { key: 'icon', className: 'dp-empty-icon' }, h(Icon, { name: 'server', size: 22 })),
+                  h('span', { key: 'title' }, '还没有端口转发'),
+                  h('span', { key: 'hint', className: 'dp-empty-hint' },
+                    '选机器、填远程端口（如 8080 / 6006 / 3000），点「开始转发」；这里会一直列出正在转发的端口。'),
+                ])
+              : groups.map(([alias, items]) => h('div', { key: alias, className: 'dp-group' }, [
+                  h('div', { key: 'head', className: 'dp-group-head' }, [
+                    h('span', { key: 'dot', className: hostConnected(alias) ? 'dp-dot dp-dot--on' : 'dp-dot' }),
+                    h('span', { key: 'name', className: 'dp-group-name' }, alias),
+                    h('span', { key: 'count', className: 'dp-group-chip' }, `${items.length} 个`),
+                    hostConnected(alias) ? null : h('span', { key: 'off', className: 'dp-group-note' }, '未连接'),
                   ]),
-                  h('a', {
-                    key: 'open',
-                    href: tunnel.url,
-                    target: '_blank',
-                    rel: 'noopener noreferrer',
-                    className: 'dp-tool',
-                    style: { textDecoration: 'none' },
-                  }, [h(Icon, { key: 'i', name: 'external', size: 14 }), h('span', { key: 't' }, '打开')]),
-                  h('button', {
-                    key: 'copy',
-                    type: 'button',
-                    className: 'dp-tool',
-                    onClick: () => copyUrl(tunnel),
-                  }, [h(Icon, { key: 'i', name: 'copy', size: 14 }), h('span', { key: 't' }, copied === tunnel.id ? '已复制' : '复制')]),
-                  h('button', {
-                    key: 'stop',
-                    type: 'button',
-                    className: 'dp-iconbtn',
-                    title: '停止转发',
-                    onClick: () => stopTunnel(tunnel.id),
-                  }, h(Icon, { name: 'trash', size: 15 })),
-                ])),
-              ]))),
+                  ...items.map(tunnelRow),
+                ]))),
       ]);
     }
 
@@ -2467,35 +2541,43 @@ export function createApp({ React }) {
 
         const tunnelSection = h('div', {
           key: 'tunnels',
-          style: { marginTop: 22, borderTop: `1px solid ${C.border}`, paddingTop: 10 },
+          className: 'dp-card',
+          style: { marginTop: 22, padding: '12px 14px' },
         }, [
           h('div', {
             key: 'head',
-            style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
+            style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: tunnels.length === 0 ? 4 : 8 },
           }, [
+            h('span', { key: 'icon', className: 'dp-icon', style: { width: 22, height: 22 } }, h(Icon, { name: 'server', size: 13 })),
             h('span', { key: 'title', style: { fontSize: 13, fontWeight: 600 } }, '端口转发'),
-            h('span', { key: 'count', style: { color: C.muted, fontSize: 12 } }, `${tunnels.length} 个`),
+            h('span', { key: 'count', className: 'dp-chip' }, `${tunnels.length} 个`),
             h('div', { key: 'spacer', style: { flex: 1 } }),
-            h('span', { key: 'hint', style: { color: C.muted, fontSize: 11.5 } }, '在右侧栏「端口转发」里新建'),
+            h('span', { key: 'hint', style: { color: C.muted, fontSize: 11.5 } }, '在右侧栏「端口转发」里新建 / 停止'),
           ]),
           tunnels.length === 0
-            ? h('div', { key: 'empty', style: { color: C.muted, fontSize: 12, padding: '4px 0 8px' } },
-                '没有正在转发的端口。打开右侧栏的「端口转发」标签即可把远程 8080 映射到本地。')
+            ? h('div', { key: 'empty', style: { color: C.muted, fontSize: 12, padding: '2px 0 4px' } },
+                '没有正在转发的端口。打开右侧栏的「端口转发」标签，把远程 8080 之类的端口映射到本地。')
             : tunnels.map((tunnel) => h('div', {
                 key: tunnel.id,
-                style: { display: 'flex', alignItems: 'center', gap: 8, padding: '7px 8px', borderBottom: `1px solid ${C.border}` },
+                className: 'dp-row',
+                style: { cursor: 'default' },
               }, [
-                h('span', { key: 'host', style: { fontWeight: 600, fontSize: 12.5, minWidth: 90 } }, tunnel.host),
+                h('span', { key: 'dot', className: 'dp-dot dp-dot--on', style: { marginRight: 2 } }),
+                h('span', { key: 'host', style: { fontWeight: 600, fontSize: 12.5, minWidth: 82 } }, tunnel.host),
                 h('span', {
                   key: 'route',
-                  style: { flex: 1, minWidth: 0, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-                }, `${tunnel.remoteHost}:${tunnel.remotePort} → 127.0.0.1:${tunnel.localPort}`),
+                  className: 'dp-mono dp-tunnel-route',
+                  style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                }, [tunnel.remoteHost, ':', String(tunnel.remotePort),
+                  h('span', { key: 'arrow', className: 'dp-tunnel-arrow' }, '→'),
+                  `127.0.0.1:${tunnel.localPort}`]),
                 h('a', {
                   key: 'open',
                   href: tunnel.url,
                   target: '_blank',
                   rel: 'noopener noreferrer',
-                  style: { color: 'var(--dsw-alias-state-business-primary)', fontSize: 12, textDecoration: 'none' },
+                  className: 'dp-link dp-mono',
+                  style: { fontSize: 12 },
                 }, tunnel.url),
                 Button({ label: '停止', small: true, onClick: () => stopTunnel(tunnel.id), disabled: busy }),
               ])),

@@ -384,6 +384,31 @@ host 端新增 6 个 API（`src/api.js`，双前缀注册）：
 
 另：API 7/7、regression 7/7、client bundle 1625 KiB 构建 + 冒烟 PASS。
 
+## 〇之十七、第十八轮：端口面板按规范重做 + 自查（0.16.1）
+
+反馈：端口面板"又没按之前那种规范和标准"。**重新对照文件面板的体系逐项检查**，确认的问题与修复：
+
+| 检查项 | 发现 | 修复 |
+| --- | --- | --- |
+| 颜色/背景 | 行内用 `background: var(--dsw-alias-bg-layer-1)`、自定义 border 拼"卡片"，没走统一 surface | 全部改成主题 token 类（`.dp-entry`、`.dp-iconbtn`），面板内**硬编码颜色 0、行内颜色 0** |
+| 输入控件 | 自定义 `field` 常量（height/padding/border 手写） | 用 `.dp-select` / `.dp-input`（标题栏同款 28px 高度、圆角、focus ring） |
+| 行结构 | 每行一个 inline 盒子，无 hover/无图标体系 | 复用 `.dp-entry`：行 hover 底色、图标 tile、两层信息（route 行 + URL 行） |
+| 操作按钮 | 文字按钮「打开/复制/停止」混排 | 统一 24px 图标按钮（↗ 打开 / 复制→✓ / 电源停止 hover 变红），带 title |
+| 分组头 | 内联字号/颜色 | `.dp-group` + `.dp-group-head`：连接状态点（`.dp-dot--on` 带光晕）+ 主机名 + 数量 chip + 未连接提示 |
+| 空状态 | 一行文字 | `.dp-empty` 图标块 + 标题 + 用法提示（`.dp-empty-hint`） |
+| 加载/禁用 | 首屏空白、按钮可重复点 | 首屏 Spinner；刷新图标旋转（`.dp-spinning`）；`busy` 期间按钮禁用 + 重入保护 |
+| 窄侧边栏 | 表单 5 个控件挤一行会溢出 | 两行自适应：机器下拉独占一行，其余控件第二行；URL 可收缩省略（`min-width:0`） |
+| 错误提示 | 直接抛 ssh 原文 | 统一 `.dp-banner`（图标 + 文本）；认证失败时提示"先去「远程文件」面板连接一次" |
+| 设置页同名区块 | 纯 inline 拼的列表 | 改成 `.dp-card` 卡片：图标 + 标题 + 数量 chip + `.dp-row` 行 + `.dp-link` + 停止按钮 |
+
+**自查脚本**（`.scratch/ui-audit.mjs`，每轮跑）：
+- 收集面板里所有 `className`，对照样式表 → **36 个类全部有定义**
+- 扫描硬编码颜色与行内 color/background → **0**
+- 行内样式只剩结构性两项（容器 `height:100%`、spacer `flex:1`），与文件面板一致
+
+**验证**：`build-client` → 1629 KiB（minified）→ `node --check` → 冒烟 PASS；端口转发端到端 5/5（真实远程 `http.server` 经隧道取回 844366 字节）；API 7/7；regression 7/7。
+
+
 
 
 ## 一、最初提出的问题 → 现在的结果
