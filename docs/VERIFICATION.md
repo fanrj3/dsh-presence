@@ -434,6 +434,31 @@ host 端新增 6 个 API（`src/api.js`，双前缀注册）：
 - API 7/7、regression 7/7、端口转发端到端 5/5、拆分与重复端口 2/2、bundle 冒烟 PASS、UI 自查 39 类全定义 / 0 硬编码色 / 0 行内颜色
 - `build-client` → 1643 KiB（minified）；打包 `--check` 通过
 
+## 〇之十九、第二十轮：通知层级/语言 + 本地端口默认同号（0.17.1）
+
+### 1. toast 被设置弹窗的遮罩压暗
+截图里右下角通知在设置弹窗打开时是灰的——`z-index: 90` 低于设置遮罩。改为 **`z-index: 2147483000`**（固定定位、`pointer-events` 正确），任何弹窗之上都清晰可见。
+
+### 2. toast 仍是英文
+根因：`LOCALE` 是**模块加载时就固定的常量**，而 harness 的 locale 插件在插件加载**之后**才把 `<html lang>` 设成 `zh-CN`，于是常量冻结在 `en`。改为 `currentLocale()` **每次调用时读取** `<html lang>`（缺失再退回 `navigator.language`，默认 zh）；`t()`、关闭按钮文案、`humanizeError` 全部走它。结构断言验证：不再有 `const LOCALE = (`，`t()` 使用 `currentLocale()`。
+
+### 3. 本地端口应当默认与远程相同
+| 行为 | 实现 |
+| --- | --- |
+| 不填本地端口 | `pool.openForward` 让本地端口 = 远程端口（8000 → 8000） |
+| 该本地端口被占用 | 自动回退到系统分配端口，返回 `localPortFallback / requestedLocalPort`，界面弹警告说明并提示可手动指定 |
+| 想自己指定 | 表单新增「本地端口」字段（留空 = 同号），API/工具都支持 `localPort` |
+| agent 工具 | `presence_forward` 走同一个 `openForward`，结果里注明"同号/回退"，面板照旧自动出现 |
+
+**验证（真实主机）**：
+- 本地端口默认同号：`remote=19300 local=19300 fallback=false` ✅
+- 占住本地 19300 再转发：`requested=19300 actual=9397 fallback=true` ✅
+- 显式 `localPort=19500`：`local=19500` ✅ → **3/3**
+- 结构检查 16/16（locale 惰性读取、z-index、动画、进度条、reduced-motion、本地端口字段、openForward/EADDRINUSE、API/工具都走 openForward）
+- 通知逻辑 8/8 + 8/8、工具契约 8/8、API 7/7、regression 7/7、端口转发 5/5、拆分 2/2、bundle 冒烟、UI 自查全通过
+- `build-client` → 1643 KiB（minified）；打包 `--check` 通过
+
+
 
 
 

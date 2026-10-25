@@ -30,14 +30,18 @@ export function createApp({ React, ReactDOM }) {
     // ------------------------------------------------------------ i18n
     // The harness UI is Chinese by default; if the page declares English the
     // catalogue falls back to English copy with the raw detail kept underneath.
-    const LOCALE = (() => {
+    // Read lazily: the locale plugin sets <html lang> after plugins are loaded,
+    // so a constant captured at module-eval time can be wrong.
+    function currentLocale() {
       try {
-        const lang = (document.documentElement.lang || navigator.language || 'zh').toLowerCase();
-        return lang.startsWith('zh') ? 'zh' : 'en';
+        const lang = (document.documentElement.lang || '').toLowerCase();
+        if (lang) return lang.startsWith('zh') ? 'zh' : 'en';
+        const nav = (navigator.language || '').toLowerCase();
+        return nav.startsWith('zh') ? 'zh' : 'en';
       } catch {
         return 'zh';
       }
-    })();
+    }
 
     const MESSAGES = {
       zh: {
@@ -113,7 +117,7 @@ export function createApp({ React, ReactDOM }) {
     };
 
     function t(key, params = {}) {
-      const template = MESSAGES[LOCALE]?.[key] ?? MESSAGES.zh[key] ?? key;
+      const template = MESSAGES[currentLocale()]?.[key] ?? MESSAGES.zh[key] ?? key;
       return template.replace(/\{(\w+)\}/gu, (match, name) => (params[name] === undefined ? match : String(params[name])));
     }
 
@@ -262,7 +266,7 @@ export function createApp({ React, ReactDOM }) {
           key: 'close',
           type: 'button',
           className: 'dp-toast-close',
-          title: LOCALE === 'zh' ? '关闭' : 'Dismiss',
+          title: currentLocale() === 'zh' ? '关闭' : 'Dismiss',
           onClick: () => dismissNow(item.id),
         }, h(Icon, { name: 'x', size: 13 })),
         h('div', { key: 'progress', className: 'dp-toast-progress' }, h('span', null)),
@@ -480,7 +484,7 @@ export function createApp({ React, ReactDOM }) {
 
       /* ---------------------------------------------------- notifications */
       .dp-toasts {
-        position: fixed; right: 16px; bottom: 16px; z-index: 90;
+        position: fixed; right: 16px; bottom: 16px; z-index: 2147483000;
         display: flex; flex-direction: column-reverse; gap: 8px;
         width: min(380px, calc(100vw - 32px));
         pointer-events: none;
@@ -2242,6 +2246,7 @@ export function createApp({ React, ReactDOM }) {
       const [host, setHost] = useState('');
       const [remoteHost, setRemoteHost] = useState('127.0.0.1');
       const [remotePort, setRemotePort] = useState('');
+      const [localPort, setLocalPort] = useState('');
       const [loading, setLoading] = useState(true);
       const [busy, setBusy] = useState(false);
       const [copied, setCopied] = useState(null);
@@ -2298,13 +2303,29 @@ export function createApp({ React, ReactDOM }) {
           return;
         }
         if (split.host !== remoteHost.trim()) setRemoteHost(split.host);
+        const wantedLocal = localPort.trim() ? Number(localPort.trim()) : undefined;
+        if (wantedLocal !== undefined && (!Number.isInteger(wantedLocal) || wantedLocal < 1 || wantedLocal > 65535)) {
+          notifyError({ title: '本地端口无效', hint: '留空表示与远程端口相同；手填时需为 1-65535' });
+          return;
+        }
         setBusy(true);
         notifyError(null);
         try {
-          const created = await request('/tunnels', { host, remotePort: split.port, remoteHost: split.host });
+          const created = await request('/tunnels', {
+            host,
+            remotePort: split.port,
+            remoteHost: split.host,
+            localPort: wantedLocal,
+          });
           setRemotePort('');
+          setLocalPort('');
           await load();
-          notifySuccess(`端口转发已建立：${created.tunnel?.url ?? ''}`);
+          const tunnel = created.tunnel ?? {};
+          if (tunnel.localPortFallback) {
+            notifyWarning(`本地 ${tunnel.requestedLocalPort} 已被占用，已改用 ${tunnel.localPort}；可在「本地端口」里手动指定`);
+          } else {
+            notifySuccess(`端口转发已建立：${tunnel.url ?? ''}`);
+          }
         } catch (err) {
           notifyError(tunnelErrorInfo(err.message));
         } finally {
@@ -2442,6 +2463,21 @@ export function createApp({ React, ReactDOM }) {
                 },
               }),
             ]),
+            h('div', { key: 'localPort', className: 'dp-field dp-field--port' }, [
+              h('label', { key: 'label', className: 'dp-field-label' }, '本地端口'),
+              h('input', {
+                key: 'input',
+                className: 'dp-input dp-mono',
+                value: localPort,
+                inputMode: 'numeric',
+                placeholder: remotePort || '同远程',
+                title: '本地端口（留空则与远程端口相同，被占用会自动换一个）',
+                onChange: (event) => setLocalPort(event.target.value.replace(/[^\d]/gu, '')),
+                onKeyDown: (event) => {
+                  if (event.key === 'Enter') startTunnel();
+                },
+              }),
+            ]),
             h('button', {
               key: 'go',
               type: 'button',
@@ -2453,7 +2489,7 @@ export function createApp({ React, ReactDOM }) {
               : '开始转发'),
           ]),
           h('div', { key: 'hint', className: 'dp-form-hint' },
-            `将 ${host || '远程机器'} 上的 ${remoteHost || '127.0.0.1'}:${remotePort || '端口'} 映射到本地随机端口；转发成功后点行尾的 ↗ 在浏览器打开。`),
+            `将 ${host || '远程机器'} 上的 ${remoteHost || '127.0.0.1'}:${remotePort || '端口'} 映射到本地 ${localPort || remotePort || '同号端口'}（留空默认同号，被占用会自动换一个）；成功后点行尾 ↗ 打开。`),
         ]),
         h('div', { key: 'list', className: 'dp-list' },
           loading
@@ -3092,7 +3128,7 @@ export function createApp({ React, ReactDOM }) {
     }
 
     return {
-      __test: { humanizeError, pushNotice, t, LOCALE, noticeStore, splitHostPort },
+      __test: { humanizeError, pushNotice, t, currentLocale, noticeStore, splitHostPort },
       inject: ['slots'],
       apply(ctx) {
         ensureStyles();

@@ -143,6 +143,33 @@ export class PresencePool {
     return { id, host: tunnel.host, localPort: tunnel.localPort, remoteHost: tunnel.remoteHost, remotePort: tunnel.remotePort };
   }
 
+  /**
+   * Forward with sensible defaults: the local port mirrors the remote port
+   * (8000 → 8000) so URLs stay predictable; if that local port is taken, fall
+   * back to an OS-assigned one and report what happened.
+   */
+  async openForward(host, { localPort, remoteHost = '127.0.0.1', remotePort } = {}) {
+    if (!remotePort) throw new Error('remotePort is required');
+    const requested = Number.isInteger(Number(localPort)) && Number(localPort) > 0 ? Number(localPort) : Number(remotePort);
+    const attempts = requested === 0 ? [0] : [requested, 0];
+    let lastError = null;
+    for (const attempt of attempts) {
+      try {
+        const tunnel = await this.openTunnel(host, { localPort: attempt, remoteHost, remotePort });
+        return {
+          ...tunnel,
+          requestedLocalPort: requested,
+          localPortFallback: attempt !== requested && attempt === 0,
+        };
+      } catch (error) {
+        lastError = error;
+        const message = String(error?.message ?? error);
+        if (attempt === 0 || !/EADDRINUSE|address already in use|listen EADDR/iu.test(message)) break;
+      }
+    }
+    throw lastError ?? new Error('could not open the forward');
+  }
+
   async closeTunnel(id) {
     const tunnel = this.#tunnels.get(id);
     if (!tunnel) return false;

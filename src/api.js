@@ -327,8 +327,8 @@ export function presenceRoutes(pool, late = {}) {
             return;
           }
           try {
-            const tunnel = await pool.openTunnel(host, {
-              localPort: body.localPort ? Number(body.localPort) : 0,
+            const tunnel = await pool.openForward(host, {
+              localPort: body.localPort ? Number(body.localPort) : undefined,
               remoteHost,
               remotePort,
             });

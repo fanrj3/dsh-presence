@@ -1094,8 +1094,8 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         }
         if (!args.remotePort) throw new Error('open requires remotePort');
         const { host } = await pickScope(args, exec);
-        const tunnel = await pool.openTunnel(host, {
-          localPort: args.localPort ?? 0,
+        const tunnel = await pool.openForward(host, {
+          localPort: args.localPort ?? undefined,
           remoteHost: args.remoteHost ?? '127.0.0.1',
           remotePort: args.remotePort,
         });
@@ -1104,6 +1104,9 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           `opened forward ${tunnel.id}`,
           `local:  ${url}`,
           `remote: ${host}:${tunnel.remoteHost}:${tunnel.remotePort}`,
+          tunnel.localPortFallback
+            ? `note: local port ${tunnel.requestedLocalPort} was busy, so an OS-assigned port was used; pass localPort to pick another.`
+            : 'note: the local port mirrors the remote port; pass localPort to override.',
           'The right-sidebar 端口转发 panel lists it automatically — open the local URL in a browser to check the service.',
           `Stop it with presence_forward { "action": "close", "forwardId": "${tunnel.id}" }.`,
         ].join('\n');
