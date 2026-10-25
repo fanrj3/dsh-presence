@@ -250,6 +250,27 @@ host 端新增 6 个 API（`src/api.js`，双前缀注册）：
 
 **验证**：嵌套目录树端到端 3/3（递归建目录 + 4 个文件含中文/空格名上传、递归遍历全部找回、嵌套文件 `/raw` 字节一致、整棵树进回收站）；API 端点 7/7；`client.js` 语法检查通过。
 
+## 〇之十一、第十二轮：密码机、取消、目录 UI（0.12.0）
+
+| 反馈 | 修复 |
+| --- | --- |
+| 需要密码的服务器直接报 `authentication failed: no usable key, and no password was supplied` | 文件面板识别认证类错误（`isAuthMessage`），弹出**密码对话框**（密码 + 「记住这台」+ 取消），提交走 `POST /connect` 后自动重载当前目录；取消后不残留错误态。密码默认仅内存，勾选记住才交给凭据服务 |
+| 下载文件夹点取消却报错 | `showDirectoryPicker` 的 `AbortError` / `SecurityError` 视为取消，静默返回（不弹错误） |
+| 目录 UI 不够好 | 按 **OpenDesign (Lens)** 规范重做：4px 网格间距（8/12/16）、圆角 4/8/12/pill、`1px ring + 0 10px 24px rgba(0,0,0,.08) + 0 1px 2px` 的柔投影（不用重投影）、动效 `100ms micro / 170ms small / 300ms medium` + `cubic-bezier(.4,0,.2,1)`、聚焦环 4px accent@28%；胶囊型工具栏按钮与面包屑、单色表面 + 单一点缀色、行 hover 才显操作、芯片式类型标签、弹窗 12px 圆角 + 淡入上浮、空状态图标块 + 文案；代码预览配色降饱和以符合"少点缀色" |
+
+设计 token 对照（OpenDesign Lens → 实现）：
+| OpenDesign | 实现 |
+| --- | --- |
+| spacing 4/8/16/24 | `8px` 工具区、`4px` 行内边距、`16px` 弹窗内边距 |
+| radius sm 4 / md 8 / lg 12 / pill | 行 8、弹窗 12、按钮与面包屑 pill、图标块 8 |
+| shadow `0 0 0 1px + 0 10px 24px 8% + 0 1px 2px 5%` | `.dp-elevated` 原样采用 |
+| motion 100/170/300 + cubic-bezier(.4,0,.2,1) | `--dp-micro/small/medium`、`--dp-ease` |
+| focus ring 4px accent 28% | `--dp-ring` |
+| 禁止：重投影 / 多点缀色 / 装饰插图 | 只用 1px ring + 柔阴影，唯一强调色是 brand（进度、聚焦） |
+
+**验证**：`client.js` 语法检查通过；服务端端点未改动（沿用 7/7 结果）；打包 `--check` 通过。
+
+
 **验证**（全部在真实主机 server 上）：
 - `node scripts/regression.mjs server` → 5/5
 - `node scripts/job-probe.mjs server` → 6/6

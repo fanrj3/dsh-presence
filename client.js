@@ -214,157 +214,273 @@ window.__ModuleLoader__.load({
         animation: dp-spin .8s linear infinite;
       }
 
-      /* -------------------------------------------------- remote file pane */
+      /* -------------------------------------------------- remote file pane
+         OpenDesign (Lens) tokens: 4px grid, radius 4/8/12/pill, 1px ring +
+         soft elevation, motion 100/170/300ms with cubic-bezier(.4,0,.2,1),
+         monochrome surfaces with a single accent, no heavy shadows. */
       .dp-pane {
         display: flex; flex-direction: column; height: 100%; min-height: 0;
         color: var(--dsw-alias-label-primary); font-size: 13px; position: relative;
+        --dp-micro: 100ms;
+        --dp-small: 170ms;
+        --dp-medium: 300ms;
+        --dp-ease: cubic-bezier(.4, 0, .2, 1);
+        --dp-ring-soft: 0 0 0 1px var(--dsw-alias-border-l1);
+        --dp-ring: 0 0 0 4px color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent);
+        --dp-elevated: 0 0 0 1px var(--dsw-alias-border-l1),
+          0 10px 24px rgba(0, 0, 0, .08), 0 1px 2px rgba(0, 0, 0, .05);
       }
+
+      /* toolbar: pill ghosts, 4px grid */
       .dp-pane-toolbar {
         display: flex; align-items: center; gap: 4px;
-        padding: 8px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1);
+        padding: 8px; border-bottom: 1px solid var(--dsw-alias-border-l1);
         flex: 0 0 auto;
       }
-      .dp-pane-toolbar .dp-tool {
+      .dp-tool {
         display: inline-flex; align-items: center; gap: 4px;
-        height: 26px; padding: 0 8px; border: 0; border-radius: 8px;
+        height: 28px; padding: 0 12px;
+        border: 1px solid transparent; border-radius: 999px;
         background: transparent; color: var(--dsw-alias-label-secondary);
-        font: inherit; font-size: 12px; cursor: pointer;
-        transition: background-color 130ms cubic-bezier(.2,0,0,1), color 130ms cubic-bezier(.2,0,0,1);
+        font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
+        transition: background-color var(--dp-micro) var(--dp-ease),
+          color var(--dp-micro) var(--dp-ease),
+          border-color var(--dp-micro) var(--dp-ease);
       }
-      .dp-pane-toolbar .dp-tool:hover {
+      .dp-tool:hover {
+        background: var(--dsw-alias-bg-layer-2);
+        color: var(--dsw-alias-label-primary);
+      }
+      .dp-tool:active { transform: scale(.98); }
+      .dp-tool:focus-visible { outline: none; box-shadow: var(--dp-ring); }
+      .dp-tool--primary {
+        border-color: var(--dsw-alias-label-primary);
+        background: var(--dsw-alias-label-primary);
+        color: var(--dsw-alias-bg-base);
+      }
+      .dp-tool--primary:hover {
+        background: var(--dsw-alias-label-primary);
+        color: var(--dsw-alias-bg-base);
+        box-shadow: var(--dp-ring-soft);
+      }
+      .dp-select {
+        height: 28px; padding: 0 10px; max-width: 128px;
+        border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px;
         background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
+        font: inherit; font-size: 12px; outline: none;
+        transition: border-color var(--dp-micro) var(--dp-ease), box-shadow var(--dp-micro) var(--dp-ease);
       }
-      .dp-pane-toolbar .dp-tool:active { transform: scale(.97); }
-      .dp-pane-toolbar .dp-tool:focus-visible { outline: none; box-shadow: var(--dp-ring); }
+      .dp-select:focus { border-color: var(--dsw-alias-brand-primary); box-shadow: var(--dp-ring); }
+
+      /* path bar: pill crumbs */
       .dp-pane-path {
         display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
-        padding: 6px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1);
+        padding: 8px; border-bottom: 1px solid var(--dsw-alias-border-l1);
         flex: 0 0 auto;
       }
-      .dp-pane-filter { padding: 6px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1); flex: 0 0 auto; }
-      .dp-pane-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 6px 14px; }
+      .dp-pane .dp-crumb {
+        border: 1px solid transparent; background: transparent;
+        padding: 3px 10px; border-radius: 999px;
+        font: inherit; font-size: 11.5px; line-height: 16px;
+        color: var(--dsw-alias-label-secondary); cursor: pointer;
+        transition: background-color var(--dp-micro) var(--dp-ease),
+          color var(--dp-micro) var(--dp-ease),
+          border-color var(--dp-micro) var(--dp-ease);
+      }
+      .dp-pane .dp-crumb:hover {
+        background: var(--dsw-alias-bg-layer-2);
+        color: var(--dsw-alias-label-primary);
+      }
+      .dp-pane .dp-crumb:focus-visible { outline: none; box-shadow: var(--dp-ring); }
+      .dp-pane .dp-crumb--current {
+        background: var(--dsw-alias-bg-layer-2);
+        border-color: var(--dsw-alias-border-l1);
+        color: var(--dsw-alias-label-primary);
+        font-weight: 500; cursor: default;
+      }
+      .dp-pane .dp-crumb--current:hover { background: var(--dsw-alias-bg-layer-2); }
+      .dp-pane .dp-crumb-sep { color: var(--dsw-alias-label-secondary); opacity: .5; font-size: 11px; padding: 0 1px; }
+
+      .dp-pane-filter { padding: 8px 8px 4px; flex: 0 0 auto; }
+      .dp-pane .dp-input {
+        width: 100%; height: 30px; padding: 0 12px; box-sizing: border-box;
+        border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px;
+        background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
+        font: inherit; font-size: 12px; outline: none;
+        transition: border-color var(--dp-micro) var(--dp-ease),
+          box-shadow var(--dp-micro) var(--dp-ease),
+          background-color var(--dp-micro) var(--dp-ease);
+      }
+      .dp-pane .dp-input::placeholder { color: var(--dsw-alias-label-secondary); }
+      .dp-pane .dp-input:hover { border-color: var(--dsw-alias-border-l2); }
+      .dp-pane .dp-input:focus { border-color: var(--dsw-alias-brand-primary); box-shadow: var(--dp-ring); }
+
+      /* rows: 32px tall, 4px grid, subtle hover, actions on hover */
+      .dp-pane-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 6px 16px; }
       .dp-pane-row {
         display: flex; align-items: center; gap: 8px; width: 100%;
-        padding: 5px 8px; border: 0; border-radius: 8px;
+        min-height: 32px; padding: 4px 8px; border: 1px solid transparent; border-radius: 8px;
         background: transparent; color: inherit; font: inherit;
         text-align: left; cursor: pointer;
-        transition: background-color 130ms cubic-bezier(.2,0,0,1), transform 120ms cubic-bezier(.2,0,0,1);
+        transition: background-color var(--dp-micro) var(--dp-ease),
+          border-color var(--dp-micro) var(--dp-ease);
       }
       .dp-pane-row:hover { background: var(--dsw-alias-bg-layer-2); }
-      .dp-pane-row:active { transform: scale(.995); }
       .dp-pane-row:focus-visible { outline: none; box-shadow: var(--dp-ring); }
-      .dp-pane-row.is-selected { background: var(--dsw-alias-bg-layer-2); }
-      .dp-icon-tile {
-        width: 22px; height: 22px; border-radius: 6px; flex: 0 0 auto;
+      .dp-pane-row.is-selected {
+        background: var(--dsw-alias-bg-layer-2);
+        border-color: var(--dsw-alias-border-l2);
+      }
+      .dp-pane .dp-icon-tile {
+        width: 24px; height: 24px; border-radius: 8px; flex: 0 0 auto;
         display: grid; place-items: center; font-size: 12px;
         background: var(--dsw-alias-bg-layer-2);
-        transition: background-color 130ms cubic-bezier(.2,0,0,1);
+        transition: background-color var(--dp-micro) var(--dp-ease);
       }
       .dp-pane-row:hover .dp-icon-tile { background: var(--dsw-alias-bg-base); }
       .dp-pane-row .dp-name {
         flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-size: 13px;
       }
       .dp-pane-row .dp-meta {
         color: var(--dsw-alias-label-secondary); font-size: 11px; flex: 0 0 auto;
         font-variant-numeric: tabular-nums;
       }
       .dp-pane-actions {
-        display: flex; gap: 2px; flex: 0 0 auto; opacity: .35;
-        transition: opacity 130ms cubic-bezier(.2,0,0,1);
+        display: flex; gap: 2px; flex: 0 0 auto; opacity: 0;
+        transition: opacity var(--dp-micro) var(--dp-ease);
       }
       .dp-pane-row:hover .dp-pane-actions, .dp-pane-row:focus-within .dp-pane-actions { opacity: 1; }
-      .dp-pane-actions .dp-iconbtn { width: 22px; height: 22px; line-height: 22px; font-size: 12px; background: transparent; color: var(--dsw-alias-label-secondary); }
-      .dp-pane-actions .dp-iconbtn:hover { background: var(--dsw-alias-border-l1); color: var(--dsw-alias-label-primary); transform: none; }
+      .dp-pane-actions .dp-iconbtn {
+        width: 24px; height: 24px; line-height: 24px; font-size: 12px;
+        border-radius: 999px; background: transparent; color: var(--dsw-alias-label-secondary);
+      }
+      .dp-pane-actions .dp-iconbtn:hover {
+        background: var(--dsw-alias-border-l1); color: var(--dsw-alias-label-primary); transform: none;
+      }
+
+      .dp-pane-empty {
+        display: flex; flex-direction: column; align-items: center; gap: 8px;
+        padding: 40px 16px; color: var(--dsw-alias-label-secondary); font-size: 12px; text-align: center;
+      }
+      .dp-pane-empty .dp-pane .dp-icon-tile { width: 32px; height: 32px; font-size: 16px; }
 
       .dp-drop {
         position: absolute; inset: 8px; z-index: 8;
         display: flex; align-items: center; justify-content: center;
-        background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent);
-        border: 2px dashed var(--dsw-alias-brand-primary); border-radius: 12px;
+        background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);
+        border: 1px dashed var(--dsw-alias-brand-primary); border-radius: 12px;
         color: var(--dsw-alias-label-primary); font-size: 13px; pointer-events: none;
       }
 
+      /* progress: thin pill bar, soft elevation */
       .dp-progress {
         position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 9;
-        background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l1);
-        border-radius: 10px; padding: 8px 10px;
-        box-shadow: 0 10px 28px rgba(0, 0, 0, .18);
+        background: var(--dsw-alias-bg-overlay);
+        border-radius: 12px; padding: 10px 12px;
+        box-shadow: var(--dp-elevated);
         display: flex; flex-direction: column; gap: 6px;
-        backdrop-filter: blur(6px);
       }
       .dp-progress-head { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--dsw-alias-label-secondary); }
       .dp-progress-track { height: 4px; border-radius: 999px; background: var(--dsw-alias-border-l1); overflow: hidden; }
-      .dp-progress-fill { height: 100%; background: var(--dsw-alias-brand-primary); transition: width 120ms linear; }
-      .dp-progress-fill.is-indeterminate { width: 40% !important; animation: dp-indeterminate 1.1s ease-in-out infinite; }
+      .dp-progress-fill {
+        height: 100%; border-radius: 999px;
+        background: var(--dsw-alias-brand-primary);
+        transition: width 120ms linear;
+      }
+      .dp-progress-fill.is-indeterminate { width: 40% !important; animation: dp-indeterminate 1.1s var(--dp-ease) infinite; }
       @keyframes dp-indeterminate {
         0% { margin-left: 0; }
         50% { margin-left: 60%; }
         100% { margin-left: 0; }
       }
 
+      /* inline banner */
+      .dp-pane .dp-banner {
+        margin: 8px; padding: 8px 12px; border-radius: 8px;
+        border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 40%, transparent);
+        background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent);
+        color: var(--dsw-alias-state-error-primary); font-size: 12px; line-height: 17px;
+      }
+
       /* -------------------------------------------------------- preview */
       .dp-overlay {
         position: absolute; inset: 0; z-index: 20;
         display: flex; align-items: center; justify-content: center;
-        background: rgba(0, 0, 0, .45);
+        background: rgba(0, 0, 0, .38);
+        animation: dp-fade var(--dp-small) var(--dp-ease) both;
       }
       .dp-modal {
         background: var(--dsw-alias-bg-layer-1);
-        border: 1px solid var(--dsw-alias-border-l1);
-        border-radius: 14px;
-        box-shadow: 0 18px 48px rgba(0, 0, 0, .32);
-        width: min(94%, 860px); max-height: 88%;
+        border-radius: 12px;
+        box-shadow: var(--dp-elevated);
+        width: min(94%, 880px); max-height: 88%;
         display: flex; flex-direction: column; overflow: hidden;
+        animation: dp-modal-in var(--dp-medium) var(--dp-ease) both;
+      }
+      @keyframes dp-modal-in {
+        from { opacity: 0; transform: translateY(8px) scale(.99); }
+        to { opacity: 1; transform: none; }
       }
       .dp-modal-head {
         display: flex; align-items: center; gap: 8px;
-        padding: 10px 12px; border-bottom: 1px solid var(--dsw-alias-border-l1);
+        padding: 12px 16px; border-bottom: 1px solid var(--dsw-alias-border-l1);
       }
-      .dp-modal-body {
-        margin: 10px 12px; border-radius: 10px; overflow: auto;
-        background: var(--dsw-alias-bg-layer-2);
-      }
+      .dp-modal-title { font-size: 14px; font-weight: 500; }
+      .dp-modal-body { margin: 12px 16px; border-radius: 8px; overflow: auto; background: var(--dsw-alias-bg-layer-2); }
       .dp-modal-foot {
         display: flex; align-items: center; gap: 8px;
-        padding: 8px 12px; border-top: 1px solid var(--dsw-alias-border-l1);
+        padding: 10px 16px; border-top: 1px solid var(--dsw-alias-border-l1);
       }
       .dp-chip {
-        display: inline-flex; align-items: center; gap: 4px;
-        padding: 1px 7px; border-radius: 999px;
+        display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 999px;
         background: var(--dsw-alias-bg-layer-2);
-        font-size: 10.5px; color: var(--dsw-alias-label-secondary);
+        font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary);
       }
 
       /* ---------------------------------------------------------- code */
       .dp-code {
-        margin: 0; padding: 10px 12px; overflow: auto; max-height: 64vh;
+        margin: 0; padding: 12px 14px; overflow: auto; max-height: 64vh;
         font-family: "JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace,
           SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 12px; line-height: 19px; tab-size: 4;
       }
-      .dp-code-line { display: flex; gap: 14px; }
+      .dp-code-line { display: flex; gap: 16px; }
       .dp-code-num {
         flex: 0 0 auto; width: 3.4em; text-align: right;
-        color: var(--dsw-alias-label-secondary); opacity: .6; user-select: none;
+        color: var(--dsw-alias-label-secondary); opacity: .55; user-select: none;
       }
       .dp-code-text { white-space: pre; flex: 1 1 auto; }
       .dp-code-comment { color: var(--dsw-alias-label-secondary); font-style: italic; }
-      .dp-code-string { color: #15803d; }
-      .dp-code-keyword { color: #7c3aed; }
-      .dp-code-number { color: #b45309; }
-      .dp-code-function { color: #0369a1; }
+      .dp-code-string { color: #3f7d5a; }
+      .dp-code-keyword { color: #6b5bd2; }
+      .dp-code-number { color: #9a6a3a; }
+      .dp-code-function { color: #3b6f9e; }
       @media (prefers-color-scheme: dark) {
-        .dp-code-string { color: #86efac; }
-        .dp-code-keyword { color: #c4b5fd; }
-        .dp-code-number { color: #fdba74; }
-        .dp-code-function { color: #93c5fd; }
+        .dp-code-string { color: #8fbfa1; }
+        .dp-code-keyword { color: #b9a9ee; }
+        .dp-code-number { color: #d7a97b; }
+        .dp-code-function { color: #8fb8e0; }
       }
       .dp-plain {
-        margin: 0; padding: 10px 12px; overflow: auto; max-height: 64vh;
+        margin: 0; padding: 12px 14px; overflow: auto; max-height: 64vh;
         font-family: "JetBrains Mono", "Cascadia Code", ui-monospace, SFMono-Regular,
           Menlo, Consolas, monospace;
         font-size: 12px; line-height: 19px; white-space: pre-wrap; word-break: break-word;
       }
+
+      /* --------------------------------------------------- auth prompt */
+      .dp-auth {
+        display: flex; flex-direction: column; gap: 12px;
+        padding: 20px; width: min(92%, 380px);
+        background: var(--dsw-alias-bg-layer-1);
+        border-radius: 12px; box-shadow: var(--dp-elevated);
+        animation: dp-modal-in var(--dp-medium) var(--dp-ease) both;
+      }
+      .dp-auth-title { font-size: 14px; font-weight: 500; }
+      .dp-auth-hint { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
+      .dp-auth-row { display: flex; align-items: center; gap: 6px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+      .dp-auth-actions { display: flex; justify-content: flex-end; gap: 8px; }
     `;
     function ensureStyles() {
       if (typeof document === 'undefined' || document.getElementById(STYLE_ID)) return;
@@ -814,6 +930,12 @@ window.__ModuleLoader__.load({
       return { files: items.length, bytes: sentBytes };
     }
 
+    /** Does this API error mean the host could not authenticate? */
+    function isAuthMessage(text) {
+      const message = String(text ?? '');
+      return /authentication failed|no usable key|no password|password was supplied|Permission denied \(publickey|Host key verification failed/iu.test(message);
+    }
+
     /**
      * Download a remote directory into a real local folder tree. The web layer
      * cannot drag a DIRECTORY out (Chromium's DownloadURL only carries one file),
@@ -824,7 +946,14 @@ window.__ModuleLoader__.load({
       if (typeof window.showDirectoryPicker !== 'function') {
         throw new Error('当前环境不支持选择本地文件夹（需要 File System Access API）');
       }
-      const destination = await window.showDirectoryPicker({ mode: 'readwrite' });
+      let destination;
+      try {
+        destination = await window.showDirectoryPicker({ mode: 'readwrite' });
+      } catch (error) {
+        // Closing the picker is a cancellation, not a failure.
+        if (error && (error.name === 'AbortError' || error.name === 'SecurityError')) return null;
+        throw error;
+      }
       if (!destination) return null;
       const rootHandle = await destination.getDirectoryHandle(name, { create: true });
       const progress = { files: 0, bytes: 0, current: name };
@@ -877,6 +1006,7 @@ window.__ModuleLoader__.load({
       const [preview, setPreview] = useState(null);
       const [selected, setSelected] = useState(null);
       const [creatingFolder, setCreatingFolder] = useState(null);
+      const [auth, setAuth] = useState(null);
       const fileInput = useRef(null);
       const folderInput = useRef(null);
       const rootRef = useRef(null);
@@ -894,12 +1024,38 @@ window.__ModuleLoader__.load({
           setCrumbs(data.crumbs ?? []);
           setEntries(data.entries ?? []);
           setSelected(null);
+          setAuth(null);
         } catch (err) {
+          // A password-only host cannot connect silently: ask instead of showing
+          // the raw ssh failure.
+          if (isAuthMessage(err.message)) {
+            setEntries([]);
+            setLoading(false);
+            setAuth({ host: nextHost, path: nextPath, password: '', remember: false, error: null, busy: false });
+            return;
+          }
           setError(err.message);
         } finally {
           setLoading(false);
         }
       }, []);
+
+      const submitPassword = async () => {
+        if (!auth) return;
+        setAuth({ ...auth, busy: true, error: null });
+        try {
+          await request('/connect', {
+            host: auth.host,
+            password: auth.password,
+            remember: auth.remember,
+          });
+          const next = { host: auth.host, path: auth.path };
+          setAuth(null);
+          await load(next.host, next.path);
+        } catch (err) {
+          setAuth({ ...auth, busy: false, error: err.message });
+        }
+      };
 
       // First open: follow the session's workspace, else the first registered one.
       useEffect(() => {
@@ -1132,8 +1288,7 @@ window.__ModuleLoader__.load({
         h('div', { key: 'toolbar', className: 'dp-pane-toolbar' }, [
           h('select', {
             key: 'host',
-            className: 'dp-input',
-            style: { width: 'auto', maxWidth: 120, height: 26, padding: '0 6px', fontSize: 12 },
+            className: 'dp-select',
             value: host ?? '',
             onChange: (event) => {
               const next = event.target.value;
@@ -1204,7 +1359,7 @@ window.__ModuleLoader__.load({
           key: 'pathbar',
           className: 'dp-pane-path',
         }, crumbs.map((crumb, index) => h('span', { key: `${crumb.path}#${index}`, style: { display: 'inline-flex', alignItems: 'center' } }, [
-          index > 0 ? h('span', { key: 'sep', style: { color: C.muted, fontSize: 11, padding: '0 1px' } }, '›') : null,
+          index > 0 ? h('span', { key: 'sep', className: 'dp-crumb-sep' }, '›') : null,
           h('button', {
             key: 'crumb',
             type: 'button',
@@ -1220,15 +1375,12 @@ window.__ModuleLoader__.load({
             onChange: (event) => setFilter(event.target.value),
           })),
         error
-          ? h('div', {
-              key: 'error',
-              style: { margin: '8px 10px', padding: '6px 10px', borderRadius: 8, background: C.soft, color: C.error, fontSize: 12 },
-            }, error)
+          ? h('div', { key: 'error', className: 'dp-banner' }, error)
           : null,
         creatingFolder !== null
           ? h('div', {
               key: 'newfolder',
-              style: { display: 'flex', gap: 6, padding: '8px 10px', borderBottom: `1px solid ${C.border}` },
+              style: { display: 'flex', gap: 8, padding: '8px 8px', borderBottom: `1px solid ${C.border}` },
             }, [
               h('input', {
                 key: 'name',
@@ -1247,9 +1399,12 @@ window.__ModuleLoader__.load({
           : null,
         h('div', { key: 'list', className: 'dp-pane-list' },
           loading
-            ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: '28px 0' } }, h(Spinner, { label: '加载中…' }))
+            ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: '32px 0' } }, h(Spinner, { label: '加载中…' }))
             : visible.length === 0
-              ? h('div', { style: { textAlign: 'center', color: C.muted, padding: '28px 0', fontSize: 12 } }, '这个目录是空的')
+              ? h('div', { key: 'empty', className: 'dp-pane-empty' }, [
+                  h('span', { key: 'icon', className: 'dp-icon-tile' }, '📂'),
+                  h('span', { key: 'text' }, filter.trim() ? '没有匹配的条目' : '这个目录是空的'),
+                ])
               : visible.map((entry) => h('div', {
                   key: entry.path,
                   className: `dp-pane-row${selected === entry.path ? ' is-selected' : ''}`,
@@ -1309,6 +1464,54 @@ window.__ModuleLoader__.load({
                 : null,
             ])
           : null,
+        auth
+          ? h('div', {
+              key: 'auth-overlay',
+              className: 'dp-overlay',
+              onClick: () => setAuth(null),
+            }, h('div', {
+              key: 'auth',
+              className: 'dp-auth',
+              onClick: (event) => event.stopPropagation(),
+            }, [
+              h('div', { key: 'title', className: 'dp-auth-title' }, `连接 ${auth.host}`),
+              h('div', { key: 'hint', className: 'dp-auth-hint' },
+                '这台机器需要密码登录。密码默认只保存在内存里，勾选「记住这台」才会交给凭据服务保管。'),
+              h('input', {
+                key: 'password',
+                className: 'dp-input',
+                type: 'password',
+                autoFocus: true,
+                placeholder: 'SSH 密码',
+                value: auth.password,
+                onChange: (event) => setAuth({ ...auth, password: event.target.value }),
+                onKeyDown: (event) => {
+                  if (event.key === 'Enter') submitPassword();
+                  if (event.key === 'Escape') setAuth(null);
+                },
+              }),
+              h('label', { key: 'remember', className: 'dp-auth-row' }, [
+                h('input', {
+                  key: 'cb',
+                  type: 'checkbox',
+                  checked: auth.remember,
+                  onChange: (event) => setAuth({ ...auth, remember: event.target.checked }),
+                }),
+                h('span', { key: 't' }, '记住这台'),
+              ]),
+              auth.error ? h('div', { key: 'err', className: 'dp-banner', style: { margin: 0 } }, auth.error) : null,
+              h('div', { key: 'actions', className: 'dp-auth-actions' }, [
+                Button({ label: '取消', small: true, onClick: () => setAuth(null) }),
+                Button({
+                  label: auth.busy ? '连接中…' : '连接',
+                  small: true,
+                  primary: true,
+                  disabled: auth.busy || !auth.password,
+                  onClick: submitPassword,
+                }),
+              ]),
+            ]))
+          : null,
         preview
           ? h('div', {
               key: 'overlay',
@@ -1323,7 +1526,8 @@ window.__ModuleLoader__.load({
                 h('span', { key: 'icon', className: 'dp-icon-tile' }, isImageName(preview.name) ? '🖼' : '📄'),
                 h('span', {
                   key: 'name',
-                  style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13, fontWeight: 600 },
+                  className: 'dp-modal-title',
+                  style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
                 }, preview.name),
                 preview.kind === 'text'
                   ? h('span', { key: 'chip', className: 'dp-chip' }, preview.code ? extensionOf(preview.name).toUpperCase() || 'CODE' : '文本')
