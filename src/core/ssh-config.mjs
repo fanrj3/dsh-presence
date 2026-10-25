@@ -4,6 +4,7 @@
 import { existsSync, readFileSync, statSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { loadCustomHosts } from '../custom-hosts.js';
 
 export function sshDirectory() {
   return process.env.DSH_SSH_DIR || join(homedir(), '.ssh');
@@ -121,16 +122,26 @@ export function parseSshConfig(text, { baseDir = sshDirectory(), depth = 0 } = {
   return entries;
 }
 
-export function readSshConfig() {
+/** The ssh config file alone, without the manual hosts Presence stores itself. */
+export function readSshConfigEntries() {
   const file = configPath();
   if (!existsSync(file)) return new Map();
   return parseSshConfig(readFileSync(file, 'utf8'), { baseDir: sshDirectory() });
 }
 
-/** Hosts worth showing in a picker: aliases with an explicit HostName. */
+/** ssh config plus the hosts the user typed in manually (manual wins on add). */
+export function readSshConfig() {
+  const entries = readSshConfigEntries();
+  for (const entry of loadCustomHosts()) {
+    if (!entries.has(entry.alias)) entries.set(entry.alias, entry);
+  }
+  return entries;
+}
+
+/** Hosts worth showing in a picker: config hosts with a HostName, plus manual ones. */
 export function listHosts() {
   return [...readSshConfig().values()]
-    .filter((entry) => entry.hostname && entry.hostname !== entry.alias)
+    .filter((entry) => entry.hostname && (entry.source === 'manual' || entry.hostname !== entry.alias))
     .sort((a, b) => a.alias.localeCompare(b.alias));
 }
 

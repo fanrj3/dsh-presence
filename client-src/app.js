@@ -9,14 +9,14 @@ export function createApp({ React }) {
 
     const API = '/api/presence';
 
-    async function request(path, body) {
-      const response = await fetch(API + path, body === undefined
-        ? { headers: { accept: 'application/json' } }
-        : {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', accept: 'application/json' },
-            body: JSON.stringify(body),
-          });
+    async function request(path, body, method) {
+      const verb = method ?? (body === undefined ? 'GET' : 'POST');
+      const init = { method: verb, headers: { accept: 'application/json' } };
+      if (body !== undefined) {
+        init.headers['content-type'] = 'application/json';
+        init.body = JSON.stringify(body);
+      }
+      const response = await fetch(API + path, init);
       let data;
       try {
         data = await response.json();
@@ -1778,6 +1778,12 @@ export function createApp({ React }) {
       const [files, setFiles] = useState(null);
       const [preview, setPreview] = useState(null);
       const [loadingList, setLoadingList] = useState(true);
+      const [manualOpen, setManualOpen] = useState(false);
+      const [manualText, setManualText] = useState('');
+      const [manualAlias, setManualAlias] = useState('');
+      const [manualNote, setManualNote] = useState('');
+      const [manualWarnings, setManualWarnings] = useState([]);
+      const [manualBusy, setManualBusy] = useState(false);
 
       const loadList = useCallback(async () => {
         try {
@@ -1796,6 +1802,60 @@ export function createApp({ React }) {
       useEffect(() => {
         ensureStyles();
         loadList();
+      }, [loadList]);
+
+      // /state carries live connection state, so refresh it while the panel is
+      // open (and when the window regains focus) instead of showing a dot that
+      // was true at mount time.
+      useEffect(() => {
+        const timer = setInterval(() => { loadList(); }, 5000);
+        const refresh = () => { loadList(); };
+        window.addEventListener('focus', refresh);
+        return () => {
+          clearInterval(timer);
+          window.removeEventListener('focus', refresh);
+        };
+      }, [loadList]);
+
+      const addManualHost = useCallback(async () => {
+        const text = manualText.trim();
+        if (!text) {
+          setError('请输入 ssh 命令或 user@host[:port]');
+          return;
+        }
+        setManualBusy(true);
+        setError(null);
+        setManualWarnings([]);
+        try {
+          const result = await request('/custom-hosts', {
+            text,
+            alias: manualAlias.trim() || undefined,
+            note: manualNote.trim() || undefined,
+          });
+          setManualWarnings(result.warnings ?? []);
+          setManualText('');
+          setManualAlias('');
+          setManualNote('');
+          setManualOpen(false);
+          await loadList();
+        } catch (err) {
+          setError(err.message);
+        } finally {
+          setManualBusy(false);
+        }
+      }, [manualText, manualAlias, manualNote, loadList]);
+
+      const deleteManualHost = useCallback(async (alias) => {
+        if (!window.confirm(`删除手动主机「${alias}」？只会删除 Presence 自己保存的配置，不会动 ~/.ssh/config。`)) return;
+        setBusy(true);
+        try {
+          await request(`/custom-hosts?alias=${encodeURIComponent(alias)}`, {}, 'DELETE');
+          await loadList();
+        } catch (err) {
+          setError(err.message);
+        } finally {
+          setBusy(false);
+        }
       }, [loadList]);
 
       const openBrowser = useCallback(async (host, path) => {
@@ -1927,45 +1987,148 @@ export function createApp({ React }) {
       let body;
 
       if (mode === 'new') {
-        body = h('div', { style: { marginTop: 12, borderTop: `1px solid ${C.border}` } },
+        const inputStyle = {
+          flex: '1 1 220px', minWidth: 180, font: 'inherit', fontSize: 13,
+          padding: '7px 10px', borderRadius: 8, border: `1px solid ${C.border}`,
+          background: 'var(--dsw-alias-bg-layer-1)', color: C.text,
+        };
+        const manualForm = manualOpen
+          ? h('div', {
+              key: 'manual-form',
+              style: {
+                display: 'flex', flexDirection: 'column', gap: 8,
+                padding: '12px', margin: '8px 0 12px',
+                border: `1px solid ${C.border}`, borderRadius: 12, background: C.soft,
+              },
+            }, [
+              h('div', { key: 'hint', style: { color: C.muted, fontSize: 12 } },
+                '粘贴一条 ssh 命令或 user@host[:port]。只保存在 Presence 自己这里，不会改 ~/.ssh/config。'),
+              h('input', {
+                key: 'text',
+                autoFocus: true,
+                value: manualText,
+                placeholder: 'ssh -CAXY user@host  或  user@host:2222',
+                onChange: (event) => setManualText(event.target.value),
+                onKeyDown: (event) => {
+                  if (event.key === 'Enter') addManualHost();
+                  if (event.key === 'Escape') setManualOpen(false);
+                },
+                style: { ...inputStyle, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+              }),
+              h('div', { key: 'row', style: { display: 'flex', gap: 8, flexWrap: 'wrap' } }, [
+                h('input', {
+                  key: 'alias',
+                  value: manualAlias,
+                  placeholder: '别名（可选，自动生成）',
+                  onChange: (event) => setManualAlias(event.target.value),
+                  style: { ...inputStyle, flex: '1 1 160px' },
+                }),
+                h('input', {
+                  key: 'note',
+                  value: manualNote,
+                  placeholder: '备注（可选）',
+                  onChange: (event) => setManualNote(event.target.value),
+                  style: { ...inputStyle, flex: '1 1 160px' },
+                }),
+              ]),
+              manualWarnings.length > 0
+                ? h('div', { key: 'warn', style: { color: C.muted, fontSize: 12, lineHeight: 1.6 } },
+                    manualWarnings.map((warning) => h('div', { key: warning }, `· ${warning}`)))
+                : null,
+              h('div', { key: 'actions', style: { display: 'flex', gap: 8, justifyContent: 'flex-end' } }, [
+                Button({ label: '取消', small: true, onClick: () => setManualOpen(false) }),
+                Button({ label: manualBusy ? '添加中…' : '添加', small: true, primary: true, disabled: manualBusy || !manualText.trim(), onClick: addManualHost }),
+              ]),
+            ])
+          : null;
+
+        body = h('div', { style: { marginTop: 12, borderTop: `1px solid ${C.border}` } }, [
+          h('div', {
+            key: 'manual-bar',
+            style: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0' },
+          }, [
+            h('span', { key: 'label', style: { color: C.muted, fontSize: 12 } },
+              hosts.length > 0 ? `${hosts.length} 台可用机器` : '还没有可用的机器'),
+            h('div', { key: 'spacer', style: { flex: 1 } }),
+            manualOpen
+              ? null
+              : Button({ label: '手动添加主机', small: true, onClick: () => { setManualOpen(true); setError(null); setManualWarnings([]); } }),
+          ]),
+          manualForm,
           hosts.length === 0
-            ? h('p', { style: { color: C.muted, fontSize: 13, padding: '12px 0' } }, '~/.ssh/config 里没有可用的机器。')
+            ? h('p', { style: { color: C.muted, fontSize: 13, padding: '4px 0 12px' } },
+                '~/.ssh/config 里没有可用的机器。可以手动添加一条 ssh 命令。')
             : hosts.flatMap((host) => {
-                const row = h('button', {
+                const manual = host.source === 'manual';
+                const connected = Boolean(host.connected);
+                const row = h('div', {
                   key: host.alias,
-                  type: 'button',
-                  onClick: () => pickHost(host.alias),
-                  disabled: busy,
                   style: {
                     display: 'flex',
                     width: '100%',
                     alignItems: 'center',
                     gap: 10,
-                    padding: '10px 8px',
-                    border: 'none',
+                    padding: '9px 8px',
                     borderBottom: `1px solid ${C.border}`,
-                    background: 'transparent',
-                    color: C.text,
-                    font: 'inherit',
                     fontSize: 13,
-                    textAlign: 'left',
-                    cursor: busy ? 'default' : 'pointer',
                   },
                 }, [
                   h('span', {
                     key: 'dot',
+                    title: connected ? '已连接' : '未连接',
                     style: {
-                      width: 8, height: 8, borderRadius: '50%',
-                      background: host.connected ? C.ok : C.muted,
-                      flex: '0 0 auto',
+                      width: 8, height: 8, borderRadius: '50%', flex: '0 0 auto',
+                      background: connected ? C.ok : C.muted,
+                      boxShadow: connected ? `0 0 0 3px color-mix(in srgb, ${C.ok} 22%, transparent)` : 'none',
                     },
                   }),
-                  h('span', { key: 'alias', style: { fontWeight: 600, minWidth: 110 } }, host.alias),
-                  h('span', {
-                    key: 'where',
-                    style: { color: C.muted, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-                  }, `${host.user ?? '?'}@${host.hostname}:${host.port}`),
-                  h('span', { key: 'go', style: { color: C.muted } }, '选择 ›'),
+                  h('button', {
+                    key: 'pick',
+                    type: 'button',
+                    onClick: () => pickHost(host.alias),
+                    disabled: busy,
+                    style: {
+                      display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0,
+                      border: 'none', background: 'transparent', color: C.text,
+                      font: 'inherit', fontSize: 13, textAlign: 'left', padding: 0,
+                      cursor: busy ? 'default' : 'pointer',
+                    },
+                  }, [
+                    h('span', { key: 'alias', style: { fontWeight: 600, minWidth: 110 } }, host.alias),
+                    manual
+                      ? h('span', {
+                          key: 'manual',
+                          style: {
+                            fontSize: 10.5, lineHeight: '16px', padding: '0 7px', borderRadius: 999,
+                            background: 'var(--dsw-alias-bg-module-platform)', color: C.muted, flex: '0 0 auto',
+                          },
+                        }, '手动')
+                      : null,
+                    connected
+                      ? h('span', { key: 'live', style: { color: C.ok, fontSize: 11, flex: '0 0 auto' } }, '已连接')
+                      : null,
+                    h('span', {
+                      key: 'where',
+                      style: { color: C.muted, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                    }, `${host.user ?? '?'}@${host.hostname}:${host.port}`),
+                    h('span', { key: 'go', style: { color: C.muted } }, '选择 ›'),
+                  ]),
+                  manual
+                    ? h('button', {
+                        key: 'remove',
+                        type: 'button',
+                        title: '删除手动主机',
+                        disabled: busy,
+                        onClick: (event) => {
+                          event.stopPropagation();
+                          deleteManualHost(host.alias);
+                        },
+                        style: {
+                          border: 'none', background: 'transparent', color: C.muted,
+                          cursor: busy ? 'default' : 'pointer', display: 'inline-flex', padding: 4,
+                        },
+                      }, h(Icon, { name: 'trash', size: 14 }))
+                    : null,
                 ]);
                 if (pendingHost !== host.alias) return [row];
                 return [
@@ -2006,7 +2169,8 @@ export function createApp({ React }) {
                     Button({ label: '连接', onClick: () => pickHost(host.alias, password), primary: true, disabled: !password || busy }),
                   ]),
                 ];
-              }));
+              }),
+        ]);
       } else if (mode === 'browse' && browse) {
         const crumbs = browse.crumbs ?? [];
         const parent = crumbs.length > 1 ? crumbs[crumbs.length - 2].path : undefined;
@@ -2079,9 +2243,19 @@ export function createApp({ React }) {
                       style: {
                         width: 9, height: 9, borderRadius: '50%', flex: '0 0 auto',
                         background: connected ? C.ok : C.muted,
+                        boxShadow: connected ? `0 0 0 3px color-mix(in srgb, ${C.ok} 22%, transparent)` : 'none',
                       },
                     }),
                     h('span', { key: 'name', style: { fontWeight: 600, fontSize: 13 } }, alias),
+                    host?.source === 'manual'
+                      ? h('span', {
+                          key: 'manual',
+                          style: {
+                            fontSize: 10.5, lineHeight: '16px', padding: '0 7px', borderRadius: 999,
+                            background: 'var(--dsw-alias-bg-module-platform)', color: C.muted,
+                          },
+                        }, '手动')
+                      : null,
                     host
                       ? h('span', {
                           key: 'where',

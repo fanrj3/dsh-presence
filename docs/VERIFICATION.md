@@ -337,6 +337,28 @@ host 端新增 6 个 API（`src/api.js`，双前缀注册）：
 
 **验证**：`build-client` 重新打包（1615 KiB minified）→ `node --check client.js` → bundle 冒烟测试 PASS（注册 `id=dsh-presence`、返回 `{ inject, apply }`）；产物里确认包含 `jsonLanguage` / `yamlLanguage`（JSON/YAML 高亮可用）；API 端点 7/7。
 
+## 〇之十五、第十六轮：手动主机 + 已连接状态 + 图标（0.15.0）
+
+需求：`~/.ssh/config` 里没有的机器也要能连，例如
+`ssh -CAXY user@server`；插件自己记住，不写 ssh config。顺带：已连接工作区的状态要维护（绿点），并换一个好看的图标。
+
+**手动主机**（`src/custom-hosts.js` + `/api/presence/custom-hosts`）：
+- 解析一条 ssh 命令：`ssh` 前缀、`-p/-l/-i/-F/-o/-J`、组合短开关（`-CAXY`）、`user@host[:port]`、`ssh://user@host:port`、`[IPv6]:port`；引号与反斜杠转义；`ProxyJump` 识别但仅警告（连接层不支持跳板，会直连目标）
+- 存储：`~/.dsh/presence/hosts.json`（mode 0600，最多 100 条），**绝不写 `~/.ssh/config`**
+- 合并：`readSshConfig()` / `listHosts()` 把手动主机并进同一视图，因此 `/state`、工作区、文件浏览器、终端、`presence://` 挂载路径全部自动可用；别名冲突（含 config 已有别名）直接拒绝
+- 界面：选机器界面「手动添加主机」→ 粘贴命令 / 别名 / 备注 → 列表出现带「手动」徽章的行，可删除（删除同时断开连接）
+
+**已连接状态维护**：面板每 5 秒 + 窗口重新聚焦时刷新 `/state`；绿点加 3px 光晕、行内显示「已连接」；工作区分组头部同样刷新，不再出现连上却显示灰点。
+
+**图标**：换成圆角渐变底板 + 终端窗口（`>_`）+ 绿色在线脉冲的 SVG（`icon.svg`）。
+
+**验证**：
+- 解析器 + 存储 12/12（含 example 命令、-p/-i、IPv6、ssh URI、ProxyJump 警告、重复别名拒绝、合并视图、删除）
+- 端到端 6/6：API 添加 → `/state` 显示 `source=manual` → **真实 SSH 连接**成功（`user@server`）→ `connected=true` → 删除后列表为空
+- **回归发现**：`server` 的 ssh config 里带有 `ProxyJump`，而连接层一直是直连并且可用；新加的"拒绝 ProxyJump"守卫会让这个主机全部失败（api-check 5 项 FAIL、进程崩）。守卫已移除，注释说明 ProxyJump 被有意忽略（手动主机按 `-J` 只给警告）
+- 全量：API 7/7、regression 7/7、client bundle 构建 + 冒烟 PASS
+
+
 ## 一、最初提出的问题 → 现在的结果
 
 | # | 原始要求 | 结果 | 证据 |

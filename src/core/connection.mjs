@@ -6,6 +6,7 @@
 // connection instead of a new `ssh` process.
 
 import { randomBytes } from 'node:crypto';
+import { userInfo } from 'node:os';
 import { readFileSync } from 'node:fs';
 import { connect as connectTcp } from 'node:net';
 import { Client } from 'ssh2';
@@ -277,7 +278,7 @@ export class PresenceConnection {
     const options = {
       host: entry.hostname,
       port: entry.port ?? 22,
-      username: entry.user,
+      username: entry.user ?? userInfo().username,
       readyTimeout: timeoutMs,
       keepaliveInterval: KEEPALIVE_MS,
       keepaliveCountMax: 3,

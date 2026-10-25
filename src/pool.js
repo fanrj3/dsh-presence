@@ -55,6 +55,7 @@ export class PresencePool {
         hostname: entry.hostname,
         port: entry.port,
         user: entry.user,
+        source: entry.source ?? 'config',
         connected: Boolean(connection && !connection.closed),
         identityFile: entry.identityFile?.[0],
         terminals: [...this.#terminals.values()].filter((terminal) => terminal.host === entry.alias).length,
@@ -76,8 +77,11 @@ export class PresencePool {
       const known = listHosts()
         .map((item) => item.alias)
         .join(', ');
-      throw new Error(`no host "${host}" in ~/.ssh/config${known ? `; available: ${known}` : ''}`);
+      throw new Error(`no host "${host}" in ~/.ssh/config or manual hosts${known ? `; available: ${known}` : ''}`);
     }
+    // A ProxyJump in the ssh config is ignored on purpose: Presence dials the
+    // HostName directly (which is how these hosts have always been reached from
+    // this machine). Manual hosts that ask for -J get a warning at add time.
 
     // Secrets live in this process only, never in the session log. A value
     // supplied once is reused for reconnects until the plugin unloads. Until

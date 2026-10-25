@@ -5,6 +5,8 @@
 import { createHash } from 'node:crypto';
 import { activateWorkspace, activeWorkspace, listWorkspaces, removeWorkspace, upsertWorkspace } from './workspaces.js';
 import { ensureMountDir, mountPathFor, normalizeRemotePath, parseMountPath } from './mounts.js';
+import { addCustomHost, loadCustomHosts, removeCustomHost } from './custom-hosts.js';
+import { listHosts, readSshConfigEntries } from './core/ssh-config.mjs';
 
 const MAX_BODY = 64 * 1024;
 // One file per request, in memory only for the upload (the body must be hashed
@@ -244,6 +246,47 @@ export function presenceRoutes(pool, late = {}) {
           host.passwordHint = host.remembered ? 'remembered' : pool.hasSecret(host.alias) ? 'session' : 'none';
         }
         send(response, 200, { ok: true, hosts, terminals: pool.listTerminals() });
+      }),
+    },
+    {
+      // Hosts typed in by hand: `ssh ...` command lines that are not in
+      // ~/.ssh/config. Presence owns the store; the ssh config is never written.
+      kind: 'exact',
+      path: '/presence/api/custom-hosts',
+      handler: guarded(async (request, response) => {
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        if (request.method === 'GET') {
+          send(response, 200, { ok: true, hosts: loadCustomHosts() });
+          return;
+        }
+        if (request.method === 'POST') {
+          const body = await readJson(request);
+          const configEntries = readSshConfigEntries();
+          const takenAliases = [...configEntries.keys()];
+          try {
+            const { entry, warnings } = addCustomHost({ ...body, takenAliases });
+            send(response, 200, { ok: true, entry, warnings, hosts: listHosts().length });
+          } catch (error) {
+            send(response, 400, { ok: false, error: error?.message ?? String(error) });
+          }
+          return;
+        }
+        if (request.method === 'DELETE') {
+          const alias = String(url.searchParams.get('alias') ?? '').trim();
+          if (!alias) {
+            send(response, 400, { ok: false, error: 'alias is required' });
+            return;
+          }
+          try {
+            removeCustomHost(alias);
+            await pool.disconnect(alias).catch(() => {});
+            send(response, 200, { ok: true, removed: alias });
+          } catch (error) {
+            send(response, 400, { ok: false, error: error?.message ?? String(error) });
+          }
+          return;
+        }
+        send(response, 405, { ok: false, error: 'use GET, POST or DELETE' });
       }),
     },
     {
