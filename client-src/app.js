@@ -514,7 +514,13 @@ export function createApp({ React }) {
         height: 62vh; min-height: 180px; overflow: hidden;
         font-family: var(--ds-font-family-code, "Cascadia Code", Consolas, ui-monospace, monospace);
       }
-      .dp-cm .cm-editor { height: 100%; }
+      .dp-cm .cm-editor { height: 100%; border-radius: var(--dsw-radius-sm, 8px); overflow: hidden; }
+      .dp-cm .cm-gutters {
+        border-right: 1px solid var(--dsw-alias-border-l2);
+        border-radius: var(--dsw-radius-sm, 8px) 0 0 var(--dsw-radius-sm, 8px);
+      }
+      .dp-cm .cm-scroller { scrollbar-width: thin; }
+      .dp-modal-body .dp-banner { margin: 10px 12px 0; }
       .dp-plain {
         margin: 0; padding: 10px 12px; overflow: auto; max-height: 62vh;
         font-family: var(--ds-font-family-code, "Cascadia Code", Consolas, ui-monospace, monospace);
@@ -783,15 +789,18 @@ export function createApp({ React }) {
 
     // ------------------------------------------------- remote file browser
     const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'svg']);
+    // Everything text-ish opens in the CodeMirror preview (line numbers always,
+    // syntax colours when the language is known). This includes data formats
+    // such as .json/.yaml/.toml/.xml — previously they fell into a plain <pre>.
     const TEXT_EXTENSIONS = new Set([
-      'txt', 'md', 'markdown', 'json', 'jsonc', 'log', 'csv', 'tsv', 'yml', 'yaml', 'toml', 'ini', 'conf',
-      'cfg', 'xml', 'tex', 'properties', 'gitignore', 'env', 'lock', 'make', 'mk',
+      'txt', 'md', 'markdown', 'json', 'jsonc', 'json5', 'log', 'csv', 'tsv', 'yml', 'yaml', 'toml', 'ini',
+      'conf', 'cfg', 'xml', 'tex', 'properties', 'gitignore', 'gitattributes', 'dockerignore', 'env', 'lock',
+      'make', 'mk', 'patch', 'diff', 'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'mts', 'cts', 'py', 'pyi', 'rb',
+      'go', 'rs', 'java', 'kt', 'kts', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'cs', 'php', 'sh', 'bash', 'zsh',
+      'fish', 'ps1', 'psm1', 'sql', 'html', 'htm', 'css', 'scss', 'less', 'sass', 'gradle', 'vue', 'svelte',
+      'lua', 'pl', 'swift', 'dart', 'r', 'jl', 'hs', 'ex', 'exs', 'erl', 'clj', 'scala', 'groovy', 'cmake',
     ]);
-    const CODE_EXTENSIONS = new Set([
-      'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'py', 'rb', 'go', 'rs', 'java', 'kt', 'c', 'h', 'cc', 'cpp',
-      'hpp', 'cs', 'php', 'sh', 'bash', 'zsh', 'ps1', 'psm1', 'sql', 'html', 'htm', 'css', 'scss', 'less',
-      'gradle', 'dockerfile', 'vue', 'svelte', 'lua', 'pl', 'swift', 'dart',
-    ]);
+    const CODE_EXTENSIONS = TEXT_EXTENSIONS;
     // Stroke icons (Lucide geometry) so the pane uses real UI icons instead of emoji.
     const ICONS = {
       folder: ['M4 7a2 2 0 0 1 2-2h3.6l2 2H18a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z'],
@@ -813,6 +822,7 @@ export function createApp({ React }) {
       server: ['M4 4h16v6H4z', 'M4 14h16v6H4z', 'M7.5 7h.01', 'M7.5 17h.01'],
       search: ['M11 4a7 7 0 1 0 0 14a7 7 0 0 0 0-14z', 'M20 20l-3.6-3.6'],
       play: ['M8 5l11 7-11 7z'],
+      copy: ['M9 9h11v11H9z', 'M5 15V4h11'],
       music: ['M9 17V5l10-2v12', 'M9 17a3 3 0 1 1-6 0a3 3 0 0 1 6 0z', 'M19 15a3 3 0 1 1-6 0a3 3 0 0 1 6 0z'],
     };
 
@@ -853,15 +863,14 @@ export function createApp({ React }) {
     const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v', 'ogv', 'mkv', 'avi']);
     const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'flac', 'ogg', 'm4a', 'aac', 'opus']);
 
-    /** Which inline preview a file gets: 'image' | 'video' | 'audio' | 'pdf' | 'code' | 'text' | null. */
+    /** Which inline preview a file gets: 'image' | 'video' | 'audio' | 'pdf' | 'code' | null. */
     function previewKindOf(name) {
       const extension = extensionOf(name);
       if (IMAGE_EXTENSIONS.has(extension)) return 'image';
       if (VIDEO_EXTENSIONS.has(extension)) return 'video';
       if (AUDIO_EXTENSIONS.has(extension)) return 'audio';
       if (extension === 'pdf') return 'pdf';
-      if (isCodeName(name)) return 'code';
-      if (isTextName(name)) return 'text';
+      if (isTextName(name)) return 'code';
       return null;
     }
 
@@ -872,7 +881,7 @@ export function createApp({ React }) {
       if (kind === 'video') return 'play';
       if (kind === 'audio') return 'music';
       if (kind === 'code') return 'code';
-      if (kind === 'text' || kind === 'pdf') return 'text';
+      if (kind === 'pdf') return 'text';
       return 'file';
     }
 
@@ -894,20 +903,29 @@ export function createApp({ React }) {
     /** Read-only CodeMirror 6 view: syntax highlighting, line numbers, fold. */
     function CodeView({ content, name }) {
       const host = useRef(null);
+      const [failed, setFailed] = useState(false);
       useEffect(() => {
         let disposed = false;
         let handle = null;
+        setFailed(false);
         if (!host.current) return undefined;
-        mountCodeView(host.current, { content, name }).then((created) => {
-          if (disposed) created?.destroy();
-          else handle = created;
-        });
+        mountCodeView(host.current, { content, name })
+          .then((created) => {
+            if (disposed) created?.destroy();
+            else handle = created;
+          })
+          .catch(() => {
+            // Never show a blank panel: fall back to plain monospace text.
+            if (!disposed) setFailed(true);
+          });
         return () => {
           disposed = true;
           handle?.destroy();
         };
       }, [content, name]);
-      return h('div', { ref: host, className: 'dp-cm' });
+      return failed
+        ? h('pre', { className: 'dp-plain' }, content)
+        : h('div', { ref: host, className: 'dp-cm' });
     }
 
     /** Does this API error mean the host could not authenticate? */
@@ -1104,6 +1122,7 @@ export function createApp({ React }) {
       const [selected, setSelected] = useState(null);
       const [creatingFolder, setCreatingFolder] = useState(null);
       const [auth, setAuth] = useState(null);
+      const [copied, setCopied] = useState(false);
       const fileInput = useRef(null);
       const folderInput = useRef(null);
       const rootRef = useRef(null);
@@ -1304,9 +1323,10 @@ export function createApp({ React }) {
               name: entry.name,
               path: entry.path,
               size: entry.size,
-              kind: kind === 'code' ? 'code' : 'text',
+              kind: 'code',
               content: data.content,
               truncated: data.truncated,
+              cap: data.cap,
             });
             return;
           } catch (err) {
@@ -1656,18 +1676,33 @@ export function createApp({ React }) {
                   style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
                 }, preview.name),
                 preview.kind === 'code'
-                  ? h('span', { key: 'chip', className: 'dp-chip' }, extensionOf(preview.name).toUpperCase() || 'CODE')
-                  : preview.kind === 'text'
-                    ? h('span', { key: 'chip', className: 'dp-chip' }, '文本')
-                    : preview.kind === 'image'
-                      ? h('span', { key: 'chip', className: 'dp-chip' }, '图片')
-                      : preview.kind === 'video'
-                        ? h('span', { key: 'chip', className: 'dp-chip' }, '视频')
-                        : preview.kind === 'audio'
-                          ? h('span', { key: 'chip', className: 'dp-chip' }, '音频')
-                          : preview.kind === 'pdf'
-                            ? h('span', { key: 'chip', className: 'dp-chip' }, 'PDF')
-                            : null,
+                  ? h('span', { key: 'chip', className: 'dp-chip' }, extensionOf(preview.name).toUpperCase() || 'TEXT')
+                  : preview.kind === 'image'
+                    ? h('span', { key: 'chip', className: 'dp-chip' }, '图片')
+                    : preview.kind === 'video'
+                      ? h('span', { key: 'chip', className: 'dp-chip' }, '视频')
+                      : preview.kind === 'audio'
+                        ? h('span', { key: 'chip', className: 'dp-chip' }, '音频')
+                        : preview.kind === 'pdf'
+                          ? h('span', { key: 'chip', className: 'dp-chip' }, 'PDF')
+                          : null,
+                preview.kind === 'code'
+                  ? h('button', {
+                      key: 'copy',
+                      type: 'button',
+                      className: 'dp-tool',
+                      title: '复制全部内容',
+                      onClick: async () => {
+                        try {
+                          await navigator.clipboard.writeText(preview.content ?? '');
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 1500);
+                        } catch (err) {
+                          setError(`复制失败：${err.message}`);
+                        }
+                      },
+                    }, [h(Icon, { key: 'i', name: 'copy', size: 14 }), h('span', { key: 't' }, copied ? '已复制' : '复制')])
+                  : null,
                 h('span', { key: 'size', className: 'dp-meta' }, humanSize(preview.size)),
                 h('button', {
                   key: 'close',
@@ -1677,6 +1712,13 @@ export function createApp({ React }) {
                   onClick: () => setPreview(null),
                 }, h(Icon, { name: 'x', size: 16 })),
               ]),
+              preview.truncated
+                ? h('div', {
+                    key: 'truncbanner',
+                    className: 'dp-banner',
+                    style: { margin: '10px 12px 0' },
+                  }, `文件较大：只预览了前 ${humanSize(preview.cap ?? 1024 * 1024)}（完整 ${humanSize(preview.size)}）。要看全部请「保存到本地」。`)
+                : null,
               h('div', { key: 'body', className: 'dp-modal-body' },
                 preview.kind === 'loading'
                   ? h('div', { className: 'dp-loading' }, h(Spinner, { label: '读取中…' }))
@@ -1709,7 +1751,7 @@ export function createApp({ React }) {
                             : h('pre', { className: 'dp-plain' }, preview.content ?? '')),
               h('div', { key: 'foot', className: 'dp-modal-foot' }, [
                 h('span', { key: 'path', className: 'dp-modal-path' }, preview.path),
-                preview.truncated ? h('span', { key: 'trunc', className: 'dp-meta' }, '仅显示前 256 KiB') : null,
+                preview.truncated ? h('span', { key: 'trunc', className: 'dp-meta' }, '已截断') : null,
                 h('button', {
                   key: 'save',
                   type: 'button',

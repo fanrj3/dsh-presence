@@ -1,6 +1,6 @@
 {
   "name": "dsh-presence",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "private": true,
   "type": "module",
   "description": "Work on any machine in your ssh config as if it were local: persistent connections, native file editing, search, exec and terminals, with nothing installed on the remote host.",

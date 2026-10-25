@@ -327,6 +327,16 @@ host 端新增 6 个 API（`src/api.js`，双前缀注册）：
 - `node scripts/feature-probe.mjs server` → 10/10（waitJob 退出码+日志尾、秒退识别、会话过滤、pgid 停止、端口就绪、绝对 glob、统计与截断、缺失路径报错）
 - 兼容性：server 的 rg 11.0.2 不接受 `--binary-files`，代码检测到即回退并缓存；`head` 截断产生的 SIGPIPE 141 不会误判为失败。
 
+## 〇之十四、第十五轮：预览细节修正（0.14.1）
+
+| 反馈 | 修复 |
+| --- | --- |
+| `package-lock.json` 没有高亮、也没有行号 | 根因：`.json/.yaml/.toml/.xml/md…` 只在高亮列表 `TEXT_EXTENSIONS` 里，而预览分支只把 `CODE_EXTENSIONS` 送进 CodeMirror，于是落到了纯 `<pre>` 路径。现在两类合并为同一集合，**所有文本类文件都进 CodeMirror**（语言识别成功就着色，识别不出也至少有行号/选区/等宽/折叠） |
+| 预览细节 | 增加「复制全部内容」按钮（复制图标 + 1.5s「已复制」反馈）；文本读取上限 256 KiB → **1 MiB**（服务端 `/file` 同时返回 `cap`，客户端按实际值提示）；超限时弹窗顶部显示 banner「只预览了前 X（完整 Y）」，页脚标记「已截断」 |
+| 兜底与观感 | CodeMirror 挂载失败时回退为等宽 `<pre>`，不再出现空白面板；编辑器容器加圆角、gutter 右侧分隔线、细滚动条 |
+
+**验证**：`build-client` 重新打包（1615 KiB minified）→ `node --check client.js` → bundle 冒烟测试 PASS（注册 `id=dsh-presence`、返回 `{ inject, apply }`）；产物里确认包含 `jsonLanguage` / `yamlLanguage`（JSON/YAML 高亮可用）；API 端点 7/7。
+
 ## 一、最初提出的问题 → 现在的结果
 
 | # | 原始要求 | 结果 | 证据 |

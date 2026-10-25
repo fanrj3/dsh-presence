@@ -383,12 +383,13 @@ export function presenceRoutes(pool, late = {}) {
           send(response, 400, { ok: false, error: 'is a directory' });
           return;
         }
-        const cap = 256 * 1024;
+        const cap = 1024 * 1024;
         const { content } = await connection.readText(path, { length: Math.min(info.size, cap) });
         send(response, 200, {
           ok: true,
           path,
           size: info.size,
+          cap,
           truncated: info.size > cap,
           content,
         });
