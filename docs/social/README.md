@@ -107,8 +107,30 @@ Presence 建议视觉系统（模板里已经用上）：
 - **标签**：#AI编程 #程序员 #效率工具 #SSH #远程开发 #MCP #开源 等 5–8 个，别堆 20 个。
 - **不要**：夸大"替代所有工具"、把未实现能力写成已实现；技术受众对夸大很敏感。
 
-## 7. 本目录的封面模板
 
-- `cover-light.png` / `cover-dark.png`：1080×1440，3:4，sRGB，中文大字 + 终端卡片 + 品牌行 + 功能 chips；已避开底部 200px / 右侧 120px 安全区。
-- 改字/换色：`render-covers.py` 顶部常量（颜色、文案都在里面），运行 `python docs/social/render-covers.py` 重新生成。
-- 想换成自己的截图：把脚本里 `draw_terminal_card` 的假终端替换成贴图即可（或直接把截图贴进 Figma 模板）。
+## 8. 图片集（本轮重做）
+
+| 文件 | 用途 | 要点 |
+| --- | --- | --- |
+| `cover-dark.png` / `cover-light.png` | 首图 | 左上品牌 + **右上角**「DSH 插件」徽章；终端卡片不出现真实主机名/用户名/域名；文案「多台机器随时切换」 |
+| `tools.png` | 全部工具 | 14 个工具卡片（mono 名称 + 中文用途），一条常驻连接 |
+| `workflow.png` | 工作流程 | 01 你说 → 02 Agent → 03 常驻 SSH → 04 远程机器，左侧发光轨道串联，绿色在线点 |
+| `shot-frame.png` | 截图模板 | 2400×1400 建议尺寸的发光框 + ①②③ 标注位，把真实 DSH 截图贴进去即可 |
+
+重新生成：`python docs/social/render-social.py`（旧脚本 `render-covers.py` 已删除，合并进新脚本）。
+
+### 高级光晕怎么做（研究结论）
+
+主流做法就四层，Figma/PS 都能复现：
+
+1. **底色**：深色竖向渐变 + 96px 技术网格（低透明度），避免纯黑死板。
+2. **环境光晕（ambient glow）**：在卡片**后面**放 2–4 个巨大圆形渐变，透明度 20–40%，加 **Layer Blur 60–120**；Figma 里就是 `Effect → Layer blur`。参考 [Figma ambient glowing rings 教程](https://designerviet.com/threads/huong-dan-tao-hieu-ung-ambient-glowing-rings-trong-figma.21169/)。
+3. **局部光斑（spotlight）**：径向渐变单独一层，混合模式 **Screen / Soft Light**，再复制一层"轻微模糊 + 降低不透明度"制造多层光深。参考 [PS 径向渐变 Screen 做法](https://phlearn.com/tutorial/add-gradient-in-photoshop/)、[Screen + 复制模糊的讨论](https://answers.fiverr.com/qa/10_graphics-design/119_image-editing/can-you-share-an-example-of-how-you-effectively-used-blending-modes-to-achieve-a-creative-effect-in-your-image-edits-r4063/?tab=comments#comment-20514)。
+4. **质感**：叠 3–6% 噪点（grain）防渐变断层；卡片描边用 `rgba(255,255,255,.1)` 而不是纯白；文字加极轻白色 glow 提升可读性（背景复杂时）。参考 [uBlur 的 glow/shadow 教程](https://ublur.app/articles/how-to-add-drop-shadows-glow)。
+
+在 Figma 里的 5 分钟配方：
+1. 1080×1440 画板，深色渐变底（#090D1C → #101A36）。
+2. 画 2 个 500px 圆，填蓝/紫，`Layer blur 80`，透明度 30%。
+3. 放截图卡片（圆角 24、1px 白描边 8%），复制一层放后面，`blur 40`、透明度 25% 当投影光。
+4. 叠一张噪点图，透明度 3–5%，混合模式 Overlay（或 Soft light）。
+5. 导出 PNG，sRGB，1–3 MB（Squoosh 压缩）。
