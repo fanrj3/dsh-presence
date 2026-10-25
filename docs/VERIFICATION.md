@@ -230,9 +230,25 @@ host 端新增 6 个 API（`src/api.js`，双前缀注册）：
 - 行尾 `↓` 保存到本地、`🗑` 移入远端回收站、`▣` 新建文件夹、`⟳` 刷新、筛选框、面包屑、机器下拉
 - 设置面板首次加载/切换目录显示旋转加载动画（此前空白无提示）
 
-诚实边界：**浏览器 → 资源管理器「拖出」不可靠**（渲染进程无 Electron 主进程拖出能力），只尽力设置 `DownloadURL`；保存请用双击或 `↓`。反方向（资源管理器 → 页面）是标准 HTML5 拖放，稳定。
+边界（下一轮已细化）：文件可以拖出到资源管理器，目录不能——具体原因与替代方案见 〇之十。反方向（资源管理器 → 页面）是标准 HTML5 拖放。
 
 **验证**：直接调用 route handler（真实 ssh 连接）7/7 —— entries 有目录+文件且带 mtime、upload 二进制 sha256 与字节数一致、raw 返回完全相同的字节且 disposition=attachment、mkdir 嵌套成功、remove 进回收站且目录里消失、context 在无 DSH 服务时 503、`/api/presence/*` 双前缀存在。
+
+## 〇之十、第十一轮：文件浏览器体验修复（0.11.0）
+
+真实使用后反馈的四条：
+
+| 反馈 | 修复 |
+| --- | --- |
+| 代码没有高亮、字体不对 | 预览改为行号 + 轻量语法高亮（注释/字符串/数字/关键字/函数调用五类着色，零依赖的分词器，React 节点输出无注入面）；等宽字体栈 `JetBrains Mono → Cascadia → Fira Code → ui-monospace`；深色模式单独配色 |
+| 鼠标放上去没有动效 | 行 hover/active/focus-visible、图标块反色、操作按钮 hover 才亮（`.dp-pane-actions` 透明度过渡）、工具栏按钮态、进度条与 indeterminate 动画，全部用 OpenDesign 的 130ms / `cubic-bezier(.2,0,0,1)` |
+| 文件夹拖不动 / 不要 tar.gz | 改为真目录语义：**上传**支持拖入文件夹（`webkitGetAsEntry` 递归）+ 目录选择 input，按原结构递归 `mkdir`+上传；**下载**点 `↓` 选本地目标文件夹后递归落地成真实目录树（进度显示文件数与字节数）。不再产生任何 tar.gz |
+| 拖文件进来被聊天框也捕获 | 面板在 `window` **捕获阶段**监听 `dragenter/dragover/dragleave/drop`，命中面板才 `preventDefault + stopPropagation`，聊天框不再同时收到附件；底部常驻进度条（百分比/文件名/完成态） |
+| （顺带）设置页加载空白 | 已在上轮修好，本轮保留 |
+
+**拖出的准确边界**：文件能拖出（Chromium `DownloadURL` 把 URL 下载成临时文件交给系统）；**目录不能拖出**是 web 平台限制——`DownloadURL` 只能表达一个文件，目录拖出必须由 Electron 主进程 `webContents.startDrag({files:[目录]})` 发起，而 DSH host 是独立 Node 子进程（`app.asar/lib/main.js:3794` `spawn(node)`），主进程与 host 之间仅有 `/api/*` 转发，没有拖拽通道。需要在 DSH 上游加一条 IPC，插件层无法实现；等价能力是 `↓` 递归下载。
+
+**验证**：嵌套目录树端到端 3/3（递归建目录 + 4 个文件含中文/空格名上传、递归遍历全部找回、嵌套文件 `/raw` 字节一致、整棵树进回收站）；API 端点 7/7；`client.js` 语法检查通过。
 
 **验证**（全部在真实主机 server 上）：
 - `node scripts/regression.mjs server` → 5/5

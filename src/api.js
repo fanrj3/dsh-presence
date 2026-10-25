@@ -1,5 +1,5 @@
 // The host half of the Presence panel: a tiny JSON API the Web UI calls.
-// Loopback only 閳?a server picker that can hand out an SSH password must never
+// Loopback only 闁?a server picker that can hand out an SSH password must never
 // be reachable from another machine.
 
 import { createHash } from 'node:crypto';

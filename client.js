@@ -214,16 +214,157 @@ window.__ModuleLoader__.load({
         animation: dp-spin .8s linear infinite;
       }
 
-      /* remote file pane */
-      .dp-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--dsw-alias-label-primary); font-size: 13px; }
-      .dp-pane-toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1); flex: 0 0 auto; }
-      .dp-pane-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 6px 12px; }
-      .dp-pane-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background-color 130ms cubic-bezier(.2,0,0,1); }
+      /* -------------------------------------------------- remote file pane */
+      .dp-pane {
+        display: flex; flex-direction: column; height: 100%; min-height: 0;
+        color: var(--dsw-alias-label-primary); font-size: 13px; position: relative;
+      }
+      .dp-pane-toolbar {
+        display: flex; align-items: center; gap: 4px;
+        padding: 8px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1);
+        flex: 0 0 auto;
+      }
+      .dp-pane-toolbar .dp-tool {
+        display: inline-flex; align-items: center; gap: 4px;
+        height: 26px; padding: 0 8px; border: 0; border-radius: 8px;
+        background: transparent; color: var(--dsw-alias-label-secondary);
+        font: inherit; font-size: 12px; cursor: pointer;
+        transition: background-color 130ms cubic-bezier(.2,0,0,1), color 130ms cubic-bezier(.2,0,0,1);
+      }
+      .dp-pane-toolbar .dp-tool:hover {
+        background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
+      }
+      .dp-pane-toolbar .dp-tool:active { transform: scale(.97); }
+      .dp-pane-toolbar .dp-tool:focus-visible { outline: none; box-shadow: var(--dp-ring); }
+      .dp-pane-path {
+        display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+        padding: 6px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1);
+        flex: 0 0 auto;
+      }
+      .dp-pane-filter { padding: 6px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1); flex: 0 0 auto; }
+      .dp-pane-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 6px 14px; }
+      .dp-pane-row {
+        display: flex; align-items: center; gap: 8px; width: 100%;
+        padding: 5px 8px; border: 0; border-radius: 8px;
+        background: transparent; color: inherit; font: inherit;
+        text-align: left; cursor: pointer;
+        transition: background-color 130ms cubic-bezier(.2,0,0,1), transform 120ms cubic-bezier(.2,0,0,1);
+      }
       .dp-pane-row:hover { background: var(--dsw-alias-bg-layer-2); }
+      .dp-pane-row:active { transform: scale(.995); }
+      .dp-pane-row:focus-visible { outline: none; box-shadow: var(--dp-ring); }
       .dp-pane-row.is-selected { background: var(--dsw-alias-bg-layer-2); }
-      .dp-drop { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); border: 2px dashed var(--dsw-alias-brand-primary); border-radius: 12px; color: var(--dsw-alias-label-primary); font-size: 13px; pointer-events: none; }
-      .dp-overlay { position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .45); }
-      .dp-modal { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: 14px; box-shadow: 0 18px 48px rgba(0, 0, 0, .32); width: min(92%, 720px); max-height: 86%; display: flex; flex-direction: column; overflow: hidden; }
+      .dp-icon-tile {
+        width: 22px; height: 22px; border-radius: 6px; flex: 0 0 auto;
+        display: grid; place-items: center; font-size: 12px;
+        background: var(--dsw-alias-bg-layer-2);
+        transition: background-color 130ms cubic-bezier(.2,0,0,1);
+      }
+      .dp-pane-row:hover .dp-icon-tile { background: var(--dsw-alias-bg-base); }
+      .dp-pane-row .dp-name {
+        flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .dp-pane-row .dp-meta {
+        color: var(--dsw-alias-label-secondary); font-size: 11px; flex: 0 0 auto;
+        font-variant-numeric: tabular-nums;
+      }
+      .dp-pane-actions {
+        display: flex; gap: 2px; flex: 0 0 auto; opacity: .35;
+        transition: opacity 130ms cubic-bezier(.2,0,0,1);
+      }
+      .dp-pane-row:hover .dp-pane-actions, .dp-pane-row:focus-within .dp-pane-actions { opacity: 1; }
+      .dp-pane-actions .dp-iconbtn { width: 22px; height: 22px; line-height: 22px; font-size: 12px; background: transparent; color: var(--dsw-alias-label-secondary); }
+      .dp-pane-actions .dp-iconbtn:hover { background: var(--dsw-alias-border-l1); color: var(--dsw-alias-label-primary); transform: none; }
+
+      .dp-drop {
+        position: absolute; inset: 8px; z-index: 8;
+        display: flex; align-items: center; justify-content: center;
+        background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent);
+        border: 2px dashed var(--dsw-alias-brand-primary); border-radius: 12px;
+        color: var(--dsw-alias-label-primary); font-size: 13px; pointer-events: none;
+      }
+
+      .dp-progress {
+        position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 9;
+        background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l1);
+        border-radius: 10px; padding: 8px 10px;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, .18);
+        display: flex; flex-direction: column; gap: 6px;
+        backdrop-filter: blur(6px);
+      }
+      .dp-progress-head { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+      .dp-progress-track { height: 4px; border-radius: 999px; background: var(--dsw-alias-border-l1); overflow: hidden; }
+      .dp-progress-fill { height: 100%; background: var(--dsw-alias-brand-primary); transition: width 120ms linear; }
+      .dp-progress-fill.is-indeterminate { width: 40% !important; animation: dp-indeterminate 1.1s ease-in-out infinite; }
+      @keyframes dp-indeterminate {
+        0% { margin-left: 0; }
+        50% { margin-left: 60%; }
+        100% { margin-left: 0; }
+      }
+
+      /* -------------------------------------------------------- preview */
+      .dp-overlay {
+        position: absolute; inset: 0; z-index: 20;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(0, 0, 0, .45);
+      }
+      .dp-modal {
+        background: var(--dsw-alias-bg-layer-1);
+        border: 1px solid var(--dsw-alias-border-l1);
+        border-radius: 14px;
+        box-shadow: 0 18px 48px rgba(0, 0, 0, .32);
+        width: min(94%, 860px); max-height: 88%;
+        display: flex; flex-direction: column; overflow: hidden;
+      }
+      .dp-modal-head {
+        display: flex; align-items: center; gap: 8px;
+        padding: 10px 12px; border-bottom: 1px solid var(--dsw-alias-border-l1);
+      }
+      .dp-modal-body {
+        margin: 10px 12px; border-radius: 10px; overflow: auto;
+        background: var(--dsw-alias-bg-layer-2);
+      }
+      .dp-modal-foot {
+        display: flex; align-items: center; gap: 8px;
+        padding: 8px 12px; border-top: 1px solid var(--dsw-alias-border-l1);
+      }
+      .dp-chip {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 1px 7px; border-radius: 999px;
+        background: var(--dsw-alias-bg-layer-2);
+        font-size: 10.5px; color: var(--dsw-alias-label-secondary);
+      }
+
+      /* ---------------------------------------------------------- code */
+      .dp-code {
+        margin: 0; padding: 10px 12px; overflow: auto; max-height: 64vh;
+        font-family: "JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace,
+          SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px; line-height: 19px; tab-size: 4;
+      }
+      .dp-code-line { display: flex; gap: 14px; }
+      .dp-code-num {
+        flex: 0 0 auto; width: 3.4em; text-align: right;
+        color: var(--dsw-alias-label-secondary); opacity: .6; user-select: none;
+      }
+      .dp-code-text { white-space: pre; flex: 1 1 auto; }
+      .dp-code-comment { color: var(--dsw-alias-label-secondary); font-style: italic; }
+      .dp-code-string { color: #15803d; }
+      .dp-code-keyword { color: #7c3aed; }
+      .dp-code-number { color: #b45309; }
+      .dp-code-function { color: #0369a1; }
+      @media (prefers-color-scheme: dark) {
+        .dp-code-string { color: #86efac; }
+        .dp-code-keyword { color: #c4b5fd; }
+        .dp-code-number { color: #fdba74; }
+        .dp-code-function { color: #93c5fd; }
+      }
+      .dp-plain {
+        margin: 0; padding: 10px 12px; overflow: auto; max-height: 64vh;
+        font-family: "JetBrains Mono", "Cascadia Code", ui-monospace, SFMono-Regular,
+          Menlo, Consolas, monospace;
+        font-size: 12px; line-height: 19px; white-space: pre-wrap; word-break: break-word;
+      }
     `;
     function ensureStyles() {
       if (typeof document === 'undefined' || document.getElementById(STYLE_ID)) return;
@@ -459,25 +600,43 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------- remote file browser
     const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'svg']);
     const TEXT_EXTENSIONS = new Set([
-      'txt', 'md', 'markdown', 'json', 'jsonc', 'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'py', 'rb', 'go', 'rs',
-      'java', 'kt', 'c', 'h', 'cc', 'cpp', 'hpp', 'cs', 'php', 'sh', 'bash', 'zsh', 'ps1', 'psm1', 'yml', 'yaml',
-      'toml', 'ini', 'conf', 'cfg', 'log', 'csv', 'tsv', 'sql', 'html', 'htm', 'css', 'scss', 'less', 'xml', 'tex',
-      'dockerfile', 'gitignore', 'env', 'lock', 'properties', 'gradle', 'make', 'mk',
+      'txt', 'md', 'markdown', 'json', 'jsonc', 'log', 'csv', 'tsv', 'yml', 'yaml', 'toml', 'ini', 'conf',
+      'cfg', 'xml', 'tex', 'properties', 'gitignore', 'env', 'lock', 'make', 'mk',
     ]);
+    const CODE_EXTENSIONS = new Set([
+      'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'py', 'rb', 'go', 'rs', 'java', 'kt', 'c', 'h', 'cc', 'cpp',
+      'hpp', 'cs', 'php', 'sh', 'bash', 'zsh', 'ps1', 'psm1', 'sql', 'html', 'htm', 'css', 'scss', 'less',
+      'gradle', 'dockerfile', 'vue', 'svelte', 'lua', 'pl', 'swift', 'dart',
+    ]);
+    const CODE_KEYWORDS = new Set([
+      'if', 'else', 'elif', 'for', 'while', 'def', 'class', 'return', 'import', 'from', 'try', 'except',
+      'finally', 'with', 'as', 'lambda', 'None', 'True', 'False', 'and', 'or', 'not', 'in', 'is', 'pass',
+      'raise', 'yield', 'global', 'nonlocal', 'assert', 'del', 'break', 'continue', 'async', 'await', 'const',
+      'let', 'var', 'function', 'new', 'typeof', 'instanceof', 'export', 'default', 'extends', 'super', 'switch',
+      'case', 'do', 'throw', 'catch', 'interface', 'enum', 'implements', 'public', 'private', 'protected',
+      'static', 'final', 'void', 'int', 'float', 'double', 'bool', 'char', 'string', 'struct', 'typedef',
+      'unsigned', 'signed', 'long', 'short', 'self', 'this', 'null', 'undefined', 'true', 'false', 'package',
+      'func', 'type', 'map', 'range', 'defer', 'go', 'chan', 'select', 'use', 'mod', 'pub', 'fn', 'impl',
+      'match', 'mut', 'print', 'end',
+    ]);
+    const CODE_LINE_RE = /(\/\/.*$|#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b0x[0-9a-fA-F]+\b|\b\d+(?:\.\d+)?\b)|([A-Za-z_$][\w$]*)/g;
 
     function extensionOf(name) {
       if (typeof name !== 'string') return '';
       const index = name.lastIndexOf('.');
-      return index < 0 ? '' : name.slice(index + 1).toLowerCase();
+      return index <= 0 ? '' : name.slice(index + 1).toLowerCase();
     }
 
     function isImageName(name) {
       return IMAGE_EXTENSIONS.has(extensionOf(name));
     }
 
+    function isCodeName(name) {
+      return CODE_EXTENSIONS.has(extensionOf(name));
+    }
+
     function isTextName(name) {
-      const extension = extensionOf(name);
-      return TEXT_EXTENSIONS.has(extension) || extension === '';
+      return TEXT_EXTENSIONS.has(extensionOf(name)) || isCodeName(name) || extensionOf(name) === '';
     }
 
     function rawUrlFor(host, path, download) {
@@ -488,20 +647,93 @@ window.__ModuleLoader__.load({
     function formatMoment(ms) {
       if (typeof ms !== 'number' || !Number.isFinite(ms)) return '';
       const date = new Date(ms);
-      const now = Date.now();
-      const ago = now - ms;
+      const ago = Date.now() - ms;
       if (ago >= 0 && ago < 60_000) return '刚刚';
       if (ago >= 0 && ago < 3_600_000) return `${Math.floor(ago / 60_000)} 分钟前`;
       if (ago >= 0 && ago < 86_400_000) return `${Math.floor(ago / 3_600_000)} 小时前`;
-      return date.toLocaleDateString() + ' ' + date.toLocaleTimeString().slice(0, 5);
+      return `${date.toLocaleDateString()} ${date.toLocaleTimeString().slice(0, 5)}`;
     }
 
-    /** Upload one File to the remote directory with progress. */
-    function uploadRemoteFile(host, dir, file, onProgress) {
+    /** Split one code line into coloured tokens (no HTML, so nothing can inject). */
+    function tokenizeCodeLine(line) {
+      const tokens = [];
+      let index = 0;
+      CODE_LINE_RE.lastIndex = 0;
+      let match = CODE_LINE_RE.exec(line);
+      while (match !== null) {
+        if (match.index > index) tokens.push({ kind: 'plain', text: line.slice(index, match.index) });
+        if (match[1]) tokens.push({ kind: 'comment', text: match[1] });
+        else if (match[2]) tokens.push({ kind: 'string', text: match[2] });
+        else if (match[3]) tokens.push({ kind: 'number', text: match[3] });
+        else {
+          const word = match[4];
+          const after = line.slice(match.index + word.length);
+          if (CODE_KEYWORDS.has(word)) tokens.push({ kind: 'keyword', text: word });
+          else if (/^\s*\(/u.test(after)) tokens.push({ kind: 'function', text: word });
+          else tokens.push({ kind: 'plain', text: word });
+        }
+        index = match.index + match[0].length;
+        match = CODE_LINE_RE.exec(line);
+      }
+      if (index < line.length) tokens.push({ kind: 'plain', text: line.slice(index) });
+      return tokens;
+    }
+
+    /** Line-numbered code view with lightweight highlighting. */
+    function CodeView({ content }) {
+      const lines = String(content ?? '').split('\n');
+      return h('pre', { className: 'dp-code' }, h('code', null, lines.map((line, lineIndex) => h('div', {
+        key: lineIndex,
+        className: 'dp-code-line',
+      }, [
+        h('span', { key: 'n', className: 'dp-code-num' }, String(lineIndex + 1)),
+        h('span', { key: 't', className: 'dp-code-text' },
+          line === ''
+            ? ' '
+            : tokenizeCodeLine(line).map((token, tokenIndex) => h('span', {
+                key: tokenIndex,
+                className: `dp-code-${token.kind}`,
+              }, token.text))),
+      ]))));
+    }
+
+    /** Save a URL through the native dialog when available, else a download link. */
+    async function saveUrlAs(url, name) {
+      try {
+        if (typeof window.showSaveFilePicker === 'function') {
+          const handle = await window.showSaveFilePicker({ suggestedName: name });
+          const writable = await handle.createWritable();
+          const response = await fetch(url);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          await response.body.pipeTo(writable);
+          return true;
+        }
+      } catch (error) {
+        if (error && error.name === 'AbortError') return false;
+        if (error instanceof TypeError) return false; // picker unavailable: fall through
+        throw error;
+      }
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = name;
+      anchor.rel = 'noopener';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      return true;
+    }
+
+    function saveRemoteFile(host, path, name) {
+      return saveUrlAs(rawUrlFor(host, path, true), name);
+    }
+
+    /** Upload one File to a remote directory, reporting byte progress. */
+    function uploadRemoteFile(host, dir, file, onProgress, nameOverride) {
       return new Promise((resolve, reject) => {
+        const name = nameOverride ?? file.name;
         const query =
           `host=${encodeURIComponent(host)}&dir=${encodeURIComponent(dir)}` +
-          `&name=${encodeURIComponent(file.name)}`;
+          `&name=${encodeURIComponent(name)}`;
         const xhr = new XMLHttpRequest();
         xhr.open('POST', `${API}/upload?${query}`);
         xhr.responseType = 'json';
@@ -518,39 +750,118 @@ window.__ModuleLoader__.load({
       });
     }
 
-    /**
-     * Save one remote file locally. Chromium's File System Access API shows a
-     * real Save-As dialog; when it is unavailable (or cancelled) fall back to a
-     * plain download link.
-     */
-    async function saveRemoteFile(host, path, name) {
-      try {
-        if (typeof window.showSaveFilePicker === 'function') {
-          const handle = await window.showSaveFilePicker({ suggestedName: name });
-          const writable = await handle.createWritable();
-          const response = await fetch(rawUrlFor(host, path, true));
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          await response.body.pipeTo(writable);
-          return true;
-        }
-      } catch (error) {
-        if (error && error.name === 'AbortError') return false;
-        // Unavailable or blocked by the shell: fall through to the anchor below.
+    async function mkdirRemote(host, path) {
+      return request(`/mkdir?host=${encodeURIComponent(host)}&path=${encodeURIComponent(path)}`, {});
+    }
+
+    /** Recursively read a dropped/picked directory into a flat file list. */
+    async function readEntryTree(entry, prefix, out) {
+      if (entry.isFile) {
+        const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+        out.push({ file, relative: prefix ? `${prefix}/${file.name}` : file.name });
+        return;
       }
-      const anchor = document.createElement('a');
-      anchor.href = rawUrlFor(host, path, true);
-      anchor.download = name;
-      anchor.rel = 'noopener';
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      return true;
+      if (!entry.isDirectory) return;
+      const reader = entry.createReader();
+      const childPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+      for (;;) {
+        const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+        if (!batch || batch.length === 0) break;
+        for (const child of batch) await readEntryTree(child, childPrefix, out);
+      }
+    }
+
+    async function collectDroppedFiles(dataTransfer) {
+      const out = [];
+      const items = Array.from(dataTransfer.items ?? []);
+      let usedEntries = false;
+      for (const item of items) {
+        if (item.kind !== 'file') continue;
+        const entry = item.webkitGetAsEntry?.();
+        if (entry) {
+          usedEntries = true;
+          await readEntryTree(entry, '', out);
+        } else {
+          const file = item.getAsFile();
+          if (file) out.push({ file, relative: file.name });
+        }
+      }
+      if (!usedEntries && out.length === 0) {
+        for (const file of Array.from(dataTransfer.files ?? [])) out.push({ file, relative: file.name });
+      }
+      return out;
+    }
+
+    /** Upload files (with folder structure) under `basePath`. */
+    async function uploadFilesTree(host, basePath, items, onProgress) {
+      const base = basePath.replace(/\/+$/u, '') || '/';
+      const totalBytes = items.reduce((sum, item) => sum + (item.file.size ?? 0), 0);
+      let sentBytes = 0;
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
+        const parts = item.relative.split('/');
+        const name = parts.pop();
+        const relativeDir = parts.join('/');
+        const dir = relativeDir ? `${base}/${relativeDir}` : base;
+        if (relativeDir) await mkdirRemote(host, dir);
+        onProgress?.({ done: index, total: items.length, bytes: sentBytes, totalBytes, current: item.relative });
+        await uploadRemoteFile(host, dir, item.file, (loaded) => {
+          onProgress?.({ done: index, total: items.length, bytes: sentBytes + loaded, totalBytes, current: item.relative });
+        }, name);
+        sentBytes += item.file.size ?? 0;
+      }
+      onProgress?.({ done: items.length, total: items.length, bytes: sentBytes, totalBytes, current: '' });
+      return { files: items.length, bytes: sentBytes };
+    }
+
+    /**
+     * Download a remote directory into a real local folder tree. The web layer
+     * cannot drag a DIRECTORY out (Chromium's DownloadURL only carries one file),
+     * so the equivalent of Xftp's "download folder" is picking a destination
+     * folder and materialising the tree there.
+     */
+    async function downloadFolderTree(host, remotePath, name, onProgress) {
+      if (typeof window.showDirectoryPicker !== 'function') {
+        throw new Error('当前环境不支持选择本地文件夹（需要 File System Access API）');
+      }
+      const destination = await window.showDirectoryPicker({ mode: 'readwrite' });
+      if (!destination) return null;
+      const rootHandle = await destination.getDirectoryHandle(name, { create: true });
+      const progress = { files: 0, bytes: 0, current: name };
+      const walk = async (dirPath, handle) => {
+        const data = await request(`/entries?host=${encodeURIComponent(host)}&path=${encodeURIComponent(dirPath)}`);
+        for (const entry of data.entries ?? []) {
+          if (entry.name === '.' || entry.name === '..') continue;
+          if (entry.kind === 'dir') {
+            const sub = await handle.getDirectoryHandle(entry.name, { create: true });
+            await walk(entry.path, sub);
+            continue;
+          }
+          progress.current = entry.path;
+          onProgress?.({ ...progress });
+          const fileHandle = await handle.getFileHandle(entry.name, { create: true });
+          const writable = await fileHandle.createWritable();
+          try {
+            const response = await fetch(rawUrlFor(host, entry.path, true));
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            await response.body.pipeTo(writable);
+          } catch (error) {
+            await writable.abort?.().catch?.(() => {});
+            throw new Error(`${entry.path}: ${error.message}`);
+          }
+          progress.files += 1;
+          progress.bytes += entry.size ?? 0;
+          onProgress?.({ ...progress });
+        }
+      };
+      await walk(remotePath, rootHandle);
+      return progress;
     }
 
     /**
      * The right-bar file browser: a remote directory pane that accepts dropped
-     * local files (upload), previews images/text on double click, and saves
-     * anything else with a native dialog.
+     * files and folders (upload), previews images/text/code, and downloads
+     * files or whole folders to disk.
      */
     function RemoteFilesPanel({ sessionId }) {
       const [hosts, setHosts] = useState([]);
@@ -562,11 +873,14 @@ window.__ModuleLoader__.load({
       const [error, setError] = useState(null);
       const [filter, setFilter] = useState('');
       const [dragOver, setDragOver] = useState(false);
-      const [uploads, setUploads] = useState([]);
+      const [job, setJob] = useState(null);
       const [preview, setPreview] = useState(null);
       const [selected, setSelected] = useState(null);
       const [creatingFolder, setCreatingFolder] = useState(null);
       const fileInput = useRef(null);
+      const folderInput = useRef(null);
+      const rootRef = useRef(null);
+      const dropHandler = useRef(null);
 
       const load = useCallback(async (nextHost, nextPath) => {
         if (!nextHost) return;
@@ -631,6 +945,77 @@ window.__ModuleLoader__.load({
         return entry.name.toLowerCase().includes(filter.trim().toLowerCase());
       });
 
+      const startUpload = async (items) => {
+        if (!items || items.length === 0) return;
+        if (!host) {
+          setError('还没有选择远程目录');
+          return;
+        }
+        setJob({ kind: 'upload', label: `上传 0/${items.length}`, percent: 0, detail: '' });
+        try {
+          const result = await uploadFilesTree(host, path, items, (progress) => {
+            setJob({
+              kind: 'upload',
+              label: `上传 ${progress.done}/${progress.total}`,
+              percent: Math.round((progress.bytes / Math.max(1, progress.totalBytes)) * 100),
+              detail: progress.current,
+            });
+          });
+          setJob({ kind: 'done', label: `已上传 ${result.files} 个文件`, percent: 100, detail: humanSize(result.bytes) });
+          await load(host, path);
+          setTimeout(() => setJob(null), 2500);
+        } catch (err) {
+          setError(err.message);
+          setJob(null);
+        }
+      };
+
+      // Capture-phase drop handling: the chat composer also listens for drops on
+      // the document, and without stopping propagation a dropped file both
+      // uploads here AND attaches to the conversation.
+      useEffect(() => {
+        dropHandler.current = startUpload;
+      });
+      useEffect(() => {
+        const inside = (event) => {
+          const root = rootRef.current;
+          return Boolean(root) && event.target instanceof Node && root.contains(event.target);
+        };
+        const onDragOver = (event) => {
+          if (!inside(event)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+          setDragOver(true);
+        };
+        const onDragLeave = (event) => {
+          if (!inside(event)) return;
+          event.stopPropagation();
+          setDragOver(false);
+        };
+        const onDrop = (event) => {
+          if (!inside(event)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setDragOver(false);
+          const dataTransfer = event.dataTransfer;
+          if (!dataTransfer) return;
+          collectDroppedFiles(dataTransfer)
+            .then((items) => dropHandler.current?.(items))
+            .catch((err) => setError(err.message));
+        };
+        window.addEventListener('dragenter', onDragOver, true);
+        window.addEventListener('dragover', onDragOver, true);
+        window.addEventListener('dragleave', onDragLeave, true);
+        window.addEventListener('drop', onDrop, true);
+        return () => {
+          window.removeEventListener('dragenter', onDragOver, true);
+          window.removeEventListener('dragover', onDragOver, true);
+          window.removeEventListener('dragleave', onDragLeave, true);
+          window.removeEventListener('drop', onDrop, true);
+        };
+      }, []);
+
       const openEntry = async (entry) => {
         if (entry.kind === 'dir') {
           await load(host, entry.path);
@@ -643,8 +1028,7 @@ window.__ModuleLoader__.load({
         if (isTextName(entry.name) || entry.size <= 256 * 1024) {
           try {
             setPreview({ name: entry.name, path: entry.path, size: entry.size, kind: 'loading' });
-            const query = `host=${encodeURIComponent(host)}&path=${encodeURIComponent(entry.path)}`;
-            const data = await request(`/file?${query}`);
+            const data = await request(`/file?host=${encodeURIComponent(host)}&path=${encodeURIComponent(entry.path)}`);
             setPreview({
               name: entry.name,
               path: entry.path,
@@ -652,6 +1036,7 @@ window.__ModuleLoader__.load({
               kind: 'text',
               content: data.content,
               truncated: data.truncated,
+              code: isCodeName(entry.name),
             });
             return;
           } catch (err) {
@@ -663,34 +1048,31 @@ window.__ModuleLoader__.load({
         await saveRemoteFile(host, entry.path, entry.name).catch((err) => setError(err.message));
       };
 
-      const uploadFiles = async (files) => {
-        if (files.length === 0) return;
-        if (!host) {
-          setError('还没有选择远程目录');
-          return;
-        }
-        setUploads(files.map((file) => ({ name: file.name, total: file.size, loaded: 0, state: 'pending' })));
-        for (let index = 0; index < files.length; index += 1) {
-          const file = files[index];
-          setUploads((list) => list.map((item, i) => (i === index ? { ...item, state: 'uploading' } : item)));
-          try {
-            await uploadRemoteFile(host, path, file, (loaded) => {
-              setUploads((list) => list.map((item, i) => (i === index ? { ...item, loaded } : item)));
+      const downloadEntry = async (entry) => {
+        try {
+          if (entry.kind === 'dir') {
+            setJob({ kind: 'download', label: `下载文件夹 ${entry.name}`, percent: null, detail: '选择本地目标文件夹…' });
+            const result = await downloadFolderTree(host, entry.path, entry.name, (progress) => {
+              setJob({
+                kind: 'download',
+                label: `下载 ${progress.files} 个文件`,
+                percent: null,
+                detail: `${progress.current} · ${humanSize(progress.bytes)}`,
+              });
             });
-            setUploads((list) => list.map((item, i) => (i === index ? { ...item, state: 'done' } : item)));
-          } catch (err) {
-            setError(err.message);
-            setUploads((list) => list.map((item, i) => (i === index ? { ...item, state: 'failed' } : item)));
+            if (result) {
+              setJob({ kind: 'done', label: `已下载 ${result.files} 个文件`, percent: 100, detail: humanSize(result.bytes) });
+              setTimeout(() => setJob(null), 2500);
+            } else {
+              setJob(null);
+            }
+            return;
           }
+          await saveRemoteFile(host, entry.path, entry.name);
+        } catch (err) {
+          setError(err.message);
+          setJob(null);
         }
-        await load(host, path);
-        setTimeout(() => setUploads([]), 1500);
-      };
-
-      const handleDrop = (event) => {
-        event.preventDefault();
-        setDragOver(false);
-        uploadFiles(Array.from(event.dataTransfer?.files ?? []));
       };
 
       const createFolder = async () => {
@@ -699,9 +1081,9 @@ window.__ModuleLoader__.load({
           setCreatingFolder(null);
           return;
         }
-        const target = `${path.replace(/\/+$/, '')}/${name}`;
+        const target = `${path.replace(/\/+$/u, '')}/${name}`;
         try {
-          await request(`/mkdir?host=${encodeURIComponent(host)}&path=${encodeURIComponent(target)}`, {});
+          await mkdirRemote(host, target);
           setCreatingFolder(null);
           await load(host, path);
         } catch (err) {
@@ -719,52 +1101,39 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const trailing = (entry) => {
-        if (entry.kind === 'dir') return null;
-        return [
-          h('button', {
-            key: 'save',
-            type: 'button',
-            title: '保存到本地',
-            className: 'dp-iconbtn',
-            style: { width: 24, height: 24, lineHeight: '24px', fontSize: 12 },
-            onClick: (event) => {
-              event.stopPropagation();
-              saveRemoteFile(host, entry.path, entry.name).catch((err) => setError(err.message));
-            },
-          }, '↓'),
-          h('button', {
-            key: 'delete',
-            type: 'button',
-            title: '移到回收站',
-            className: 'dp-iconbtn',
-            style: { width: 24, height: 24, lineHeight: '24px', fontSize: 12 },
-            onClick: (event) => {
-              event.stopPropagation();
-              removeEntry(entry);
-            },
-          }, '🗑'),
-        ];
-      };
+      const actions = (entry) => [
+        h('button', {
+          key: 'save',
+          type: 'button',
+          title: entry.kind === 'dir' ? '下载文件夹到本地' : '保存到本地',
+          className: 'dp-iconbtn',
+          onClick: (event) => {
+            event.stopPropagation();
+            downloadEntry(entry);
+          },
+        }, '↓'),
+        h('button', {
+          key: 'delete',
+          type: 'button',
+          title: '移到回收站',
+          className: 'dp-iconbtn',
+          onClick: (event) => {
+            event.stopPropagation();
+            removeEntry(entry);
+          },
+        }, '🗑'),
+      ];
 
       return h('div', {
+        ref: rootRef,
         className: 'dp-pane',
         style: { position: 'relative', flex: '1 1 auto', minHeight: 0, height: '100%' },
-        onDragOver: (event) => {
-          if (event.dataTransfer?.types?.includes('Files')) {
-            event.preventDefault();
-            setDragOver(true);
-          }
-        },
-        onDragLeave: () => setDragOver(false),
-        onDrop: handleDrop,
       }, [
-        // toolbar
         h('div', { key: 'toolbar', className: 'dp-pane-toolbar' }, [
           h('select', {
             key: 'host',
             className: 'dp-input',
-            style: { width: 'auto', maxWidth: 130, padding: '3px 6px', fontSize: 12 },
+            style: { width: 'auto', maxWidth: 120, height: 26, padding: '0 6px', fontSize: 12 },
             value: host ?? '',
             onChange: (event) => {
               const next = event.target.value;
@@ -773,43 +1142,67 @@ window.__ModuleLoader__.load({
           }, hosts.map((item) => h('option', { key: item.alias, value: item.alias }, item.alias))),
           h('div', { key: 'spacer', style: { flex: 1 } }),
           h('button', {
-            key: 'upload',
+            key: 'upload-file',
             type: 'button',
-            className: 'dp-iconbtn',
-            title: '上传文件到当前目录',
+            className: 'dp-tool',
+            title: '上传文件',
             onClick: () => fileInput.current?.click(),
-          }, '＋'),
+          }, '＋ 文件'),
           h('button', {
-            key: 'folder',
+            key: 'upload-folder',
             type: 'button',
-            className: 'dp-iconbtn',
+            className: 'dp-tool',
+            title: '上传文件夹',
+            onClick: () => folderInput.current?.click(),
+          }, '＋ 文件夹'),
+          h('button', {
+            key: 'mkdir',
+            type: 'button',
+            className: 'dp-tool',
             title: '新建文件夹',
             onClick: () => setCreatingFolder(''),
-          }, '▣'),
+          }, '新建'),
           h('button', {
             key: 'refresh',
             type: 'button',
-            className: 'dp-iconbtn',
+            className: 'dp-tool',
             title: '刷新',
             onClick: () => load(host, path),
           }, '⟳'),
           h('input', {
-            key: 'file',
+            key: 'file-input',
             ref: fileInput,
             type: 'file',
             multiple: true,
             style: { display: 'none' },
-            onChange: (event) => {
-              const files = Array.from(event.target.files ?? []);
+            onChange: async (event) => {
+              const files = Array.from(event.target.files ?? []).map((file) => ({ file, relative: file.name }));
               event.target.value = '';
-              uploadFiles(files);
+              await startUpload(files);
+            },
+          }),
+          h('input', {
+            key: 'folder-input',
+            ref: folderInput,
+            type: 'file',
+            multiple: true,
+            webkitdirectory: 'true',
+            directory: 'true',
+            style: { display: 'none' },
+            onChange: async (event) => {
+              const files = Array.from(event.target.files ?? []);
+              const items = files.map((file) => ({
+                file,
+                relative: (file.webkitRelativePath || file.name).replace(/\\/gu, '/'),
+              }));
+              event.target.value = '';
+              await startUpload(items);
             },
           }),
         ]),
-        // breadcrumbs + filter
         h('div', {
           key: 'pathbar',
-          style: { display: 'flex', alignItems: 'center', gap: 2, padding: '6px 10px', borderBottom: `1px solid ${C.border}`, flexWrap: 'wrap' },
+          className: 'dp-pane-path',
         }, crumbs.map((crumb, index) => h('span', { key: `${crumb.path}#${index}`, style: { display: 'inline-flex', alignItems: 'center' } }, [
           index > 0 ? h('span', { key: 'sep', style: { color: C.muted, fontSize: 11, padding: '0 1px' } }, '›') : null,
           h('button', {
@@ -819,14 +1212,13 @@ window.__ModuleLoader__.load({
             onClick: () => load(host, crumb.path),
           }, index === 0 ? '/' : crumb.name),
         ]))),
-        h('div', { key: 'filter', style: { padding: '6px 10px', borderBottom: `1px solid ${C.border}` } },
+        h('div', { key: 'filter', className: 'dp-pane-filter' },
           h('input', {
             className: 'dp-input',
             value: filter,
             placeholder: '筛选当前目录…',
             onChange: (event) => setFilter(event.target.value),
           })),
-        // body
         error
           ? h('div', {
               key: 'error',
@@ -834,7 +1226,10 @@ window.__ModuleLoader__.load({
             }, error)
           : null,
         creatingFolder !== null
-          ? h('div', { key: 'newfolder', style: { display: 'flex', gap: 6, padding: '8px 10px', borderBottom: `1px solid ${C.border}` } }, [
+          ? h('div', {
+              key: 'newfolder',
+              style: { display: 'flex', gap: 6, padding: '8px 10px', borderBottom: `1px solid ${C.border}` },
+            }, [
               h('input', {
                 key: 'name',
                 className: 'dp-input',
@@ -850,15 +1245,6 @@ window.__ModuleLoader__.load({
               Button({ label: '创建', onClick: createFolder, primary: true, small: true }),
             ])
           : null,
-        uploads.length > 0
-          ? h('div', { key: 'uploads', style: { padding: '4px 10px', fontSize: 11, color: C.muted } },
-              uploads.map((item) => h('div', { key: item.name, style: { display: 'flex', gap: 6 } }, [
-                h('span', { key: 'name', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.name),
-                h('span', { key: 'state' }, item.state === 'uploading'
-                  ? `${Math.round((item.loaded / Math.max(1, item.total)) * 100)}%`
-                  : item.state),
-              ])))
-          : null,
         h('div', { key: 'list', className: 'dp-pane-list' },
           loading
             ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: '28px 0' } }, h(Spinner, { label: '加载中…' }))
@@ -869,13 +1255,15 @@ window.__ModuleLoader__.load({
                   className: `dp-pane-row${selected === entry.path ? ' is-selected' : ''}`,
                   role: 'button',
                   tabIndex: 0,
-                  title: entry.path,
+                  title: entry.kind === 'dir' ? `${entry.path}（双击进入，↓ 下载文件夹）` : entry.path,
                   draggable: entry.kind !== 'dir',
                   onDragStart: (event) => {
                     if (entry.kind === 'dir') return;
                     try {
-                      event.dataTransfer.setData('DownloadURL',
-                        `application/octet-stream:${entry.name}:${new URL(rawUrlFor(host, entry.path, true), window.location.href).href}`);
+                      event.dataTransfer.setData(
+                        'DownloadURL',
+                        `application/octet-stream:${entry.name}:${new URL(rawUrlFor(host, entry.path, true), window.location.href).href}`,
+                      );
                       event.dataTransfer.effectAllowed = 'copy';
                     } catch {
                       /* the OS may refuse; the ↓ button still works */
@@ -887,26 +1275,40 @@ window.__ModuleLoader__.load({
                     if (event.key === 'Enter') openEntry(entry);
                   },
                 }, [
-                  h('span', { key: 'icon', style: { width: 18, textAlign: 'center', flex: '0 0 auto' } }, entry.kind === 'dir' ? '📁' : (isImageName(entry.name) ? '🖼' : '📄')),
-                  h('span', {
-                    key: 'name',
-                    style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-                  }, entry.name),
-                  h('span', { key: 'size', style: { color: C.muted, fontSize: 11, flex: '0 0 auto' } },
-                    entry.kind === 'dir' ? '' : humanSize(entry.size)),
-                  h('span', { key: 'time', style: { color: C.muted, fontSize: 11, flex: '0 0 auto', width: 58, textAlign: 'right' } },
-                    formatMoment(entry.mtime)),
-                  ...(trailing(entry) ?? []),
+                  h('span', { key: 'icon', className: 'dp-icon-tile' }, entry.kind === 'dir' ? '📁' : (isImageName(entry.name) ? '🖼' : '📄')),
+                  h('span', { key: 'name', className: 'dp-name' }, entry.name),
+                  h('span', { key: 'size', className: 'dp-meta' }, entry.kind === 'dir' ? '' : humanSize(entry.size)),
+                  h('span', { key: 'time', className: 'dp-meta', style: { width: 62, textAlign: 'right' } }, formatMoment(entry.mtime)),
+                  h('span', { key: 'actions', className: 'dp-pane-actions' }, actions(entry)),
                 ]))),
-        // drop hint
         dragOver
-          ? h('div', {
-              key: 'drop',
-              className: 'dp-drop',
-              style: { margin: 8 },
-            }, `松开把文件上传到 ${path}`)
+          ? h('div', { key: 'drop', className: 'dp-drop' }, `松开把文件 / 文件夹上传到 ${path}`)
           : null,
-        // preview overlay
+        job
+          ? h('div', { key: 'job', className: 'dp-progress' }, [
+              h('div', { key: 'head', className: 'dp-progress-head' }, [
+                h('span', { key: 'label', style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, job.label),
+                job.kind === 'done'
+                  ? h('span', { key: 'ok', style: { color: C.ok } }, '完成')
+                  : h('span', { key: 'pct' }, job.percent === null ? '' : `${job.percent}%`),
+              ]),
+              h('div', { key: 'track', className: 'dp-progress-track' },
+                h('div', {
+                  key: 'fill',
+                  className: job.percent === null ? 'dp-progress-fill is-indeterminate' : 'dp-progress-fill',
+                  style: { width: `${job.percent ?? 40}%` },
+                })),
+              job.detail
+                ? h('div', {
+                    key: 'detail',
+                    style: {
+                      fontSize: 10.5, color: C.muted, overflow: 'hidden',
+                      textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left',
+                    },
+                  }, job.detail)
+                : null,
+            ])
+          : null,
         preview
           ? h('div', {
               key: 'overlay',
@@ -917,16 +1319,17 @@ window.__ModuleLoader__.load({
               className: 'dp-modal',
               onClick: (event) => event.stopPropagation(),
             }, [
-              h('div', {
-                key: 'head',
-                style: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: `1px solid ${C.border}` },
-              }, [
+              h('div', { key: 'head', className: 'dp-modal-head' }, [
+                h('span', { key: 'icon', className: 'dp-icon-tile' }, isImageName(preview.name) ? '🖼' : '📄'),
                 h('span', {
                   key: 'name',
                   style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13, fontWeight: 600 },
                 }, preview.name),
-                h('span', { key: 'size', style: { color: C.muted, fontSize: 11 } },
-                  preview.kind === 'image' ? '图片' : preview.kind === 'text' ? '文本' : ''),
+                preview.kind === 'text'
+                  ? h('span', { key: 'chip', className: 'dp-chip' }, preview.code ? extensionOf(preview.name).toUpperCase() || 'CODE' : '文本')
+                  : null,
+                preview.kind === 'image' ? h('span', { key: 'chip', className: 'dp-chip' }, '图片') : null,
+                h('span', { key: 'size', style: { color: C.muted, fontSize: 11 } }, humanSize(preview.size)),
                 h('button', {
                   key: 'close',
                   type: 'button',
@@ -934,25 +1337,24 @@ window.__ModuleLoader__.load({
                   onClick: () => setPreview(null),
                 }, '×'),
               ]),
-              h('div', {
-                key: 'body',
-                style: { padding: 12, overflow: 'auto', minHeight: 80 },
-              }, preview.kind === 'loading'
-                ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: 20 } }, h(Spinner, { label: '读取中…' }))
-                : preview.kind === 'image'
-                  ? h('img', { src: preview.url, style: { maxWidth: '100%', display: 'block', margin: '0 auto' } })
-                  : h('pre', {
-                      style: {
-                        margin: 0, fontSize: 12, lineHeight: '18px', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                      },
-                    }, preview.content ?? '')),
-              h('div', {
-                key: 'foot',
-                style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderTop: `1px solid ${C.border}` },
-              }, [
-                h('span', { key: 'hint', style: { flex: 1, color: C.muted, fontSize: 11 } },
-                  preview.kind === 'text' && preview.truncated ? '仅显示前 256 KiB' : '双击关闭或点右上角 ×'),
+              h('div', { key: 'body', className: 'dp-modal-body' },
+                preview.kind === 'loading'
+                  ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: 24 } }, h(Spinner, { label: '读取中…' }))
+                  : preview.kind === 'image'
+                    ? h('img', { src: preview.url, style: { maxWidth: '100%', display: 'block', margin: '0 auto' } })
+                    : preview.code
+                      ? h(CodeView, { content: preview.content })
+                      : h('pre', { className: 'dp-plain' }, preview.content ?? '')),
+              h('div', { key: 'foot', className: 'dp-modal-foot' }, [
+                h('span', {
+                  key: 'path',
+                  style: {
+                    flex: 1, minWidth: 0, color: C.muted, fontSize: 11,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  },
+                }, preview.path),
+                preview.truncated ? h('span', { key: 'trunc', style: { color: C.muted, fontSize: 11 } }, '仅显示前 256 KiB') : null,
                 Button({
                   label: '保存到本地',
                   small: true,
