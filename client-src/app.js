@@ -822,6 +822,7 @@ export function createApp({ React }) {
       server: ['M4 4h16v6H4z', 'M4 14h16v6H4z', 'M7.5 7h.01', 'M7.5 17h.01'],
       search: ['M11 4a7 7 0 1 0 0 14a7 7 0 0 0 0-14z', 'M20 20l-3.6-3.6'],
       play: ['M8 5l11 7-11 7z'],
+      external: ['M14 4h6v6', 'M20 4l-9 9', 'M10 5H5v14h14v-5'],
       copy: ['M9 9h11v11H9z', 'M5 15V4h11'],
       music: ['M9 17V5l10-2v12', 'M9 17a3 3 0 1 1-6 0a3 3 0 0 1 6 0z', 'M19 15a3 3 0 1 1-6 0a3 3 0 0 1 6 0z'],
     };
@@ -1764,10 +1765,241 @@ export function createApp({ React }) {
       ]);
     }
 
+    /**
+     * Port forwards: remote services exposed on 127.0.0.1 locally. The registry
+     * is shared with the agent's presence_forward tool, so tunnels opened from
+     * a session or from this panel both show up here.
+     */
+    function TunnelPanel({ sessionId }) {
+      const [hosts, setHosts] = useState([]);
+      const [tunnels, setTunnels] = useState([]);
+      const [host, setHost] = useState('');
+      const [remoteHost, setRemoteHost] = useState('127.0.0.1');
+      const [remotePort, setRemotePort] = useState('');
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState(null);
+      const [copied, setCopied] = useState(null);
+
+      const load = useCallback(async () => {
+        try {
+          const [state, listing] = await Promise.all([request('/state'), request('/tunnels')]);
+          const list = state.hosts ?? [];
+          setHosts(list);
+          setTunnels(listing.tunnels ?? []);
+          setError(null);
+          setHost((current) => current || list.find((item) => item.connected)?.alias || list[0]?.alias || '');
+        } catch (err) {
+          setError(err.message);
+        }
+      }, []);
+
+      useEffect(() => {
+        let cancelled = false;
+        (async () => {
+          await load();
+          if (cancelled || !sessionId) return;
+          try {
+            const context = await request(`/context?sessionId=${encodeURIComponent(sessionId)}`);
+            if (!cancelled && context.workspace?.host) {
+              setHost((current) => current || context.workspace.host);
+            }
+          } catch {
+            /* no session context: keep the default host */
+          }
+        })();
+        return () => {
+          cancelled = true;
+        };
+      }, [sessionId, load]);
+
+      // The agent may open tunnels too; poll so this list stays truthful.
+      useEffect(() => {
+        const timer = setInterval(() => { load(); }, 4000);
+        return () => clearInterval(timer);
+      }, [load]);
+
+      const startTunnel = async () => {
+        if (!host) {
+          setError('先选一台机器');
+          return;
+        }
+        const port = Number(remotePort);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          setError('远程端口必须是 1-65535');
+          return;
+        }
+        setBusy(true);
+        setError(null);
+        try {
+          await request('/tunnels', {
+            host,
+            remotePort: port,
+            remoteHost: remoteHost.trim() || '127.0.0.1',
+          });
+          setRemotePort('');
+          await load();
+        } catch (err) {
+          setError(err.message);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      const stopTunnel = async (id) => {
+        try {
+          await request(`/tunnels?id=${encodeURIComponent(id)}`, undefined, 'DELETE');
+          await load();
+        } catch (err) {
+          setError(err.message);
+        }
+      };
+
+      const copyUrl = async (tunnel) => {
+        try {
+          await navigator.clipboard.writeText(tunnel.url);
+          setCopied(tunnel.id);
+          setTimeout(() => setCopied(null), 1500);
+        } catch (err) {
+          setError(err.message);
+        }
+      };
+
+      const groups = [...tunnels.reduce((map, tunnel) => {
+        if (!map.has(tunnel.host)) map.set(tunnel.host, []);
+        map.get(tunnel.host).push(tunnel);
+        return map;
+      }, new Map())].sort((a, b) => a[0].localeCompare(b[0]));
+
+      const field = {
+        height: 28, font: 'inherit', fontSize: 12, padding: '0 8px',
+        borderRadius: 8, border: `1px solid ${C.border}`,
+        background: 'var(--dsw-alias-bg-layer-1)', color: C.text,
+      };
+
+      return h('div', {
+        className: 'dp-pane',
+        style: { height: '100%', minHeight: 0 },
+      }, [
+        h('div', { key: 'toolbar', className: 'dp-toolbar' }, [
+          h('span', { key: 'icon', className: 'dp-toolbar-icon' }, h(Icon, { name: 'server', size: 15 })),
+          h('span', { key: 'title', style: { fontSize: 12, fontWeight: 600 } },
+            tunnels.length > 0 ? `端口转发 · ${tunnels.length}` : '端口转发'),
+          h('div', { key: 'spacer', style: { flex: 1 } }),
+          h('button', {
+            key: 'refresh',
+            type: 'button',
+            className: 'dp-tool',
+            title: '刷新',
+            onClick: load,
+          }, [h(Icon, { key: 'i', name: 'refresh', size: 15 })]),
+        ]),
+        h('div', {
+          key: 'form',
+          style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '8px', borderBottom: `1px solid ${C.border}` },
+        }, [
+          h('select', {
+            key: 'host',
+            value: host,
+            onChange: (event) => setHost(event.target.value),
+            style: field,
+          }, hosts.map((item) => h('option', { key: item.alias, value: item.alias }, item.alias))),
+          h('input', {
+            key: 'remoteHost',
+            value: remoteHost,
+            title: '远程主机（默认 127.0.0.1）',
+            onChange: (event) => setRemoteHost(event.target.value),
+            style: { ...field, width: 100, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+          }),
+          h('input', {
+            key: 'remotePort',
+            value: remotePort,
+            inputMode: 'numeric',
+            placeholder: '端口',
+            title: '远程端口',
+            onChange: (event) => setRemotePort(event.target.value.replace(/[^\d]/gu, '')),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter') startTunnel();
+            },
+            style: { ...field, width: 78, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+          }),
+          h('button', {
+            key: 'go',
+            type: 'button',
+            className: 'dp-tool dp-tool--primary',
+            disabled: busy || !host || !remotePort,
+            onClick: startTunnel,
+          }, busy ? '转发中…' : '开始转发'),
+        ]),
+        error ? h('div', { key: 'error', className: 'dp-banner' }, error) : null,
+        h('div', { key: 'list', className: 'dp-list' },
+          groups.length === 0
+            ? h('div', { key: 'empty', className: 'dp-empty' }, [
+                h('span', { key: 'icon', className: 'dp-empty-icon' }, h(Icon, { name: 'server', size: 22 })),
+                h('span', { key: 'a' }, '还没有端口转发'),
+                h('span', { key: 'b', style: { fontSize: 11.5 } },
+                  '在上面选机器、填远程端口（如 8080），就会得到一个本地 http://127.0.0.1:<端口> 地址'),
+              ])
+            : groups.map(([alias, items]) => h('div', { key: alias, style: { marginTop: 6 } }, [
+                h('div', {
+                  key: 'head',
+                  style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', color: C.muted, fontSize: 11.5 },
+                }, [
+                  h('span', { key: 'dot', style: { width: 6, height: 6, borderRadius: '50%', background: C.ok } }),
+                  h('span', { key: 'name', style: { fontWeight: 600 } }, alias),
+                  h('span', { key: 'count' }, `${items.length} 个`),
+                ]),
+                ...items.map((tunnel) => h('div', {
+                  key: tunnel.id,
+                  style: {
+                    display: 'flex', alignItems: 'center', gap: 8, padding: '8px',
+                    borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 6,
+                    background: 'var(--dsw-alias-bg-layer-1)',
+                  },
+                }, [
+                  h('div', { key: 'text', style: { flex: 1, minWidth: 0 } }, [
+                    h('div', {
+                      key: 'route',
+                      style: { fontSize: 12.5, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+                    }, `${tunnel.remoteHost}:${tunnel.remotePort}  →  127.0.0.1:${tunnel.localPort}`),
+                    h('a', {
+                      key: 'url',
+                      href: tunnel.url,
+                      target: '_blank',
+                      rel: 'noopener noreferrer',
+                      style: { fontSize: 11.5, color: 'var(--dsw-alias-state-business-primary)', textDecoration: 'none' },
+                    }, tunnel.url),
+                  ]),
+                  h('a', {
+                    key: 'open',
+                    href: tunnel.url,
+                    target: '_blank',
+                    rel: 'noopener noreferrer',
+                    className: 'dp-tool',
+                    style: { textDecoration: 'none' },
+                  }, [h(Icon, { key: 'i', name: 'external', size: 14 }), h('span', { key: 't' }, '打开')]),
+                  h('button', {
+                    key: 'copy',
+                    type: 'button',
+                    className: 'dp-tool',
+                    onClick: () => copyUrl(tunnel),
+                  }, [h(Icon, { key: 'i', name: 'copy', size: 14 }), h('span', { key: 't' }, copied === tunnel.id ? '已复制' : '复制')]),
+                  h('button', {
+                    key: 'stop',
+                    type: 'button',
+                    className: 'dp-iconbtn',
+                    title: '停止转发',
+                    onClick: () => stopTunnel(tunnel.id),
+                  }, h(Icon, { name: 'trash', size: 15 })),
+                ])),
+              ]))),
+      ]);
+    }
+
     function PresencePanel() {
       const [mode, setMode] = useState('list');
       const [hosts, setHosts] = useState([]);
       const [workspaces, setWorkspaces] = useState([]);
+      const [tunnels, setTunnels] = useState([]);
       const [activeId, setActiveId] = useState(null);
       const [browse, setBrowse] = useState(null);
       const [busy, setBusy] = useState(false);
@@ -1787,9 +2019,14 @@ export function createApp({ React }) {
 
       const loadList = useCallback(async () => {
         try {
-          const [state, listing] = await Promise.all([request('/state'), request('/workspaces')]);
+          const [state, listing, forwards] = await Promise.all([
+            request('/state'),
+            request('/workspaces'),
+            request('/tunnels'),
+          ]);
           setHosts(state.hosts ?? []);
           setWorkspaces(listing.workspaces ?? []);
+          setTunnels(forwards.tunnels ?? []);
           setActiveId(listing.active ?? null);
           setError(null);
         } catch (err) {
@@ -1845,8 +2082,16 @@ export function createApp({ React }) {
         }
       }, [manualText, manualAlias, manualNote, loadList]);
 
-      const deleteManualHost = useCallback(async (alias) => {
-        if (!window.confirm(`删除手动主机「${alias}」？只会删除 Presence 自己保存的配置，不会动 ~/.ssh/config。`)) return;
+      const stopTunnel = useCallback(async (id) => {
+        try {
+          await request(`/tunnels?id=${encodeURIComponent(id)}`, undefined, 'DELETE');
+          await loadList();
+        } catch (err) {
+          setError(err.message);
+        }
+      }, [loadList]);
+
+      const deleteManualHost = useCallback(async (alias) => {        if (!window.confirm(`删除手动主机「${alias}」？只会删除 Presence 自己保存的配置，不会动 ~/.ssh/config。`)) return;
         setBusy(true);
         try {
           await request(`/custom-hosts?alias=${encodeURIComponent(alias)}`, {}, 'DELETE');
@@ -2220,9 +2465,45 @@ export function createApp({ React }) {
         const hostState = new Map(hosts.map((host) => [host.alias, host]));
         const groups = [...byHost.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
-        body = h('div', { style: { marginTop: 12 } },
+        const tunnelSection = h('div', {
+          key: 'tunnels',
+          style: { marginTop: 22, borderTop: `1px solid ${C.border}`, paddingTop: 10 },
+        }, [
+          h('div', {
+            key: 'head',
+            style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
+          }, [
+            h('span', { key: 'title', style: { fontSize: 13, fontWeight: 600 } }, '端口转发'),
+            h('span', { key: 'count', style: { color: C.muted, fontSize: 12 } }, `${tunnels.length} 个`),
+            h('div', { key: 'spacer', style: { flex: 1 } }),
+            h('span', { key: 'hint', style: { color: C.muted, fontSize: 11.5 } }, '在右侧栏「端口转发」里新建'),
+          ]),
+          tunnels.length === 0
+            ? h('div', { key: 'empty', style: { color: C.muted, fontSize: 12, padding: '4px 0 8px' } },
+                '没有正在转发的端口。打开右侧栏的「端口转发」标签即可把远程 8080 映射到本地。')
+            : tunnels.map((tunnel) => h('div', {
+                key: tunnel.id,
+                style: { display: 'flex', alignItems: 'center', gap: 8, padding: '7px 8px', borderBottom: `1px solid ${C.border}` },
+              }, [
+                h('span', { key: 'host', style: { fontWeight: 600, fontSize: 12.5, minWidth: 90 } }, tunnel.host),
+                h('span', {
+                  key: 'route',
+                  style: { flex: 1, minWidth: 0, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                }, `${tunnel.remoteHost}:${tunnel.remotePort} → 127.0.0.1:${tunnel.localPort}`),
+                h('a', {
+                  key: 'open',
+                  href: tunnel.url,
+                  target: '_blank',
+                  rel: 'noopener noreferrer',
+                  style: { color: 'var(--dsw-alias-state-business-primary)', fontSize: 12, textDecoration: 'none' },
+                }, tunnel.url),
+                Button({ label: '停止', small: true, onClick: () => stopTunnel(tunnel.id), disabled: busy }),
+              ])),
+        ]);
+
+        body = h('div', { style: { marginTop: 12 } }, [
           workspaces.length === 0
-            ? h('div', { style: { padding: '18px 0', color: C.muted, fontSize: 13 } }, [
+            ? h('div', { key: 'none', style: { padding: '18px 0', color: C.muted, fontSize: 13 } }, [
                 h('div', { key: 'a', style: { marginBottom: 8 } }, '还没有远程工作区。'),
                 h('div', { key: 'b', style: { fontSize: 12 } }, '点右上角「新建」，选一台机器，然后在它的目录树里挑一个项目文件夹。'),
               ])
@@ -2291,7 +2572,9 @@ export function createApp({ React }) {
                     Button({ label: '移除', onClick: () => remove(workspace.id), small: true, disabled: busy }),
                   ])),
                 ]);
-              }));
+              }),
+          tunnelSection,
+        ]);
       }
 
       return h('section', {
@@ -2365,6 +2648,43 @@ export function createApp({ React }) {
               return () => {};
             }
           }, 'presence.sidebar.pane');
+        });
+
+        // Right-sidebar port forwards: the live list of remote→local tunnels,
+        // shared with the agent's presence_forward tool.
+        const portsTabId = 'dsh-presence/ports';
+        ctx.inject(['sidebarRightTabs'], (scope) => {
+          scope.effect(() => {
+            try {
+              return scope.sidebarRightTabs.register({
+                id: portsTabId,
+                kind: 'presence-ports',
+                multiple: false,
+                priority: 'extension',
+                title: () => '端口转发',
+                guide: [{
+                  id: 'open',
+                  order: 41,
+                  title: () => '端口转发',
+                  description: () => '把远程端口映射到本地，直接打开网页服务',
+                }],
+              });
+            } catch (error) {
+              console.error('[presence] ports tab registration failed', error);
+              return () => {};
+            }
+          }, 'presence.sidebar.portsTab');
+          scope.effect(() => {
+            try {
+              return scope.slots.inject('sidebar.right.pane.tab', () => scope.slots.register({
+                name: 'sidebar.right.pane.tab',
+                key: portsTabId,
+              }, TunnelPanel));
+            } catch (error) {
+              console.error('[presence] ports pane registration failed', error);
+              return () => {};
+            }
+          }, 'presence.sidebar.portsPane');
         });
       },
     };

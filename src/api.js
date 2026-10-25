@@ -290,6 +290,54 @@ export function presenceRoutes(pool, late = {}) {
       }),
     },
     {
+      // Local port forwards: the live list plus open/close, so the panel and the
+      // agent's presence_forward tool share one registry.
+      kind: 'exact',
+      path: '/presence/api/tunnels',
+      handler: guarded(async (request, response) => {
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        if (request.method === 'GET') {
+          send(response, 200, { ok: true, tunnels: pool.listTunnels() });
+          return;
+        }
+        if (request.method === 'POST') {
+          const body = await readJson(request);
+          const host = String(body.host ?? '').trim();
+          const remotePort = Number(body.remotePort);
+          if (!host) {
+            send(response, 400, { ok: false, error: 'host is required' });
+            return;
+          }
+          if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) {
+            send(response, 400, { ok: false, error: 'remotePort must be 1-65535' });
+            return;
+          }
+          try {
+            const tunnel = await pool.openTunnel(host, {
+              localPort: body.localPort ? Number(body.localPort) : 0,
+              remoteHost: typeof body.remoteHost === 'string' && body.remoteHost ? body.remoteHost : '127.0.0.1',
+              remotePort,
+            });
+            send(response, 200, { ok: true, tunnel: { ...tunnel, url: `http://127.0.0.1:${tunnel.localPort}` } });
+          } catch (error) {
+            send(response, 400, { ok: false, error: error?.message ?? String(error) });
+          }
+          return;
+        }
+        if (request.method === 'DELETE') {
+          const id = String(url.searchParams.get('id') ?? '').trim();
+          if (!id) {
+            send(response, 400, { ok: false, error: 'id is required' });
+            return;
+          }
+          const closed = await pool.closeTunnel(id);
+          send(response, closed ? 200 : 404, { ok: closed, closed });
+          return;
+        }
+        send(response, 405, { ok: false, error: 'use GET, POST or DELETE' });
+      }),
+    },
+    {
       kind: 'exact',
       path: '/presence/api/connect',
       handler: guarded(async (request, response) => {

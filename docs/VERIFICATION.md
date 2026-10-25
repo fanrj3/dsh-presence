@@ -358,6 +358,33 @@ host 端新增 6 个 API（`src/api.js`，双前缀注册）：
 - **回归发现**：`server` 的 ssh config 里带有 `ProxyJump`，而连接层一直是直连并且可用；新加的"拒绝 ProxyJump"守卫会让这个主机全部失败（api-check 5 项 FAIL、进程崩）。守卫已移除，注释说明 ProxyJump 被有意忽略（手动主机按 `-J` 只给警告）
 - 全量：API 7/7、regression 7/7、client bundle 构建 + 冒烟 PASS
 
+## 〇之十六、第十七轮：端口转发面板（0.16.0）
+
+需求：远程经常要把端口转发到本地看网页服务，需要维护"哪些端口在转发"，并放在容易看到的位置。
+
+底层 `pool.openTunnel/listTunnels/closeTunnel` 和 `presence_forward` 工具早就有；这一轮把它变成**可见、可操作**的：
+
+- **HTTP API**（`src/api.js`）：`GET /presence/api/tunnels`（实时列表）、`POST`（`{host, remoteHost?, remotePort, localPort?}` → 打开并返回 `url`）、`DELETE ?id=`（关闭）。与工具共用同一个 tunnel 注册表
+- **右侧栏第二个标签「端口转发」**（`TunnelPanel`）：
+  - 顶部一行表单：机器下拉 + 远程主机（默认 `127.0.0.1`）+ 远程端口 →「开始转发」
+  - 按机器分组的实时列表：`远程主机:端口 → 127.0.0.1:本地端口`，每行「打开」（`target=_blank` 直连）/「复制」/ 停止
+  - 每 4 秒轮询：agent 用 `presence_forward` 开的、别处关掉的都会同步
+  - 空状态给出用法提示；错误走统一 banner
+- **设置 → Presence**：工作区列表下方新增「端口转发」只读区块（数量 + 地址 + 打开/停止），不看右侧栏也能知道
+- 样式复用文件面板的 `.dp-pane/.dp-toolbar/.dp-entry` 体系（主题 token、图标按钮、hover 态）
+
+**验证**：真实主机端到端 5/5——
+1. `POST /tunnels` 打开转发（返回 `http://127.0.0.1:7357`）
+2. `GET /tunnels` 列出该转发
+3. 通过该本地端口 `fetch` 远程 `python3 -m http.server`，**HTTP 200，844366 字节**（真的拿到了目录列表）
+4. `DELETE /tunnels` 关闭，`closed=true`
+5. 关闭后列表为空
+
+（期间修复：`POST` 返回的 tunnel 少了 `url` 字段，测试立刻抓到，已补上。）
+
+另：API 7/7、regression 7/7、client bundle 1625 KiB 构建 + 冒烟 PASS。
+
+
 
 ## 一、最初提出的问题 → 现在的结果
 
