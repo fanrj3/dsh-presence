@@ -270,6 +270,36 @@ host 端新增 6 个 API（`src/api.js`，双前缀注册）：
 
 **验证**：`client.js` 语法检查通过；服务端端点未改动（沿用 7/7 结果）；打包 `--check` 通过。
 
+## 〇之十二、第十三轮：hover 失效根因 + 目录面板整体重构（0.13.0）
+
+**根因（这次找到了）**：浅色主题下 `--dsw-alias-bg-layer-1` 与 `--dsw-alias-bg-layer-2` **是同一个颜色**（都是 `--dsw-static-neutral-bluish-00`，即纯白）。之前所有 hover/选中态都用 `bg-layer-2` 做背景，于是"hover 变色"实际是白→白，肉眼完全看不出来；点击时看到的"框"其实是 `border-l2`。这解释了为什么每一轮调样式都没真正解决。
+
+**修复方式**：全部改用 harness 主题**专为交互定义**的 token：
+
+| 用途 | token | 浅色 / 深色 |
+| --- | --- | --- |
+| hover 背景 | `--dsw-alias-interactive-bg-hover` | `#2631480f` / `#ffffff14`（始终可见） |
+| 选中行背景 | `--dsw-alias-bg-multi-select` | `neutral-bluish-60` / `neutral-850` |
+| 填充块（图标块/输入框/当前面包屑） | `--dsw-alias-bg-module-platform` | `bluish-60` / `bluish-800` |
+| 分隔线 / 描边 | `--dsw-alias-border-l2` / `-l3` | `#0000001a` / `#0000001f` |
+| 强调（进度、聚焦、文件夹图标） | `--dsw-alias-state-business-primary` | deepseek-500 / 400 |
+| 动效 | `--ds-transition-duration-fast` (` .1s`) / `--ds-transition-duration-slow` (` .3s`) + `--ds-ease-in-out` (`cubic-bezier(.4,0,.2,1)`) | 与 OpenDesign 完全一致 |
+| 圆角 | `--dsw-radius-xs/sm/md`（4/8/12） | 主题原生 |
+
+**整体重构内容**：
+- **真图标**：内置 16 个描边 SVG 图标（Lucide 几何）——folder / file / code / text / image / download / trash / plus / folder-plus / refresh / upload / chevron / x / lock / check / alert / server / search；工具栏、行首、行尾操作、面包屑分隔、空状态、密码框、弹窗头部全部换成图标，不再用 emoji
+- **行状态**：默认 / hover（可见底色）/ 选中（multi-select 填充）/ 按下 / `:focus-visible`（2px business-primary 外框）；行尾操作默认隐藏、hover 或键盘聚焦才出现
+- **禁止文本误选**：面板、行、工具栏、面包屑全部 `user-select: none`（代码区、输入框、路径文本保留可选中），双击不再出现蓝色文字选中
+- **列布局**：新增「名称 / 大小 / 修改时间」列头；大小、时间右对齐、等宽数字；行高 34px
+- **弹窗**：ESC 关闭、头部图标 + 类型 chip、路径等宽显示、底部主按钮带下载图标；遮罩淡入 + 弹窗上浮 300ms
+- **密码框**：锁图标 + 标题、按钮改成面板同款胶囊按钮
+- **进度条**：图标 + 标签 + 线性进度 + 详情行，完成态换成勾选图标
+- **空状态**：圆角图标块 + 文案（区分"空目录"与"无匹配"）
+- 设置面板的按钮/输入框/行的 hover 也同步从 `bg-layer-2` 换成 `interactive-bg-hover`（同一根因，原来在设置页也不明显）
+
+**验证**：`client.js` 语法检查通过；CSS 括号平衡检查通过；服务端未改动（沿用 API 7/7、regression 7/7、safety 24/24）；打包 `--check` 通过。
+
+
 
 **验证**（全部在真实主机 server 上）：
 - `node scripts/regression.mjs server` → 5/5

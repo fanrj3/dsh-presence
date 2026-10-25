@@ -235,7 +235,7 @@ DSH 右侧的终端面板原本只会起**本机** shell，cwd 被设成挂载�
 | 需要密码的机器 | 自动弹**密码对话框**（密码 / 「记住这台」/ 取消），连上后继续浏览当前目录 |
 | 取消「选择目标文件夹」 | 视为取消，不报错 |
 
-界面按 [OpenDesign](https://open-design.ai/zh/plugins/design-system-agentic/) 的 token 规范实现：4px 间距网格、圆角 4/8/12/pill、`1px ring + 柔阴影`（不用重投影）、动效 `100/170/300ms` + `cubic-bezier(.4,0,.2,1)`、4px 焦点环、胶囊按钮与芯片、单一强调色。
+界面按 [OpenDesign](https://open-design.ai/zh/plugins/design-system-agentic/) 的规范实现，并**全部落在 harness 主题自己的 token 上**：4px 间距网格、圆角 4/8/12/pill（`--dsw-radius-*`）、`1px ring + 柔阴影`、动效 `100ms/300ms` + `cubic-bezier(.4,0,.2,1)`（`--ds-transition-duration-*` + `--ds-ease-in-out`）、交互底色 `--dsw-alias-interactive-bg-hover`、选中 `--dsw-alias-bg-multi-select`、强调 `--dsw-alias-state-business-primary`；图标为内置描边 SVG（不再用 emoji），行内文本禁止选中，工具栏/面包屑/操作按钮均为图标按钮。
 
 **关于"拖出"的准确说法**：
 - **文件可以拖出**到资源管理器：Chromium 的 `DownloadURL` 机制会把 URL 下载成临时文件再交给系统。

@@ -30,7 +30,7 @@ window.__ModuleLoader__.load({
     }
 
     const C = {
-      soft: 'var(--dsw-alias-bg-layer-2)',
+      soft: 'var(--dsw-alias-bg-module-platform)',
       border: 'var(--dsw-alias-border-l1)',
       text: 'var(--dsw-alias-label-primary)',
       muted: 'var(--dsw-alias-label-secondary)',
@@ -77,8 +77,8 @@ window.__ModuleLoader__.load({
           transform var(--dp-fast) var(--dp-ease);
       }
       .dp-btn:hover:not(:disabled) {
-        background: var(--dsw-alias-bg-layer-2);
-        border-color: var(--dsw-alias-border-l2);
+        background: var(--dsw-alias-interactive-bg-hover);
+        border-color: var(--dsw-alias-border-l3);
         transform: translateY(-1px);
         box-shadow: var(--dp-elev-ring);
       }
@@ -127,14 +127,14 @@ window.__ModuleLoader__.load({
           background-color var(--dp-fast) var(--dp-ease),
           transform var(--dp-fast) var(--dp-ease);
       }
-      .dp-row:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
+      .dp-row:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
       .dp-row:active:not(:disabled) { transform: scale(.995); }
       .dp-row:focus-visible { outline: none; box-shadow: var(--dp-ring); }
       .dp-row:disabled { cursor: not-allowed; }
 
       .dp-icon {
         width: 26px; height: 26px; border-radius: var(--dp-radius-sm); flex: 0 0 auto;
-        background: var(--dsw-alias-bg-layer-2);
+        background: var(--dsw-alias-bg-module-platform);
         display: grid; place-items: center; font-size: 13px;
         transition: background-color var(--dp-fast) var(--dp-ease);
       }
@@ -150,7 +150,7 @@ window.__ModuleLoader__.load({
           color var(--dp-fast) var(--dp-ease);
       }
       .dp-crumb:hover:not(:disabled) {
-        background: var(--dsw-alias-bg-layer-2);
+        background: var(--dsw-alias-interactive-bg-hover);
         color: var(--dsw-alias-label-primary);
       }
       .dp-crumb:focus-visible { outline: none; box-shadow: var(--dp-ring); }
@@ -168,7 +168,7 @@ window.__ModuleLoader__.load({
           transform var(--dp-fast) var(--dp-ease);
       }
       .dp-iconbtn:hover:not(:disabled) {
-        background: var(--dsw-alias-bg-layer-2);
+        background: var(--dsw-alias-interactive-bg-hover);
         color: var(--dsw-alias-label-primary);
       }
       .dp-iconbtn:active:not(:disabled) { transform: scale(.92); }
@@ -178,8 +178,8 @@ window.__ModuleLoader__.load({
       .dp-input {
         width: 100%; padding: 6px 10px; font-size: 12px;
         color: var(--dsw-alias-label-primary);
-        background: var(--dsw-alias-bg-layer-2);
-        border: 1px solid var(--dsw-alias-border-l1);
+        background: var(--dsw-alias-bg-module-platform);
+        border: 1px solid var(--dsw-alias-border-l2);
         border-radius: var(--dp-radius-sm); outline: none;
         transition:
           border-color var(--dp-fast) var(--dp-ease),
@@ -187,7 +187,7 @@ window.__ModuleLoader__.load({
           background-color var(--dp-fast) var(--dp-ease);
       }
       .dp-input::placeholder { color: var(--dsw-alias-label-secondary); }
-      .dp-input:hover { border-color: var(--dsw-alias-border-l2); }
+      .dp-input:hover { border-color: var(--dsw-alias-border-l3); }
       .dp-input:focus { border-color: var(--dp-accent); box-shadow: var(--dp-ring); }
 
       /* ---- workspace rows ---- */
@@ -196,7 +196,7 @@ window.__ModuleLoader__.load({
         padding: 8px 12px; border-radius: var(--dp-radius-md);
         transition: background-color var(--dp-fast) var(--dp-ease);
       }
-      .dp-ws:hover { background: var(--dsw-alias-bg-layer-2); }
+      .dp-ws:hover { background: var(--dsw-alias-interactive-bg-hover); }
 
       @media (prefers-reduced-motion: reduce) {
         .dp-btn, .dp-row, .dp-crumb, .dp-iconbtn, .dp-input, .dp-ws, .dp-card {
@@ -215,243 +215,315 @@ window.__ModuleLoader__.load({
       }
 
       /* -------------------------------------------------- remote file pane
-         OpenDesign (Lens) tokens: 4px grid, radius 4/8/12/pill, 1px ring +
-         soft elevation, motion 100/170/300ms with cubic-bezier(.4,0,.2,1),
-         monochrome surfaces with a single accent, no heavy shadows. */
+         Uses the harness theme's own interaction tokens (bg-layer-1 and
+         bg-layer-2 are the SAME colour in the light theme, which is why hover
+         was invisible), plus the theme motion/radius tokens. */
       .dp-pane {
         display: flex; flex-direction: column; height: 100%; min-height: 0;
         color: var(--dsw-alias-label-primary); font-size: 13px; position: relative;
-        --dp-micro: 100ms;
-        --dp-small: 170ms;
-        --dp-medium: 300ms;
-        --dp-ease: cubic-bezier(.4, 0, .2, 1);
-        --dp-ring-soft: 0 0 0 1px var(--dsw-alias-border-l1);
-        --dp-ring: 0 0 0 4px color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent);
-        --dp-elevated: 0 0 0 1px var(--dsw-alias-border-l1),
-          0 10px 24px rgba(0, 0, 0, .08), 0 1px 2px rgba(0, 0, 0, .05);
+        background: transparent;
+        --dp-fast: var(--ds-transition-duration-fast, .1s);
+        --dp-ease: var(--ds-ease-in-out, cubic-bezier(.4, 0, .2, 1));
       }
+      .dp-pane, .dp-pane .dp-entry, .dp-pane .dp-toolbar, .dp-pane .dp-path,
+      .dp-pane .dp-columns, .dp-pane .dp-filter, .dp-pane .dp-crumbs {
+        -webkit-user-select: none; user-select: none;
+      }
+      .dp-pane .dp-code, .dp-pane .dp-plain, .dp-pane .dp-input,
+      .dp-pane .dp-modal-path, .dp-pane select { -webkit-user-select: text; user-select: text; }
 
-      /* toolbar: pill ghosts, 4px grid */
-      .dp-pane-toolbar {
+      /* toolbar */
+      .dp-toolbar {
         display: flex; align-items: center; gap: 4px;
-        padding: 8px; border-bottom: 1px solid var(--dsw-alias-border-l1);
+        padding: 6px 8px; min-height: 40px; box-sizing: border-box;
+        border-bottom: 1px solid var(--dsw-alias-border-l2);
         flex: 0 0 auto;
       }
+      .dp-toolbar-icon { color: var(--dsw-alias-label-tertiary); display: inline-flex; }
+      .dp-select {
+        height: 28px; padding: 0 8px; max-width: 136px;
+        border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm, 8px);
+        background: var(--dsw-alias-bg-module-platform);
+        color: var(--dsw-alias-label-primary);
+        font: inherit; font-size: 12px; outline: none; cursor: pointer;
+        transition: border-color var(--dp-fast) var(--dp-ease), box-shadow var(--dp-fast) var(--dp-ease);
+      }
+      .dp-select:hover { border-color: var(--dsw-alias-border-l3); }
+      .dp-select:focus-visible { border-color: var(--dsw-alias-state-business-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 22%, transparent); }
+
       .dp-tool {
-        display: inline-flex; align-items: center; gap: 4px;
-        height: 28px; padding: 0 12px;
-        border: 1px solid transparent; border-radius: 999px;
+        display: inline-flex; align-items: center; gap: 6px;
+        height: 28px; padding: 0 10px;
+        border: 1px solid transparent; border-radius: var(--dsw-radius-sm, 8px);
         background: transparent; color: var(--dsw-alias-label-secondary);
         font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
-        transition: background-color var(--dp-micro) var(--dp-ease),
-          color var(--dp-micro) var(--dp-ease),
-          border-color var(--dp-micro) var(--dp-ease);
+        transition: background-color var(--dp-fast) var(--dp-ease),
+          color var(--dp-fast) var(--dp-ease);
       }
       .dp-tool:hover {
-        background: var(--dsw-alias-bg-layer-2);
+        background: var(--dsw-alias-interactive-bg-hover);
         color: var(--dsw-alias-label-primary);
       }
-      .dp-tool:active { transform: scale(.98); }
-      .dp-tool:focus-visible { outline: none; box-shadow: var(--dp-ring); }
+      .dp-tool:active { background: color-mix(in srgb, var(--dsw-alias-interactive-bg-hover) 70%, var(--dsw-alias-border-l3)); }
+      .dp-tool:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 1px; }
       .dp-tool--primary {
-        border-color: var(--dsw-alias-label-primary);
-        background: var(--dsw-alias-label-primary);
-        color: var(--dsw-alias-bg-base);
+        border-color: var(--dsw-alias-border-l3);
+        background: var(--dsw-alias-button-primary-fill, var(--dsw-alias-label-primary));
+        color: var(--dsw-alias-label-primary-foreground, var(--dsw-alias-bg-base));
       }
       .dp-tool--primary:hover {
-        background: var(--dsw-alias-label-primary);
-        color: var(--dsw-alias-bg-base);
-        box-shadow: var(--dp-ring-soft);
+        background: var(--dsw-alias-button-primary-fill, var(--dsw-alias-label-primary));
+        color: var(--dsw-alias-label-primary-foreground, var(--dsw-alias-bg-base));
+        filter: brightness(1.04);
       }
-      .dp-select {
-        height: 28px; padding: 0 10px; max-width: 128px;
-        border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px;
-        background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
-        font: inherit; font-size: 12px; outline: none;
-        transition: border-color var(--dp-micro) var(--dp-ease), box-shadow var(--dp-micro) var(--dp-ease);
-      }
-      .dp-select:focus { border-color: var(--dsw-alias-brand-primary); box-shadow: var(--dp-ring); }
 
-      /* path bar: pill crumbs */
-      .dp-pane-path {
-        display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
-        padding: 8px; border-bottom: 1px solid var(--dsw-alias-border-l1);
+      /* path bar */
+      .dp-path {
+        display: flex; align-items: center; gap: 1px; flex-wrap: wrap;
+        padding: 6px 8px; border-bottom: 1px solid var(--dsw-alias-border-l2);
         flex: 0 0 auto;
       }
+      .dp-path-part { display: inline-flex; align-items: center; }
+      .dp-pane .dp-path-sep { color: var(--dsw-alias-label-tertiary); display: inline-flex; margin: 0 1px; }
       .dp-pane .dp-crumb {
         border: 1px solid transparent; background: transparent;
-        padding: 3px 10px; border-radius: 999px;
-        font: inherit; font-size: 11.5px; line-height: 16px;
+        padding: 2px 8px; border-radius: 999px; max-width: 160px;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font: inherit; font-size: 12px; line-height: 18px;
         color: var(--dsw-alias-label-secondary); cursor: pointer;
-        transition: background-color var(--dp-micro) var(--dp-ease),
-          color var(--dp-micro) var(--dp-ease),
-          border-color var(--dp-micro) var(--dp-ease);
+        transition: background-color var(--dp-fast) var(--dp-ease),
+          color var(--dp-fast) var(--dp-ease);
       }
       .dp-pane .dp-crumb:hover {
-        background: var(--dsw-alias-bg-layer-2);
+        background: var(--dsw-alias-interactive-bg-hover);
         color: var(--dsw-alias-label-primary);
       }
-      .dp-pane .dp-crumb:focus-visible { outline: none; box-shadow: var(--dp-ring); }
-      .dp-pane .dp-crumb--current {
-        background: var(--dsw-alias-bg-layer-2);
-        border-color: var(--dsw-alias-border-l1);
+      .dp-pane .dp-crumb:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 1px; }
+      .dp-crumb--current {
+        background: var(--dsw-alias-bg-module-platform);
         color: var(--dsw-alias-label-primary);
         font-weight: 500; cursor: default;
       }
-      .dp-pane .dp-crumb--current:hover { background: var(--dsw-alias-bg-layer-2); }
-      .dp-pane .dp-crumb-sep { color: var(--dsw-alias-label-secondary); opacity: .5; font-size: 11px; padding: 0 1px; }
+      .dp-crumb--current:hover { background: var(--dsw-alias-bg-module-platform); }
 
-      .dp-pane-filter { padding: 8px 8px 4px; flex: 0 0 auto; }
+      /* filter */
+      .dp-filter { position: relative; padding: 6px 8px; flex: 0 0 auto; border-bottom: 1px solid var(--dsw-alias-border-l2); }
+      .dp-filter-icon {
+        position: absolute; left: 18px; top: 50%; transform: translateY(-50%);
+        color: var(--dsw-alias-label-tertiary); display: inline-flex; pointer-events: none;
+      }
       .dp-pane .dp-input {
-        width: 100%; height: 30px; padding: 0 12px; box-sizing: border-box;
-        border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px;
-        background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
+        width: 100%; height: 28px; box-sizing: border-box; padding: 0 10px;
+        border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm, 8px);
+        background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary);
         font: inherit; font-size: 12px; outline: none;
-        transition: border-color var(--dp-micro) var(--dp-ease),
-          box-shadow var(--dp-micro) var(--dp-ease),
-          background-color var(--dp-micro) var(--dp-ease);
+        transition: border-color var(--dp-fast) var(--dp-ease), box-shadow var(--dp-fast) var(--dp-ease);
       }
-      .dp-pane .dp-input::placeholder { color: var(--dsw-alias-label-secondary); }
-      .dp-pane .dp-input:hover { border-color: var(--dsw-alias-border-l2); }
-      .dp-pane .dp-input:focus { border-color: var(--dsw-alias-brand-primary); box-shadow: var(--dp-ring); }
+      .dp-filter .dp-input { padding-left: 28px; }
+      .dp-pane .dp-input::placeholder { color: var(--dsw-alias-label-tertiary); }
+      .dp-pane .dp-input:hover { border-color: var(--dsw-alias-border-l3); }
+      .dp-pane .dp-input:focus-visible {
+        border-color: var(--dsw-alias-state-business-primary);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 22%, transparent);
+      }
 
-      /* rows: 32px tall, 4px grid, subtle hover, actions on hover */
-      .dp-pane-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 6px 16px; }
-      .dp-pane-row {
-        display: flex; align-items: center; gap: 8px; width: 100%;
-        min-height: 32px; padding: 4px 8px; border: 1px solid transparent; border-radius: 8px;
+      /* column header + list */
+      .dp-columns {
+        display: flex; align-items: center; gap: 10px;
+        padding: 6px 10px 4px 44px;
+        font-size: 11px; color: var(--dsw-alias-label-tertiary);
+        border-bottom: 1px solid var(--dsw-alias-border-l2);
+        flex: 0 0 auto;
+      }
+      .dp-col-name { flex: 1; min-width: 0; }
+      .dp-col-size { width: 64px; flex: 0 0 auto; text-align: right; }
+      .dp-col-time { width: 76px; flex: 0 0 auto; text-align: right; }
+      .dp-col-actions { width: 52px; flex: 0 0 auto; }
+
+      .dp-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 6px 18px; }
+      .dp-loading { display: flex; justify-content: center; padding: 32px 0; }
+
+      .dp-entry {
+        display: flex; align-items: center; gap: 10px; width: 100%;
+        min-height: 34px; padding: 4px 8px; box-sizing: border-box;
+        border: 0; border-radius: var(--dsw-radius-sm, 8px);
         background: transparent; color: inherit; font: inherit;
-        text-align: left; cursor: pointer;
-        transition: background-color var(--dp-micro) var(--dp-ease),
-          border-color var(--dp-micro) var(--dp-ease);
+        text-align: left; cursor: default;
+        transition: background-color var(--dp-fast) var(--dp-ease),
+          box-shadow var(--dp-fast) var(--dp-ease);
       }
-      .dp-pane-row:hover { background: var(--dsw-alias-bg-layer-2); }
-      .dp-pane-row:focus-visible { outline: none; box-shadow: var(--dp-ring); }
-      .dp-pane-row.is-selected {
-        background: var(--dsw-alias-bg-layer-2);
-        border-color: var(--dsw-alias-border-l2);
+      .dp-entry:hover { background: var(--dsw-alias-interactive-bg-hover); }
+      .dp-entry.is-selected { background: var(--dsw-alias-bg-multi-select); }
+      .dp-entry:focus-visible {
+        outline: 2px solid var(--dsw-alias-state-business-primary);
+        outline-offset: -2px;
       }
-      .dp-pane .dp-icon-tile {
-        width: 24px; height: 24px; border-radius: 8px; flex: 0 0 auto;
-        display: grid; place-items: center; font-size: 12px;
-        background: var(--dsw-alias-bg-layer-2);
-        transition: background-color var(--dp-micro) var(--dp-ease);
-      }
-      .dp-pane-row:hover .dp-icon-tile { background: var(--dsw-alias-bg-base); }
-      .dp-pane-row .dp-name {
-        flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        font-size: 13px;
-      }
-      .dp-pane-row .dp-meta {
-        color: var(--dsw-alias-label-secondary); font-size: 11px; flex: 0 0 auto;
-        font-variant-numeric: tabular-nums;
-      }
-      .dp-pane-actions {
-        display: flex; gap: 2px; flex: 0 0 auto; opacity: 0;
-        transition: opacity var(--dp-micro) var(--dp-ease);
-      }
-      .dp-pane-row:hover .dp-pane-actions, .dp-pane-row:focus-within .dp-pane-actions { opacity: 1; }
-      .dp-pane-actions .dp-iconbtn {
-        width: 24px; height: 24px; line-height: 24px; font-size: 12px;
-        border-radius: 999px; background: transparent; color: var(--dsw-alias-label-secondary);
-      }
-      .dp-pane-actions .dp-iconbtn:hover {
-        background: var(--dsw-alias-border-l1); color: var(--dsw-alias-label-primary); transform: none;
-      }
+      .dp-entry:active { background: var(--dsw-alias-bg-module-platform); }
 
-      .dp-pane-empty {
-        display: flex; flex-direction: column; align-items: center; gap: 8px;
-        padding: 40px 16px; color: var(--dsw-alias-label-secondary); font-size: 12px; text-align: center;
+      .dp-tile {
+        width: 26px; height: 26px; flex: 0 0 auto;
+        display: grid; place-items: center;
+        border-radius: var(--dsw-radius-xs, 4px);
+        color: var(--dsw-alias-label-tertiary);
+        background: transparent;
+        transition: background-color var(--dp-fast) var(--dp-ease), color var(--dp-fast) var(--dp-ease);
       }
-      .dp-pane-empty .dp-pane .dp-icon-tile { width: 32px; height: 32px; font-size: 16px; }
+      .dp-tile--dir { color: var(--dsw-alias-state-business-primary); }
+      .dp-tile--image { color: var(--dsw-alias-state-success-primary); }
+      .dp-entry:hover .dp-tile { background: var(--dsw-alias-bg-module-platform); }
+      .dp-entry:hover .dp-tile--dir { color: var(--dsw-alias-state-business-primary); }
+
+      .dp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+      .dp-meta {
+        color: var(--dsw-alias-label-tertiary); font-size: 11.5px;
+        flex: 0 0 auto; font-variant-numeric: tabular-nums; text-align: right;
+      }
+      .dp-entry .dp-col-size, .dp-entry .dp-col-time { line-height: 20px; }
+
+      .dp-factions {
+        display: flex; gap: 2px; width: 52px; flex: 0 0 auto; justify-content: flex-end;
+        opacity: 0; transition: opacity var(--dp-fast) var(--dp-ease);
+      }
+      .dp-entry:hover .dp-factions, .dp-entry:focus-within .dp-factions, .dp-entry.is-selected .dp-factions { opacity: 1; }
+      .dp-pane .dp-iconbtn {
+        width: 24px; height: 24px; padding: 0;
+        display: grid; place-items: center;
+        border: 0; border-radius: var(--dsw-radius-xs, 4px);
+        background: transparent; color: var(--dsw-alias-label-secondary);
+        cursor: pointer;
+        transition: background-color var(--dp-fast) var(--dp-ease), color var(--dp-fast) var(--dp-ease);
+      }
+      .dp-pane .dp-iconbtn:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+      .dp-pane .dp-iconbtn:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 1px; }
+
+      .dp-empty {
+        display: flex; flex-direction: column; align-items: center; gap: 10px;
+        padding: 44px 16px; color: var(--dsw-alias-label-tertiary); font-size: 12px;
+      }
+      .dp-empty-icon {
+        width: 40px; height: 40px; display: grid; place-items: center;
+        border-radius: var(--dsw-radius-md, 12px);
+        background: var(--dsw-alias-bg-module-platform);
+        color: var(--dsw-alias-label-secondary);
+      }
 
       .dp-drop {
         position: absolute; inset: 8px; z-index: 8;
-        display: flex; align-items: center; justify-content: center;
-        background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);
-        border: 1px dashed var(--dsw-alias-brand-primary); border-radius: 12px;
-        color: var(--dsw-alias-label-primary); font-size: 13px; pointer-events: none;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+        background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 8%, var(--dsw-alias-bg-layer-1));
+        border: 1px dashed var(--dsw-alias-state-business-primary);
+        border-radius: var(--dsw-radius-md, 12px);
+        color: var(--dsw-alias-label-primary); font-size: 13px;
+        pointer-events: none;
       }
 
-      /* progress: thin pill bar, soft elevation */
+      /* progress */
       .dp-progress {
         position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 9;
-        background: var(--dsw-alias-bg-overlay);
-        border-radius: 12px; padding: 10px 12px;
-        box-shadow: var(--dp-elevated);
-        display: flex; flex-direction: column; gap: 6px;
+        padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+        border: 1px solid var(--dsw-alias-border-l2);
+        border-radius: var(--dsw-radius-md, 12px);
+        background: var(--dsw-alias-bg-layer-1);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, .12);
       }
-      .dp-progress-head { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--dsw-alias-label-secondary); }
-      .dp-progress-track { height: 4px; border-radius: 999px; background: var(--dsw-alias-border-l1); overflow: hidden; }
+      .dp-progress-head {
+        display: flex; align-items: center; gap: 8px;
+        font-size: 11.5px; color: var(--dsw-alias-label-secondary);
+      }
+      .dp-progress-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .dp-progress-ok { color: var(--dsw-alias-state-success-primary); }
+      .dp-progress-track {
+        height: 4px; border-radius: 999px; overflow: hidden;
+        background: var(--dsw-alias-bg-module-platform);
+      }
       .dp-progress-fill {
         height: 100%; border-radius: 999px;
-        background: var(--dsw-alias-brand-primary);
+        background: var(--dsw-alias-state-business-primary);
         transition: width 120ms linear;
       }
       .dp-progress-fill.is-indeterminate { width: 40% !important; animation: dp-indeterminate 1.1s var(--dp-ease) infinite; }
+      .dp-progress-detail {
+        font-size: 10.5px; color: var(--dsw-alias-label-tertiary);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
       @keyframes dp-indeterminate {
         0% { margin-left: 0; }
         50% { margin-left: 60%; }
         100% { margin-left: 0; }
       }
 
-      /* inline banner */
-      .dp-pane .dp-banner {
-        margin: 8px; padding: 8px 12px; border-radius: 8px;
-        border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 40%, transparent);
-        background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent);
-        color: var(--dsw-alias-state-error-primary); font-size: 12px; line-height: 17px;
+      /* banner */
+      .dp-banner {
+        display: flex; align-items: flex-start; gap: 8px;
+        margin: 8px; padding: 8px 12px;
+        border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 35%, transparent);
+        border-radius: var(--dsw-radius-sm, 8px);
+        background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 7%, transparent);
+        color: var(--dsw-alias-state-error-primary);
+        font-size: 12px; line-height: 18px;
       }
 
-      /* -------------------------------------------------------- preview */
+      /* preview */
       .dp-overlay {
         position: absolute; inset: 0; z-index: 20;
         display: flex; align-items: center; justify-content: center;
-        background: rgba(0, 0, 0, .38);
-        animation: dp-fade var(--dp-small) var(--dp-ease) both;
+        background: rgba(0, 0, 0, .32);
+        animation: dp-fade var(--ds-transition-duration-fast, .1s) var(--dp-ease) both;
       }
       .dp-modal {
-        background: var(--dsw-alias-bg-layer-1);
-        border-radius: 12px;
-        box-shadow: var(--dp-elevated);
-        width: min(94%, 880px); max-height: 88%;
         display: flex; flex-direction: column; overflow: hidden;
-        animation: dp-modal-in var(--dp-medium) var(--dp-ease) both;
+        width: min(94%, 900px); max-height: 88%;
+        border: 1px solid var(--dsw-alias-border-l2);
+        border-radius: var(--dsw-radius-md, 12px);
+        background: var(--dsw-alias-bg-layer-1);
+        box-shadow: 0 16px 40px rgba(0, 0, 0, .18);
+        animation: dp-modal-in var(--ds-transition-duration-slow, .3s) var(--dp-ease) both;
       }
       @keyframes dp-modal-in {
-        from { opacity: 0; transform: translateY(8px) scale(.99); }
+        from { opacity: 0; transform: translateY(6px) scale(.995); }
         to { opacity: 1; transform: none; }
       }
       .dp-modal-head {
-        display: flex; align-items: center; gap: 8px;
-        padding: 12px 16px; border-bottom: 1px solid var(--dsw-alias-border-l1);
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px 12px; border-bottom: 1px solid var(--dsw-alias-border-l2);
       }
-      .dp-modal-title { font-size: 14px; font-weight: 500; }
-      .dp-modal-body { margin: 12px 16px; border-radius: 8px; overflow: auto; background: var(--dsw-alias-bg-layer-2); }
+      .dp-modal-icon {
+        width: 26px; height: 26px; display: grid; place-items: center; flex: 0 0 auto;
+        border-radius: var(--dsw-radius-xs, 4px);
+        background: var(--dsw-alias-bg-module-platform);
+        color: var(--dsw-alias-label-secondary);
+      }
+      .dp-modal-title { font-size: 13px; font-weight: 600; }
+      .dp-modal-body { margin: 10px 12px; border-radius: var(--dsw-radius-sm, 8px); overflow: auto; background: var(--dsw-alias-bg-module-platform); }
+      .dp-preview-image { max-width: 100%; display: block; margin: 0 auto; }
       .dp-modal-foot {
-        display: flex; align-items: center; gap: 8px;
-        padding: 10px 16px; border-top: 1px solid var(--dsw-alias-border-l1);
+        display: flex; align-items: center; gap: 10px;
+        padding: 8px 12px; border-top: 1px solid var(--dsw-alias-border-l2);
+      }
+      .dp-modal-path {
+        flex: 1; min-width: 0; color: var(--dsw-alias-label-tertiary); font-size: 11px;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
       }
       .dp-chip {
-        display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 999px;
-        background: var(--dsw-alias-bg-layer-2);
-        font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary);
+        display: inline-flex; align-items: center; padding: 1px 8px;
+        border-radius: 999px; background: var(--dsw-alias-bg-module-platform);
+        font-size: 10.5px; line-height: 16px; color: var(--dsw-alias-label-secondary);
       }
 
-      /* ---------------------------------------------------------- code */
+      /* code */
       .dp-code {
-        margin: 0; padding: 12px 14px; overflow: auto; max-height: 64vh;
-        font-family: "JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace,
-          SFMono-Regular, Menlo, Consolas, monospace;
+        margin: 0; padding: 10px 12px; overflow: auto; max-height: 62vh;
+        font-family: var(--ds-font-family-code, "JetBrains Mono", ui-monospace, monospace);
         font-size: 12px; line-height: 19px; tab-size: 4;
       }
-      .dp-code-line { display: flex; gap: 16px; }
+      .dp-code-line { display: flex; gap: 14px; }
       .dp-code-num {
         flex: 0 0 auto; width: 3.4em; text-align: right;
-        color: var(--dsw-alias-label-secondary); opacity: .55; user-select: none;
+        color: var(--dsw-alias-label-tertiary); user-select: none;
       }
       .dp-code-text { white-space: pre; flex: 1 1 auto; }
-      .dp-code-comment { color: var(--dsw-alias-label-secondary); font-style: italic; }
+      .dp-code-comment { color: var(--dsw-alias-label-tertiary); font-style: italic; }
       .dp-code-string { color: #3f7d5a; }
       .dp-code-keyword { color: #6b5bd2; }
       .dp-code-number { color: #9a6a3a; }
@@ -463,25 +535,33 @@ window.__ModuleLoader__.load({
         .dp-code-function { color: #8fb8e0; }
       }
       .dp-plain {
-        margin: 0; padding: 12px 14px; overflow: auto; max-height: 64vh;
-        font-family: "JetBrains Mono", "Cascadia Code", ui-monospace, SFMono-Regular,
-          Menlo, Consolas, monospace;
+        margin: 0; padding: 10px 12px; overflow: auto; max-height: 62vh;
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
         font-size: 12px; line-height: 19px; white-space: pre-wrap; word-break: break-word;
       }
 
-      /* --------------------------------------------------- auth prompt */
+      /* auth prompt */
       .dp-auth {
         display: flex; flex-direction: column; gap: 12px;
-        padding: 20px; width: min(92%, 380px);
+        width: min(92%, 380px); padding: 18px;
+        border: 1px solid var(--dsw-alias-border-l2);
+        border-radius: var(--dsw-radius-md, 12px);
         background: var(--dsw-alias-bg-layer-1);
-        border-radius: 12px; box-shadow: var(--dp-elevated);
-        animation: dp-modal-in var(--dp-medium) var(--dp-ease) both;
+        box-shadow: 0 16px 40px rgba(0, 0, 0, .18);
+        animation: dp-modal-in var(--ds-transition-duration-slow, .3s) var(--dp-ease) both;
       }
-      .dp-auth-title { font-size: 14px; font-weight: 500; }
+      .dp-auth-head { display: flex; align-items: center; gap: 10px; }
+      .dp-auth-icon {
+        width: 30px; height: 30px; display: grid; place-items: center;
+        border-radius: var(--dsw-radius-sm, 8px);
+        background: var(--dsw-alias-bg-module-platform);
+        color: var(--dsw-alias-label-secondary);
+      }
+      .dp-auth-title { font-size: 13px; font-weight: 600; }
       .dp-auth-hint { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
       .dp-auth-row { display: flex; align-items: center; gap: 6px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
       .dp-auth-actions { display: flex; justify-content: flex-end; gap: 8px; }
-    `;
+`;
     function ensureStyles() {
       if (typeof document === 'undefined' || document.getElementById(STYLE_ID)) return;
       const element = document.createElement('style');
@@ -737,6 +817,44 @@ window.__ModuleLoader__.load({
     ]);
     const CODE_LINE_RE = /(\/\/.*$|#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b0x[0-9a-fA-F]+\b|\b\d+(?:\.\d+)?\b)|([A-Za-z_$][\w$]*)/g;
 
+    // Stroke icons (Lucide geometry) so the pane uses real UI icons instead of emoji.
+    const ICONS = {
+      folder: ['M4 7a2 2 0 0 1 2-2h3.6l2 2H18a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z'],
+      file: ['M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z', 'M14 3v5h5'],
+      code: ['M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z', 'M14 3v5h5', 'M10 12l-2 2 2 2', 'M14 12l2 2-2 2'],
+      text: ['M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z', 'M14 3v5h5', 'M9 13h6', 'M9 17h4'],
+      image: ['M4 5h16v14H4z', 'M9 11a1.5 1.5 0 1 0 0-3a1.5 1.5 0 0 0 0 3z', 'M4 16l4.5-4.5 3.5 3.5 3-3L20 15'],
+      download: ['M12 4v11', 'M7 10l5 5 5-5', 'M5 20h14'],
+      trash: ['M4 7h16', 'M10 11v5', 'M14 11v5', 'M6 7l1 13h10l1-13', 'M9 7V4h6v3'],
+      plus: ['M12 5v14', 'M5 12h14'],
+      'folder-plus': ['M4 7a2 2 0 0 1 2-2h3.6l2 2H18a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z', 'M12 12v5', 'M9.5 14.5h5'],
+      refresh: ['M20 12a8 8 0 1 1-2.4-5.7', 'M20 4v5h-5'],
+      upload: ['M12 20V9', 'M7 14l5-5 5 5', 'M5 4h14'],
+      chevron: ['M9 6l6 6-6 6'],
+      x: ['M6 6l12 12', 'M18 6L6 18'],
+      lock: ['M7 10V8a5 5 0 0 1 10 0v2', 'M5 10h14v10H5z'],
+      check: ['M4 12l5 5L20 6'],
+      alert: ['M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0-18z', 'M12 8v5', 'M12 16.5v.5'],
+      server: ['M4 4h16v6H4z', 'M4 14h16v6H4z', 'M7.5 7h.01', 'M7.5 17h.01'],
+      search: ['M11 4a7 7 0 1 0 0 14a7 7 0 0 0 0-14z', 'M20 20l-3.6-3.6'],
+    };
+
+    function Icon({ name, size = 16, style }) {
+      const paths = ICONS[name] ?? ICONS.file;
+      return h('svg', {
+        width: size,
+        height: size,
+        viewBox: '0 0 24 24',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.7,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+        'aria-hidden': 'true',
+        style: { flex: '0 0 auto', display: 'block', ...style },
+      }, paths.map((d, index) => h('path', { key: index, d })));
+    }
+
     function extensionOf(name) {
       if (typeof name !== 'string') return '';
       const index = name.lastIndexOf('.');
@@ -753,6 +871,14 @@ window.__ModuleLoader__.load({
 
     function isTextName(name) {
       return TEXT_EXTENSIONS.has(extensionOf(name)) || isCodeName(name) || extensionOf(name) === '';
+    }
+
+    function entryIconName(entry) {
+      if (entry.kind === 'dir') return 'folder';
+      if (isImageName(entry.name)) return 'image';
+      if (isCodeName(entry.name)) return 'code';
+      if (isTextName(entry.name)) return 'text';
+      return 'file';
     }
 
     function rawUrlFor(host, path, download) {
@@ -811,6 +937,12 @@ window.__ModuleLoader__.load({
                 className: `dp-code-${token.kind}`,
               }, token.text))),
       ]))));
+    }
+
+    /** Does this API error mean the host could not authenticate? */
+    function isAuthMessage(text) {
+      const message = String(text ?? '');
+      return /authentication failed|no usable key|no password|password was supplied|Permission denied \(publickey|Host key verification failed/iu.test(message);
     }
 
     /** Save a URL through the native dialog when available, else a download link. */
@@ -928,12 +1060,6 @@ window.__ModuleLoader__.load({
       }
       onProgress?.({ done: items.length, total: items.length, bytes: sentBytes, totalBytes, current: '' });
       return { files: items.length, bytes: sentBytes };
-    }
-
-    /** Does this API error mean the host could not authenticate? */
-    function isAuthMessage(text) {
-      const message = String(text ?? '');
-      return /authentication failed|no usable key|no password|password was supplied|Permission denied \(publickey|Host key verification failed/iu.test(message);
     }
 
     /**
@@ -1172,6 +1298,17 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
+      // Escape closes the preview or the password prompt.
+      useEffect(() => {
+        const onKeyDown = (event) => {
+          if (event.key !== 'Escape') return;
+          if (preview) setPreview(null);
+          else if (auth) setAuth(null);
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+      }, [preview, auth]);
+
       const openEntry = async (entry) => {
         if (entry.kind === 'dir') {
           await load(host, entry.path);
@@ -1257,35 +1394,36 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const actions = (entry) => [
+      const rowActions = (entry) => h('span', { key: 'actions', className: 'dp-factions' }, [
         h('button', {
           key: 'save',
           type: 'button',
-          title: entry.kind === 'dir' ? '下载文件夹到本地' : '保存到本地',
           className: 'dp-iconbtn',
+          title: entry.kind === 'dir' ? '下载文件夹到本地' : '保存到本地',
           onClick: (event) => {
             event.stopPropagation();
             downloadEntry(entry);
           },
-        }, '↓'),
+        }, h(Icon, { name: 'download', size: 15 })),
         h('button', {
           key: 'delete',
           type: 'button',
-          title: '移到回收站',
           className: 'dp-iconbtn',
+          title: '移到回收站',
           onClick: (event) => {
             event.stopPropagation();
             removeEntry(entry);
           },
-        }, '🗑'),
-      ];
+        }, h(Icon, { name: 'trash', size: 15 })),
+      ]);
 
       return h('div', {
         ref: rootRef,
         className: 'dp-pane',
         style: { position: 'relative', flex: '1 1 auto', minHeight: 0, height: '100%' },
       }, [
-        h('div', { key: 'toolbar', className: 'dp-pane-toolbar' }, [
+        h('div', { key: 'toolbar', className: 'dp-toolbar' }, [
+          h('span', { key: 'host-icon', className: 'dp-toolbar-icon' }, h(Icon, { name: 'server', size: 15 })),
           h('select', {
             key: 'host',
             className: 'dp-select',
@@ -1302,28 +1440,28 @@ window.__ModuleLoader__.load({
             className: 'dp-tool',
             title: '上传文件',
             onClick: () => fileInput.current?.click(),
-          }, '＋ 文件'),
+          }, [h(Icon, { key: 'i', name: 'upload', size: 15 }), h('span', { key: 't' }, '文件')]),
           h('button', {
             key: 'upload-folder',
             type: 'button',
             className: 'dp-tool',
             title: '上传文件夹',
             onClick: () => folderInput.current?.click(),
-          }, '＋ 文件夹'),
+          }, [h(Icon, { key: 'i', name: 'folder', size: 15 }), h('span', { key: 't' }, '文件夹')]),
           h('button', {
             key: 'mkdir',
             type: 'button',
             className: 'dp-tool',
             title: '新建文件夹',
             onClick: () => setCreatingFolder(''),
-          }, '新建'),
+          }, [h(Icon, { key: 'i', name: 'folder-plus', size: 15 })]),
           h('button', {
             key: 'refresh',
             type: 'button',
             className: 'dp-tool',
             title: '刷新',
             onClick: () => load(host, path),
-          }, '⟳'),
+          }, [h(Icon, { key: 'i', name: 'refresh', size: 15 })]),
           h('input', {
             key: 'file-input',
             ref: fileInput,
@@ -1355,33 +1493,34 @@ window.__ModuleLoader__.load({
             },
           }),
         ]),
-        h('div', {
-          key: 'pathbar',
-          className: 'dp-pane-path',
-        }, crumbs.map((crumb, index) => h('span', { key: `${crumb.path}#${index}`, style: { display: 'inline-flex', alignItems: 'center' } }, [
-          index > 0 ? h('span', { key: 'sep', className: 'dp-crumb-sep' }, '›') : null,
-          h('button', {
-            key: 'crumb',
-            type: 'button',
-            className: index === crumbs.length - 1 ? 'dp-crumb dp-crumb--current' : 'dp-crumb',
-            onClick: () => load(host, crumb.path),
-          }, index === 0 ? '/' : crumb.name),
-        ]))),
-        h('div', { key: 'filter', className: 'dp-pane-filter' },
+        h('div', { key: 'pathbar', className: 'dp-path' },
+          crumbs.map((crumb, index) => h('span', { key: `${crumb.path}#${index}`, className: 'dp-path-part' }, [
+            index > 0
+              ? h('span', { key: 'sep', className: 'dp-path-sep' }, h(Icon, { name: 'chevron', size: 12 }))
+              : null,
+            h('button', {
+              key: 'crumb',
+              type: 'button',
+              className: index === crumbs.length - 1 ? 'dp-crumb dp-crumb--current' : 'dp-crumb',
+              onClick: () => load(host, crumb.path),
+            }, index === 0 ? '/' : crumb.name),
+          ]))),
+        h('div', { key: 'filter', className: 'dp-filter' }, [
+          h('span', { key: 'icon', className: 'dp-filter-icon' }, h(Icon, { name: 'search', size: 14 })),
           h('input', {
+            key: 'input',
             className: 'dp-input',
             value: filter,
             placeholder: '筛选当前目录…',
             onChange: (event) => setFilter(event.target.value),
-          })),
-        error
-          ? h('div', { key: 'error', className: 'dp-banner' }, error)
-          : null,
+          }),
+        ]),
+        error ? h('div', { key: 'error', className: 'dp-banner' }, [
+          h(Icon, { key: 'i', name: 'alert', size: 14 }),
+          h('span', { key: 't' }, error),
+        ]) : null,
         creatingFolder !== null
-          ? h('div', {
-              key: 'newfolder',
-              style: { display: 'flex', gap: 8, padding: '8px 8px', borderBottom: `1px solid ${C.border}` },
-            }, [
+          ? h('div', { key: 'newfolder', className: 'dp-newfolder' }, [
               h('input', {
                 key: 'name',
                 className: 'dp-input',
@@ -1394,20 +1533,26 @@ window.__ModuleLoader__.load({
                   if (event.key === 'Escape') setCreatingFolder(null);
                 },
               }),
-              Button({ label: '创建', onClick: createFolder, primary: true, small: true }),
+              h('button', { key: 'create', type: 'button', className: 'dp-tool dp-tool--primary', onClick: createFolder }, '创建'),
             ])
           : null,
-        h('div', { key: 'list', className: 'dp-pane-list' },
+        h('div', { key: 'columns', className: 'dp-columns' }, [
+          h('span', { key: 'name', className: 'dp-col-name' }, '名称'),
+          h('span', { key: 'size', className: 'dp-col-size' }, '大小'),
+          h('span', { key: 'time', className: 'dp-col-time' }, '修改时间'),
+          h('span', { key: 'actions', className: 'dp-col-actions' }),
+        ]),
+        h('div', { key: 'list', className: 'dp-list' },
           loading
-            ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: '32px 0' } }, h(Spinner, { label: '加载中…' }))
+            ? h('div', { className: 'dp-loading' }, h(Spinner, { label: '加载中…' }))
             : visible.length === 0
-              ? h('div', { key: 'empty', className: 'dp-pane-empty' }, [
-                  h('span', { key: 'icon', className: 'dp-icon-tile' }, '📂'),
+              ? h('div', { key: 'empty', className: 'dp-empty' }, [
+                  h('span', { key: 'icon', className: 'dp-empty-icon' }, h(Icon, { name: filter.trim() ? 'search' : 'folder', size: 22 })),
                   h('span', { key: 'text' }, filter.trim() ? '没有匹配的条目' : '这个目录是空的'),
                 ])
               : visible.map((entry) => h('div', {
                   key: entry.path,
-                  className: `dp-pane-row${selected === entry.path ? ' is-selected' : ''}`,
+                  className: `dp-entry${selected === entry.path ? ' is-selected' : ''}`,
                   role: 'button',
                   tabIndex: 0,
                   title: entry.kind === 'dir' ? `${entry.path}（双击进入，↓ 下载文件夹）` : entry.path,
@@ -1430,21 +1575,25 @@ window.__ModuleLoader__.load({
                     if (event.key === 'Enter') openEntry(entry);
                   },
                 }, [
-                  h('span', { key: 'icon', className: 'dp-icon-tile' }, entry.kind === 'dir' ? '📁' : (isImageName(entry.name) ? '🖼' : '📄')),
+                  h('span', { key: 'icon', className: `dp-tile dp-tile--${entry.kind}` }, h(Icon, { name: entryIconName(entry), size: 16 })),
                   h('span', { key: 'name', className: 'dp-name' }, entry.name),
-                  h('span', { key: 'size', className: 'dp-meta' }, entry.kind === 'dir' ? '' : humanSize(entry.size)),
-                  h('span', { key: 'time', className: 'dp-meta', style: { width: 62, textAlign: 'right' } }, formatMoment(entry.mtime)),
-                  h('span', { key: 'actions', className: 'dp-pane-actions' }, actions(entry)),
+                  h('span', { key: 'size', className: 'dp-meta dp-col-size' }, entry.kind === 'dir' ? '—' : humanSize(entry.size)),
+                  h('span', { key: 'time', className: 'dp-meta dp-col-time' }, formatMoment(entry.mtime)),
+                  rowActions(entry),
                 ]))),
         dragOver
-          ? h('div', { key: 'drop', className: 'dp-drop' }, `松开把文件 / 文件夹上传到 ${path}`)
+          ? h('div', { key: 'drop', className: 'dp-drop' }, [
+              h(Icon, { key: 'i', name: 'upload', size: 22 }),
+              h('span', { key: 't' }, `松开上传到 ${path}`),
+            ])
           : null,
         job
           ? h('div', { key: 'job', className: 'dp-progress' }, [
               h('div', { key: 'head', className: 'dp-progress-head' }, [
-                h('span', { key: 'label', style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, job.label),
+                h(Icon, { key: 'i', name: job.kind === 'done' ? 'check' : 'download', size: 13 }),
+                h('span', { key: 'label', className: 'dp-progress-label' }, job.label),
                 job.kind === 'done'
-                  ? h('span', { key: 'ok', style: { color: C.ok } }, '完成')
+                  ? h('span', { key: 'ok', className: 'dp-progress-ok' }, job.detail)
                   : h('span', { key: 'pct' }, job.percent === null ? '' : `${job.percent}%`),
               ]),
               h('div', { key: 'track', className: 'dp-progress-track' },
@@ -1453,14 +1602,8 @@ window.__ModuleLoader__.load({
                   className: job.percent === null ? 'dp-progress-fill is-indeterminate' : 'dp-progress-fill',
                   style: { width: `${job.percent ?? 40}%` },
                 })),
-              job.detail
-                ? h('div', {
-                    key: 'detail',
-                    style: {
-                      fontSize: 10.5, color: C.muted, overflow: 'hidden',
-                      textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left',
-                    },
-                  }, job.detail)
+              job.detail && job.kind !== 'done'
+                ? h('div', { key: 'detail', className: 'dp-progress-detail' }, job.detail)
                 : null,
             ])
           : null,
@@ -1474,7 +1617,10 @@ window.__ModuleLoader__.load({
               className: 'dp-auth',
               onClick: (event) => event.stopPropagation(),
             }, [
-              h('div', { key: 'title', className: 'dp-auth-title' }, `连接 ${auth.host}`),
+              h('div', { key: 'head', className: 'dp-auth-head' }, [
+                h('span', { key: 'icon', className: 'dp-auth-icon' }, h(Icon, { name: 'lock', size: 18 })),
+                h('span', { key: 'title', className: 'dp-auth-title' }, `连接 ${auth.host}`),
+              ]),
               h('div', { key: 'hint', className: 'dp-auth-hint' },
                 '这台机器需要密码登录。密码默认只保存在内存里，勾选「记住这台」才会交给凭据服务保管。'),
               h('input', {
@@ -1501,14 +1647,14 @@ window.__ModuleLoader__.load({
               ]),
               auth.error ? h('div', { key: 'err', className: 'dp-banner', style: { margin: 0 } }, auth.error) : null,
               h('div', { key: 'actions', className: 'dp-auth-actions' }, [
-                Button({ label: '取消', small: true, onClick: () => setAuth(null) }),
-                Button({
-                  label: auth.busy ? '连接中…' : '连接',
-                  small: true,
-                  primary: true,
+                h('button', { key: 'cancel', type: 'button', className: 'dp-tool', onClick: () => setAuth(null) }, '取消'),
+                h('button', {
+                  key: 'connect',
+                  type: 'button',
+                  className: 'dp-tool dp-tool--primary',
                   disabled: auth.busy || !auth.password,
                   onClick: submitPassword,
-                }),
+                }, auth.busy ? '连接中…' : '连接'),
               ]),
             ]))
           : null,
@@ -1523,7 +1669,10 @@ window.__ModuleLoader__.load({
               onClick: (event) => event.stopPropagation(),
             }, [
               h('div', { key: 'head', className: 'dp-modal-head' }, [
-                h('span', { key: 'icon', className: 'dp-icon-tile' }, isImageName(preview.name) ? '🖼' : '📄'),
+                h('span', { key: 'icon', className: 'dp-modal-icon' }, h(Icon, {
+                  name: preview.kind === 'image' ? 'image' : preview.code ? 'code' : 'text',
+                  size: 16,
+                })),
                 h('span', {
                   key: 'name',
                   className: 'dp-modal-title',
@@ -1533,37 +1682,32 @@ window.__ModuleLoader__.load({
                   ? h('span', { key: 'chip', className: 'dp-chip' }, preview.code ? extensionOf(preview.name).toUpperCase() || 'CODE' : '文本')
                   : null,
                 preview.kind === 'image' ? h('span', { key: 'chip', className: 'dp-chip' }, '图片') : null,
-                h('span', { key: 'size', style: { color: C.muted, fontSize: 11 } }, humanSize(preview.size)),
+                h('span', { key: 'size', className: 'dp-meta' }, humanSize(preview.size)),
                 h('button', {
                   key: 'close',
                   type: 'button',
                   className: 'dp-iconbtn',
+                  title: '关闭 (Esc)',
                   onClick: () => setPreview(null),
-                }, '×'),
+                }, h(Icon, { name: 'x', size: 16 })),
               ]),
               h('div', { key: 'body', className: 'dp-modal-body' },
                 preview.kind === 'loading'
-                  ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: 24 } }, h(Spinner, { label: '读取中…' }))
+                  ? h('div', { className: 'dp-loading' }, h(Spinner, { label: '读取中…' }))
                   : preview.kind === 'image'
-                    ? h('img', { src: preview.url, style: { maxWidth: '100%', display: 'block', margin: '0 auto' } })
+                    ? h('img', { key: 'img', src: preview.url, className: 'dp-preview-image' })
                     : preview.code
                       ? h(CodeView, { content: preview.content })
                       : h('pre', { className: 'dp-plain' }, preview.content ?? '')),
               h('div', { key: 'foot', className: 'dp-modal-foot' }, [
-                h('span', {
-                  key: 'path',
-                  style: {
-                    flex: 1, minWidth: 0, color: C.muted, fontSize: 11,
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                  },
-                }, preview.path),
-                preview.truncated ? h('span', { key: 'trunc', style: { color: C.muted, fontSize: 11 } }, '仅显示前 256 KiB') : null,
-                Button({
-                  label: '保存到本地',
-                  small: true,
+                h('span', { key: 'path', className: 'dp-modal-path' }, preview.path),
+                preview.truncated ? h('span', { key: 'trunc', className: 'dp-meta' }, '仅显示前 256 KiB') : null,
+                h('button', {
+                  key: 'save',
+                  type: 'button',
+                  className: 'dp-tool dp-tool--primary',
                   onClick: () => saveRemoteFile(host, preview.path, preview.name).catch((err) => setError(err.message)),
-                }),
+                }, [h(Icon, { key: 'i', name: 'download', size: 15 }), h('span', { key: 't' }, '保存到本地')]),
               ]),
             ]))
           : null,
