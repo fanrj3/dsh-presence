@@ -237,6 +237,7 @@ export class PresenceConnection {
   #client;
   #sftpPromise;
   #closed = false;
+  #tunnels = new Set();
   #home;
   #caps;
   #stdbuf;
@@ -255,6 +256,10 @@ export class PresenceConnection {
     this.#limit = Number(entry.maxChannels ?? 8);
     client.on('close', () => {
       this.#closed = true;
+      for (const tunnel of [...this.#tunnels]) {
+        tunnel.close().catch(() => {});
+      }
+      this.#tunnels.clear();
     });
   }
 
@@ -1112,31 +1117,50 @@ export class PresenceConnection {
       sockets.add(socket);
       socket.on('close', () => sockets.delete(socket));
       socket.on('error', () => socket.destroy());
-      this.#client.forwardOut('127.0.0.1', 0, remoteHost, remotePort, (error, stream) => {
-        if (error) {
-          socket.destroy();
-          return;
-        }
-        stream.on('error', () => socket.destroy());
-        socket.pipe(stream).pipe(socket);
-      });
+      // ssh2 throws synchronously (instead of calling the callback) when the
+      // client is already closed; an escaping throw here would kill the host
+      // process with an uncaughtException, so it must never leave this listener.
+      try {
+        this.#client.forwardOut('127.0.0.1', 0, remoteHost, remotePort, (error, stream) => {
+          if (error) {
+            socket.destroy();
+            return;
+          }
+          stream.on('error', () => socket.destroy());
+          socket.pipe(stream).pipe(socket);
+        });
+      } catch {
+        socket.destroy();
+      }
     });
     await new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(localPort, '127.0.0.1', resolve);
     });
     const port = server.address().port;
-    return {
+    let closed = false;
+    const tunnel = {
       host: this.target,
       localPort: port,
       remoteHost,
       remotePort,
       close: () =>
         new Promise((resolve) => {
+          if (closed) {
+            resolve();
+            return;
+          }
+          closed = true;
+          this.#tunnels.delete(tunnel);
           for (const socket of sockets) socket.destroy();
           server.close(() => resolve());
         }),
     };
+    // Keep every local listener attached to this connection so a disconnect can
+    // close them all: a forward left listening after the SSH client died turns
+    // the next connection into a crash (see the try/catch above).
+    this.#tunnels.add(tunnel);
+    return tunnel;
   }
 
   async stat(path) {

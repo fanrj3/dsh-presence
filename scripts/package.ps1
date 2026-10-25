@@ -45,6 +45,12 @@ foreach ($item in @('index.js', 'client.js', 'package.json', 'icon.svg', 'README
   $path = Join-Path $root $item
   if (Test-Path $path) { Copy-Item $path $stage -Recurse -Force }
 }
+# Social/design assets are repo-only; keep them out of the runtime zip.
+foreach ($heavy in @('docs\social\light', 'docs\image', 'assets')) {
+  $target = Join-Path $stage $heavy
+  if (Test-Path $target) { Remove-Item -Recurse -Force $target }
+}
+Get-ChildItem (Join-Path $stage 'docs') -Recurse -Filter '*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
 # Relative-path probes are development-only; the absolute verifiers ship.
 Get-ChildItem (Join-Path $stage 'scripts') -Filter 'isolated-check.mjs' -ErrorAction SilentlyContinue | Remove-Item -Force
 # Default install mode: the safe patch (no fs swap).

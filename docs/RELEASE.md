@@ -1,5 +1,26 @@
 # Presence 发布说明（Release）
 
+## v0.17.3 — 2026-10-25
+
+修复 host 进程崩溃 + 手动添加主机表单重做。
+
+### 崩溃修复（致命）
+症状：DSH host 以 exit code 1 退出，桌面端提示「应用无法启动或已意外停止」；日志里是
+`Error: Not connected at Client.forwardOut ... connection.mjs:1115`。
+
+根因：端口转发的本地监听器调用 `ssh2.forwardOut` 时，SSH 连接已断，ssh2 **同步抛异常**（不走 callback），
+异常从 Node 的 `createServer` 连接回调冒泡成 `uncaughtException`，host 进程被终止。
+而 `disconnect(host)`、空闲回收都不清理该主机的转发，于是"SSH 已断、本地端口还在监听"，任何访问都会引爆。
+
+修复：
+- `tunnel()` 用 try/catch 包住 `forwardOut`，断线时只销毁本地 socket，不再冒泡；
+- 每条连接记住自己的隧道，`client.on('close')` 时全部关闭；
+- `pool.disconnect(host)` 关闭该主机的所有转发；空闲回收遇到有活跃转发的 host 直接跳过；
+- 新增 `scripts/tunnel-crash-probe.mjs`（假 client 的 `forwardOut` 同步 throw + 真 net 连接），无真机可跑。
+
+### 体验
+- 手动添加主机表单改紧凑：单行等宽命令输入框（不再被 flex 撑成 200+px 高的大框）、别名/备注并排带标签、按钮右下。
+
 ## v0.17.2 — 2026-10-25
 
 发布准备版本（功能与 0.17.1 一致）：仓库开源（MIT）、元数据补全，便于插件市场收录。

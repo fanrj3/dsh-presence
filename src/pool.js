@@ -113,7 +113,19 @@ export class PresencePool {
     for (const terminal of [...this.#terminals.values()]) {
       if (terminal.host === host) this.#closeTerminal(terminal.id);
     }
+    // A forward whose SSH connection is gone still owns a local listener; close
+    // it together with the connection, otherwise the next visitor hits a dead
+    // ssh2 client (and used to crash the host process).
+    await this.#closeTunnelsForHost(host);
     connection?.end();
+  }
+
+  async #closeTunnelsForHost(host) {
+    for (const [id, tunnel] of [...this.#tunnels]) {
+      if (tunnel.host !== host) continue;
+      this.#tunnels.delete(id);
+      await tunnel.close().catch(() => {});
+    }
   }
 
   /** Whether a password for this host is held in this process right now. */
@@ -748,10 +760,14 @@ export class PresencePool {
       if (connection.closed) {
         this.#connections.delete(host);
         this.#lastUsed.delete(host);
+        this.#closeTunnelsForHost(host).catch(() => {});
         continue;
       }
       if (now - used < this.#settings.idleTimeoutMs) continue;
       if (this.listTerminals().some((terminal) => terminal.host === host)) continue;
+      // Port forwards depend on this connection; never reap a host while a
+      // forward is still listening, otherwise it becomes a dangling listener.
+      if ([...this.#tunnels.values()].some((tunnel) => tunnel.host === host)) continue;
       this.disconnect(host);
     }
   }

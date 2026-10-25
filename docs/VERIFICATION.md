@@ -463,6 +463,22 @@ host 端新增 6 个 API（`src/api.js`，双前缀注册）：
 
 
 
+## 〇之二十、第二十一轮：转发崩溃修复 + 手动主机表单（0.17.3）
+
+崩溃根因（来自 crash 日志 + ssh2 源码）：端口转发的本地 `net.Server` 回调调用 `ssh2 forwardOut` 时连接已断，
+ssh2 1.17 **同步抛 `Not connected`**，异常从 EventEmitter 回调冒泡成 host 进程的 `uncaughtException` → DSH host exit 1。
+悬空转发的来源：`disconnect(host)` 与 idle reaper 都不关闭该 host 的隧道（reaper 还会主动断连），于是"SSH 已断、端口仍在监听"。
+
+修复（src/core/connection.mjs + src/pool.js）：
+- `tunnel()` 的 `forwardOut` 包 try/catch；断线只 destroy 本地 socket；
+- 每连接记录隧道集合，SSH `close` 时全部关闭；隧道 `close()` 幂等；
+- `pool.disconnect(host)` 关闭该 host 所有隧道；`#reapIdle` 跳过有活跃隧道的 host，并把已断连 host 的隧道一并清掉。
+
+**验证**：新增 `scripts/tunnel-crash-probe.mjs` → **5/5**：
+1) tunnel 本地监听就绪；2) 假 client 同步 throw 时 0 uncaught（旧代码会崩）；3) 触发 SSH close 后本地端口 refused（隧道已关）；
+4) pool 记录转发；5) `disconnect(host)` 关闭该 host 的转发且列表清空。
+另：手动添加主机表单改紧凑（单行 42px 命令框 + 别名/备注并排 + 标签），client 重建后冒烟通过。
+
 ## 一、最初提出的问题 → 现在的结果
 
 | # | 原始要求 | 结果 | 证据 |

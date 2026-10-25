@@ -2752,8 +2752,9 @@ export function createApp({ React, ReactDOM }) {
 
       if (mode === 'new') {
         const inputStyle = {
-          flex: '1 1 220px', minWidth: 180, font: 'inherit', fontSize: 13,
-          padding: '7px 10px', borderRadius: 8, border: `1px solid ${C.border}`,
+          boxSizing: 'border-box', width: '100%', height: 38,
+          font: 'inherit', fontSize: 13, padding: '0 10px',
+          borderRadius: 8, border: `1px solid ${C.border}`,
           background: 'var(--dsw-alias-bg-layer-1)', color: C.text,
         };
         const manualForm = manualOpen
@@ -2761,39 +2762,48 @@ export function createApp({ React, ReactDOM }) {
               key: 'manual-form',
               style: {
                 display: 'flex', flexDirection: 'column', gap: 8,
-                padding: '12px', margin: '8px 0 12px',
+                padding: '12px 14px', margin: '4px 0 12px',
                 border: `1px solid ${C.border}`, borderRadius: 12, background: C.soft,
               },
             }, [
-              h('div', { key: 'hint', style: { color: C.muted, fontSize: 12 } },
-                '粘贴一条 ssh 命令或 user@host[:port]。只保存在 Presence 自己这里，不会改 ~/.ssh/config。'),
+              h('div', { key: 'head', style: { display: 'flex', alignItems: 'baseline', gap: 8 } }, [
+                h('span', { key: 'title', style: { fontSize: 13, fontWeight: 600 } }, '手动添加主机'),
+                h('span', { key: 'hint', style: { color: C.muted, fontSize: 11.5 } },
+                  '只保存在 Presence 自己这里，不会改 ~/.ssh/config'),
+              ]),
               h('input', {
                 key: 'text',
                 autoFocus: true,
                 value: manualText,
-                placeholder: 'ssh -CAXY user@host  或  user@host:2222',
+                placeholder: 'ssh -CAXY user@host   或   user@host:2222',
                 onChange: (event) => setManualText(event.target.value),
                 onKeyDown: (event) => {
                   if (event.key === 'Enter') addManualHost();
                   if (event.key === 'Escape') setManualOpen(false);
                 },
-                style: { ...inputStyle, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+                style: { ...inputStyle, height: 42, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
               }),
-              h('div', { key: 'row', style: { display: 'flex', gap: 8, flexWrap: 'wrap' } }, [
-                h('input', {
-                  key: 'alias',
-                  value: manualAlias,
-                  placeholder: '别名（可选，自动生成）',
-                  onChange: (event) => setManualAlias(event.target.value),
-                  style: { ...inputStyle, flex: '1 1 160px' },
-                }),
-                h('input', {
-                  key: 'note',
-                  value: manualNote,
-                  placeholder: '备注（可选）',
-                  onChange: (event) => setManualNote(event.target.value),
-                  style: { ...inputStyle, flex: '1 1 160px' },
-                }),
+              h('div', { key: 'row', style: { display: 'flex', gap: 10 } }, [
+                h('div', { key: 'aliasField', style: { flex: '1 1 0', minWidth: 0 } }, [
+                  h('div', { key: 'label', style: { fontSize: 11, color: C.muted, marginBottom: 3 } }, '别名（可选，自动生成）'),
+                  h('input', {
+                    key: 'alias',
+                    value: manualAlias,
+                    placeholder: '例如 example',
+                    onChange: (event) => setManualAlias(event.target.value),
+                    style: inputStyle,
+                  }),
+                ]),
+                h('div', { key: 'noteField', style: { flex: '1 1 0', minWidth: 0 } }, [
+                  h('div', { key: 'label', style: { fontSize: 11, color: C.muted, marginBottom: 3 } }, '备注（可选）'),
+                  h('input', {
+                    key: 'note',
+                    value: manualNote,
+                    placeholder: '例如 公司跳板 / GPU 机',
+                    onChange: (event) => setManualNote(event.target.value),
+                    style: inputStyle,
+                  }),
+                ]),
               ]),
               manualWarnings.length > 0
                 ? h('div', { key: 'warn', style: { color: C.muted, fontSize: 12, lineHeight: 1.6 } },
