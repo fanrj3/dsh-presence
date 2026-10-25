@@ -7,6 +7,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-presence',
   factory(require) {
     const React = require('react');
-    return createApp({ React });
+    const { createRoot } = require('react-dom/client');
+    return createApp({ React, ReactDOM: { createRoot } });
   },
 });

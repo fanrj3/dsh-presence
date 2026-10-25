@@ -1068,7 +1068,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_forward',
       description:
-        'Forward a local TCP port to a port on the remote machine, so a service it runs (dev server, Jupyter, TensorBoard) is reachable at http://127.0.0.1:<localPort> on this machine. Prefer this over guessing `ssh -L` in a shell.',
+        'Forward a local TCP port to a port on the remote machine, so a service it runs (dev server, Jupyter, TensorBoard) is reachable at http://127.0.0.1:<localPort> on this machine. Every forward opened here shows up automatically in the right-sidebar 「端口转发」 panel (and 设置 → Presence), where the user can open it in a browser or stop it. Actions: open (needs remotePort), list, close (needs forwardId). Prefer this over guessing `ssh -L` in a shell.',
       parameters: {
         action: { type: 'string', required: true, enum: ['open', 'close', 'list'], description: 'What to do with the forward.' },
         remotePort: { type: 'number', description: 'For open: the port the remote service listens on.' },
@@ -1081,12 +1081,16 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         if (args.action === 'list') {
           const tunnels = pool.listTunnels();
           if (tunnels.length === 0) return 'no active forwards';
-          return tunnels.map((tunnel) => `${tunnel.id}  http://127.0.0.1:${tunnel.localPort} -> ${tunnel.host}:${tunnel.remoteHost}:${tunnel.remotePort}`).join('\n');
+          return [
+            `${tunnels.length} active forward(s) — the right-sidebar 端口转发 panel shows these too:`,
+            ...tunnels.map((tunnel) =>
+              `${tunnel.id}  ${tunnel.url}  ->  ${tunnel.host}:${tunnel.remoteHost}:${tunnel.remotePort}`),
+          ].join('\n');
         }
         if (args.action === 'close') {
           if (!args.forwardId) throw new Error('close requires a forwardId');
           const closed = await pool.closeTunnel(args.forwardId);
-          return closed ? `closed ${args.forwardId}` : `no forward ${args.forwardId}`;
+          return closed ? `closed forward ${args.forwardId} (the Ports panel updated too)` : `no forward ${args.forwardId}`;
         }
         if (!args.remotePort) throw new Error('open requires remotePort');
         const { host } = await pickScope(args, exec);
@@ -1095,7 +1099,14 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           remoteHost: args.remoteHost ?? '127.0.0.1',
           remotePort: args.remotePort,
         });
-        return `forward ${tunnel.id}: http://127.0.0.1:${tunnel.localPort} -> ${host}:${tunnel.remoteHost}:${tunnel.remotePort}`;
+        const url = `http://127.0.0.1:${tunnel.localPort}`;
+        return [
+          `opened forward ${tunnel.id}`,
+          `local:  ${url}`,
+          `remote: ${host}:${tunnel.remoteHost}:${tunnel.remotePort}`,
+          'The right-sidebar 端口转发 panel lists it automatically — open the local URL in a browser to check the service.',
+          `Stop it with presence_forward { "action": "close", "forwardId": "${tunnel.id}" }.`,
+        ].join('\n');
       },
     }),
 

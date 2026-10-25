@@ -3,7 +3,7 @@
 
 import { mountCodeView } from './editor.js';
 
-export function createApp({ React }) {
+export function createApp({ React, ReactDOM }) {
     const h = React.createElement;
     const { useCallback, useEffect, useRef, useState } = React;
 
@@ -25,6 +25,272 @@ export function createApp({ React }) {
       }
       if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
       return data;
+    }
+
+    // ------------------------------------------------------------ i18n
+    // The harness UI is Chinese by default; if the page declares English the
+    // catalogue falls back to English copy with the raw detail kept underneath.
+    const LOCALE = (() => {
+      try {
+        const lang = (document.documentElement.lang || navigator.language || 'zh').toLowerCase();
+        return lang.startsWith('zh') ? 'zh' : 'en';
+      } catch {
+        return 'zh';
+      }
+    })();
+
+    const MESSAGES = {
+      zh: {
+        'toast.copyFailed': '复制失败',
+        'toast.copyFailed.hint': '浏览器拒绝了剪贴板操作，可以手动选中内容复制',
+        'toast.copied': '已复制到剪贴板',
+        'toast.connectionFailed': '连接失败',
+        'toast.loadFailed': '加载失败',
+        'toast.openFailed': '打开失败',
+        'toast.actionFailed': '操作失败',
+        'toast.forwardOpened': '端口转发已建立',
+        'toast.forwardClosed': '端口转发已停止',
+        'toast.hostAdded': '主机已添加',
+        'toast.hostRemoved': '主机已删除',
+        'toast.uploaded': '上传完成',
+        'toast.downloaded': '下载完成',
+        'err.auth.title': '需要密码登录',
+        'err.auth.hint': '先在这个面板连接一次（可勾选记住密码），再重试',
+        'err.portClosed.title': '远程 {target} 上没有服务在监听',
+        'err.portClosed.hint': '先在 {host} 上启动服务（或检查端口号），再试一次',
+        'err.refused.title': '连接被拒绝',
+        'err.refused.hint': '检查远程 sshd 是否运行、端口是否正确',
+        'err.dns.title': '主机名无法解析',
+        'err.dns.hint': '检查 ssh config / 手动主机里的 HostName',
+        'err.timeout.title': '连接超时',
+        'err.timeout.hint': '网络不通或被防火墙拦截',
+        'err.unknownHost.title': '找不到这台机器',
+        'err.unknownHost.hint': '到「设置 → Presence」检查主机是否还在 ssh config 或手动主机里',
+        'err.permission.title': '权限不足',
+        'err.permission.hint': '远程用户没有访问该路径或资源的权限',
+        'err.noSuchFile.title': '文件或目录不存在',
+        'err.noSuchFile.hint': '检查路径拼写，或刷新目录后重试',
+        'err.remote.title': '远程操作失败',
+        'err.remote.hint': '下面保留了原始报错，可据此继续排查',
+        'err.generic.title': '操作失败',
+        'err.generic.hint': '请检查连接与参数后重试',
+      },
+      en: {
+        'toast.copyFailed': 'Copy failed',
+        'toast.copyFailed.hint': 'The browser blocked clipboard access; select the text manually',
+        'toast.copied': 'Copied to clipboard',
+        'toast.connectionFailed': 'Connection failed',
+        'toast.loadFailed': 'Could not load',
+        'toast.openFailed': 'Could not open',
+        'toast.actionFailed': 'Action failed',
+        'toast.forwardOpened': 'Port forward opened',
+        'toast.forwardClosed': 'Port forward closed',
+        'toast.hostAdded': 'Host added',
+        'toast.hostRemoved': 'Host removed',
+        'toast.uploaded': 'Upload finished',
+        'toast.downloaded': 'Download finished',
+        'err.auth.title': 'Password required',
+        'err.auth.hint': 'Connect from this panel once (tick “remember”), then retry',
+        'err.portClosed.title': 'Nothing is listening on {target}',
+        'err.portClosed.hint': 'Start the service on {host} first, or check the port',
+        'err.refused.title': 'Connection refused',
+        'err.refused.hint': 'Check that sshd is running and the port is right',
+        'err.dns.title': 'Host name could not be resolved',
+        'err.dns.hint': 'Check HostName in ~/.ssh/config or the manual host',
+        'err.timeout.title': 'Connection timed out',
+        'err.timeout.hint': 'Network or firewall problem',
+        'err.unknownHost.title': 'Unknown machine',
+        'err.unknownHost.hint': 'Check that it is still in ~/.ssh/config or the manual hosts',
+        'err.permission.title': 'Permission denied',
+        'err.permission.hint': 'The remote user cannot access that path or resource',
+        'err.noSuchFile.title': 'File or directory not found',
+        'err.noSuchFile.hint': 'Check the spelling, or refresh the folder and retry',
+        'err.remote.title': 'Remote operation failed',
+        'err.remote.hint': 'The original error is kept below',
+        'err.generic.title': 'Something went wrong',
+        'err.generic.hint': 'Check the connection and inputs, then retry',
+      },
+    };
+
+    function t(key, params = {}) {
+      const template = MESSAGES[LOCALE]?.[key] ?? MESSAGES.zh[key] ?? key;
+      return template.replace(/\{(\w+)\}/gu, (match, name) => (params[name] === undefined ? match : String(params[name])));
+    }
+
+    function hasCjk(text) {
+      return /[\u3400-\u9fff]/u.test(String(text ?? ''));
+    }
+
+    /**
+     * Turn any backend string (mostly English ssh errors) into a locale-aware
+     * title + hint, keeping the raw text as detail when it adds information.
+     */
+    function humanizeError(value) {
+      if (value && typeof value === 'object' && value.title) {
+        return { title: value.title, hint: value.hint ?? '', detail: value.detail ?? '' };
+      }
+      const raw = String(value ?? '').trim();
+      if (!raw) return { title: t('err.generic.title'), hint: t('err.generic.hint'), detail: '' };
+      const listening = /nothing is listening on (\S+) on (\S+)/u.exec(raw);
+      if (listening) {
+        return {
+          title: t('err.portClosed.title', { target: listening[1] }),
+          hint: t('err.portClosed.hint', { host: listening[2] }),
+          detail: '',
+        };
+      }
+      if (/authentication failed|no usable key|no password|password was supplied|Permission denied \(publickey|keyboard-interactive/iu.test(raw)) {
+        return { title: t('err.auth.title'), hint: t('err.auth.hint'), detail: '' };
+      }
+      if (/connection refused|ECONNREFUSED/iu.test(raw)) {
+        return { title: t('err.refused.title'), hint: t('err.refused.hint'), detail: raw };
+      }
+      if (/hostname could not be resolved|ENOTFOUND|EAI_AGAIN/iu.test(raw)) {
+        return { title: t('err.dns.title'), hint: t('err.dns.hint'), detail: raw };
+      }
+      if (/timed out|ETIMEDOUT|timeout/iu.test(raw)) {
+        return { title: t('err.timeout.title'), hint: t('err.timeout.hint'), detail: raw };
+      }
+      if (/no host "/u.test(raw) || /no host \[/u.test(raw)) {
+        return { title: t('err.unknownHost.title'), hint: t('err.unknownHost.hint'), detail: raw };
+      }
+      if (/no such file|not found|does not exist/iu.test(raw)) {
+        return { title: t('err.noSuchFile.title'), hint: t('err.noSuchFile.hint'), detail: raw };
+      }
+      if (/permission denied|EACCES|EPERM/iu.test(raw)) {
+        return { title: t('err.permission.title'), hint: t('err.permission.hint'), detail: raw };
+      }
+      // Already Chinese (our own messages or translated backend text): keep it.
+      if (hasCjk(raw)) return { title: raw.split('\n')[0], hint: '', detail: raw.includes('\n') ? raw : '' };
+      return { title: t('err.remote.title'), hint: t('err.remote.hint'), detail: raw };
+    }
+
+    // ---------------------------------------------------------- toast store
+    const NOTICE_DURATION = { success: 2600, info: 3600, warning: 5200, error: 7000 };
+    const NOTICE_ACCENT = {
+      success: 'var(--dsw-alias-state-success-primary)',
+      info: 'var(--dsw-alias-state-business-primary)',
+      warning: 'var(--dsw-alias-state-warn-primary)',
+      error: 'var(--dsw-alias-state-error-primary)',
+    };
+    const NOTICE_MAX = 5;
+    const NOTICE_DEDUPE_MS = 8000;
+    const noticeStore = { listeners: new Set(), nextId: 1, lastByKey: new Map() };
+
+    /** Push a notice; `payload` is a string or {title, hint, detail}. */
+    function pushNotice(kind, payload, options = {}) {
+      if (payload === null || payload === undefined || payload === '') return;
+      const id = noticeStore.nextId;
+      noticeStore.nextId += 1;
+      const info = typeof payload === 'string'
+        ? humanizeError(payload)
+        : { title: '', hint: '', detail: '', ...humanizeError(payload) };
+      if (!info.title) return;
+      const dedupeKey = `${kind}:${info.title}`;
+      const lastAt = noticeStore.lastByKey.get(dedupeKey) ?? 0;
+      const now = Date.now();
+      if (now - lastAt < NOTICE_DEDUPE_MS) return;
+      noticeStore.lastByKey.set(dedupeKey, now);
+      const notice = {
+        id,
+        kind,
+        title: info.title,
+        hint: info.hint ?? '',
+        detail: info.detail ?? '',
+        duration: options.duration ?? NOTICE_DURATION[kind] ?? 4000,
+      };
+      for (const listener of noticeStore.listeners) listener(notice);
+    }
+
+    const notifyError = (value) => pushNotice('error', value);
+    const notifyWarning = (value) => pushNotice('warning', value);
+    const notifySuccess = (title, options) => pushNotice('success', title, options);
+    const notifyInfo = (title, options) => pushNotice('info', title, options);
+
+    function toastIcon(kind) {
+      if (kind === 'success') return 'check';
+      if (kind === 'info') return 'info';
+      return 'alert';
+    }
+
+    function Toaster() {
+      const [items, setItems] = useState([]);
+
+      useEffect(() => {
+        const timers = new Map();
+        const dismiss = (id) => {
+          setItems((current) => current.map((item) => (item.id === id ? { ...item, leaving: true } : item)));
+          const cleanup = setTimeout(() => {
+            setItems((current) => current.filter((item) => item.id !== id));
+          }, 220);
+          timers.set(`cleanup:${id}`, cleanup);
+        };
+        const listener = (notice) => {
+          setItems((current) => [...current.slice(-(NOTICE_MAX - 1)), notice]);
+          timers.set(notice.id, setTimeout(() => dismiss(notice.id), notice.duration));
+        };
+        noticeStore.listeners.add(listener);
+        return () => {
+          noticeStore.listeners.delete(listener);
+          for (const timer of timers.values()) clearTimeout(timer);
+        };
+      }, []);
+
+      const dismissNow = (id) => {
+        setItems((current) => current.map((item) => (item.id === id ? { ...item, leaving: true } : item)));
+        setTimeout(() => {
+          setItems((current) => current.filter((item) => item.id !== id));
+        }, 220);
+      };
+
+      if (items.length === 0) return null;
+      return h('div', { className: 'dp-toasts', role: 'status', 'aria-live': 'polite' }, items.map((item) => h('div', {
+        key: item.id,
+        className: `dp-toast${item.leaving ? ' is-leaving' : ''}`,
+        style: {
+          '--dp-toast-accent': NOTICE_ACCENT[item.kind] ?? NOTICE_ACCENT.info,
+          '--dp-toast-duration': `${item.duration}ms`,
+        },
+      }, [
+        h('span', { key: 'icon', className: 'dp-toast-icon' }, h(Icon, { name: toastIcon(item.kind), size: 15 })),
+        h('div', { key: 'body', className: 'dp-toast-body' }, [
+          h('span', { key: 'title', className: 'dp-toast-title' }, item.title),
+          item.hint ? h('span', { key: 'hint', className: 'dp-toast-hint' }, item.hint) : null,
+          item.detail ? h('span', { key: 'detail', className: 'dp-toast-detail' }, item.detail) : null,
+        ]),
+        h('button', {
+          key: 'close',
+          type: 'button',
+          className: 'dp-toast-close',
+          title: LOCALE === 'zh' ? '关闭' : 'Dismiss',
+          onClick: () => dismissNow(item.id),
+        }, h(Icon, { name: 'x', size: 13 })),
+        h('div', { key: 'progress', className: 'dp-toast-progress' }, h('span', null)),
+      ])));
+    }
+
+    /** Mount the single notification stack on document.body. */
+    function mountToaster(ReactDOM) {
+      try {
+        const existing = document.getElementById('dsh-presence-toasts');
+        if (existing) existing.remove();
+        const container = document.createElement('div');
+        container.id = 'dsh-presence-toasts';
+        document.body.appendChild(container);
+        const root = ReactDOM.createRoot(container);
+        root.render(h(Toaster));
+        return () => {
+          try {
+            root.unmount();
+          } catch {
+            /* already unmounted */
+          }
+          container.remove();
+        };
+      } catch (error) {
+        console.error('[presence] toaster mount failed', error);
+        return () => {};
+      }
     }
 
     const C = {
@@ -210,6 +476,75 @@ export function createApp({ React }) {
         border: 2px solid var(--dsw-alias-border-l1);
         border-top-color: var(--dsw-alias-brand-primary);
         animation: dp-spin .8s linear infinite;
+      }
+
+      /* ---------------------------------------------------- notifications */
+      .dp-toasts {
+        position: fixed; right: 16px; bottom: 16px; z-index: 90;
+        display: flex; flex-direction: column-reverse; gap: 8px;
+        width: min(380px, calc(100vw - 32px));
+        pointer-events: none;
+      }
+      .dp-toast {
+        pointer-events: auto;
+        display: flex; align-items: flex-start; gap: 10px;
+        padding: 10px 12px 10px 14px;
+        border: 1px solid var(--dsw-alias-border-l2);
+        border-radius: var(--dsw-radius-md, 12px);
+        background: var(--dsw-alias-bg-layer-1);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, .16), 0 1px 2px rgba(0, 0, 0, .06);
+        animation: dp-toast-in 220ms var(--dp-ease, cubic-bezier(.4,0,.2,1)) both;
+        position: relative; overflow: hidden;
+      }
+      .dp-toast.is-leaving { animation: dp-toast-out 170ms var(--dp-ease, cubic-bezier(.4,0,.2,1)) both; }
+      .dp-toast::before {
+        content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+        background: var(--dp-toast-accent, var(--dsw-alias-label-secondary));
+      }
+      .dp-toast-icon { color: var(--dp-toast-accent); margin-top: 1px; display: inline-flex; }
+      .dp-toast-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+      .dp-toast-title { font-size: 12.5px; font-weight: 600; line-height: 17px; }
+      .dp-toast-hint { font-size: 11.5px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
+      .dp-toast-detail {
+        font-size: 10.5px; line-height: 15px; color: var(--dsw-alias-label-tertiary);
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
+        overflow-wrap: anywhere; max-height: 45px; overflow: hidden;
+      }
+      .dp-toast-close {
+        flex: 0 0 auto; width: 20px; height: 20px; margin-top: -1px;
+        display: grid; place-items: center; padding: 0;
+        border: 0; border-radius: 999px; background: transparent;
+        color: var(--dsw-alias-label-tertiary); cursor: pointer;
+        transition: background-color var(--dp-fast, .1s) var(--dp-ease, ease);
+      }
+      .dp-toast-close:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+      .dp-toast-close:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 1px; }
+      .dp-toast-progress {
+        position: absolute; left: 3px; right: 0; bottom: 0; height: 2px;
+        background: var(--dsw-alias-bg-module-platform);
+      }
+      .dp-toast-progress > span {
+        display: block; height: 100%; width: 100%;
+        background: var(--dp-toast-accent);
+        opacity: .5;
+        transform-origin: left center;
+        animation: dp-toast-timer var(--dp-toast-duration, 6s) linear both;
+      }
+      @keyframes dp-toast-in {
+        from { opacity: 0; transform: translateY(10px) scale(.98); }
+        to { opacity: 1; transform: none; }
+      }
+      @keyframes dp-toast-out {
+        from { opacity: 1; transform: none; }
+        to { opacity: 0; transform: translateY(6px) scale(.985); }
+      }
+      @keyframes dp-toast-timer {
+        from { transform: scaleX(1); }
+        to { transform: scaleX(0); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .dp-toast, .dp-toast.is-leaving { animation-duration: 1ms; }
+        .dp-toast-progress > span { animation-duration: 1ms; }
       }
 
       /* -------------------------------------------------- remote file pane
@@ -407,6 +742,26 @@ export function createApp({ React }) {
       .dp-empty-hint { font-size: 11.5px; line-height: 1.7; max-width: 250px; text-align: center; }
 
       /* ------------------------------------------------- port forwards */
+      .dp-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+      .dp-field--host { flex: 1 1 120px; }
+      .dp-field--port { flex: 0 0 92px; }
+      .dp-field-label {
+        font-size: 10.5px; line-height: 14px; letter-spacing: .01em;
+        color: var(--dsw-alias-label-tertiary);
+      }
+      .dp-form-hint {
+        flex: 1 1 100%; font-size: 11px; line-height: 16px;
+        color: var(--dsw-alias-label-tertiary);
+      }
+      .dp-form-row { display: flex; align-items: flex-end; gap: 6px; flex: 1 1 100%; }
+      .dp-banner-title { font-weight: 600; }
+      .dp-banner-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+      .dp-banner-hint { font-size: 11.5px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
+      .dp-banner-detail {
+        font-size: 10.5px; line-height: 15px; color: var(--dsw-alias-label-tertiary);
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
+        overflow-wrap: anywhere;
+      }
       .dp-form {
         display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
         padding: 8px; border-bottom: 1px solid var(--dsw-alias-border-l2);
@@ -417,6 +772,7 @@ export function createApp({ React }) {
       .dp-pane .dp-form .dp-input--host { flex: 1 1 120px; }
       .dp-pane .dp-form .dp-input--port { flex: 0 0 76px; }
       .dp-pane .dp-form .dp-tool { flex: 0 0 auto; }
+      .dp-pane .dp-form .dp-field .dp-input { width: 100%; }
       .dp-form .dp-tool[disabled] { opacity: .45; cursor: default; }
       .dp-mono {
         font-family: var(--ds-font-family-code, "Cascadia Code", Consolas, ui-monospace, monospace);
@@ -878,6 +1234,7 @@ export function createApp({ React }) {
       lock: ['M7 10V8a5 5 0 0 1 10 0v2', 'M5 10h14v10H5z'],
       check: ['M4 12l5 5L20 6'],
       alert: ['M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0-18z', 'M12 8v5', 'M12 16.5v.5'],
+      info: ['M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0-18z', 'M12 11v5', 'M12 7.5v.5'],
       server: ['M4 4h16v6H4z', 'M4 14h16v6H4z', 'M7.5 7h.01', 'M7.5 17h.01'],
       search: ['M11 4a7 7 0 1 0 0 14a7 7 0 0 0 0-14z', 'M20 20l-3.6-3.6'],
       play: ['M8 5l11 7-11 7z'],
@@ -993,6 +1350,52 @@ export function createApp({ React }) {
     function isAuthMessage(text) {
       const message = String(text ?? '');
       return /authentication failed|no usable key|no password|password was supplied|Permission denied \(publickey|Host key verification failed/iu.test(message);
+    }
+
+    /** Split "host:port" typed into the address field; IPv6 needs brackets. */
+    function splitHostPort(value, port) {
+      const text = String(value ?? '').trim();
+      let host = text;
+      let finalPort = Number(port);
+      const bracket = /^\[([^\]]+)\]:(\d{1,5})$/u.exec(text);
+      const plain = !bracket && /^[^:]+:(\d{1,5})$/u.exec(text);
+      if (bracket) {
+        host = bracket[1];
+        finalPort = Number(bracket[2]);
+      } else if (plain) {
+        host = text.slice(0, text.lastIndexOf(':'));
+        finalPort = Number(plain[1]);
+      }
+      return {
+        host: host || '127.0.0.1',
+        port: Number.isInteger(finalPort) && finalPort > 0 && finalPort <= 65535 ? finalPort : null,
+      };
+    }
+
+    /** Turn an ssh/tunnel failure into a title, a suggestion and the raw detail. */
+    function tunnelErrorInfo(message) {
+      const text = String(message ?? '');
+      const listening = /nothing is listening on (\S+) on (\S+)/u.exec(text);
+      if (listening) {
+        return {
+          title: `远程 ${listening[1]} 上没有服务在监听`,
+          hint: `先在 ${listening[2]} 启动服务（或检查端口号），再点「开始转发」`,
+          detail: '',
+        };
+      }
+      if (isAuthMessage(text)) {
+        return { title: '这台机器需要密码登录', hint: '先到右侧栏「远程文件」面板连接一次（可勾选记住），再回来转发', detail: '' };
+      }
+      if (/connection refused|ECONNREFUSED/iu.test(text)) {
+        return { title: '连接被拒绝', hint: '检查远程 sshd 是否在运行、端口是否正确', detail: text };
+      }
+      if (/hostname could not be resolved|ENOTFOUND/iu.test(text)) {
+        return { title: '主机名无法解析', hint: '检查 ssh config / 手动主机里的 HostName', detail: text };
+      }
+      if (/timed out|timeout/iu.test(text)) {
+        return { title: '连接超时', hint: '网络不通或被防火墙拦截', detail: text };
+      }
+      return { title: '转发失败', hint: '检查远程服务是否在运行、端口是否写对', detail: text };
     }
 
     /** Save a URL through the native dialog when available, else a download link. */
@@ -1175,7 +1578,6 @@ export function createApp({ React }) {
       const [crumbs, setCrumbs] = useState([]);
       const [entries, setEntries] = useState([]);
       const [loading, setLoading] = useState(true);
-      const [error, setError] = useState(null);
       const [filter, setFilter] = useState('');
       const [dragOver, setDragOver] = useState(false);
       const [job, setJob] = useState(null);
@@ -1192,7 +1594,7 @@ export function createApp({ React }) {
       const load = useCallback(async (nextHost, nextPath) => {
         if (!nextHost) return;
         setLoading(true);
-        setError(null);
+        notifyError(null);
         try {
           const query = `host=${encodeURIComponent(nextHost)}&path=${encodeURIComponent(nextPath)}`;
           const data = await request(`/entries?${query}`);
@@ -1211,7 +1613,7 @@ export function createApp({ React }) {
             setAuth({ host: nextHost, path: nextPath, password: '', remember: false, error: null, busy: false });
             return;
           }
-          setError(err.message);
+          notifyError(err.message);
         } finally {
           setLoading(false);
         }
@@ -1259,11 +1661,11 @@ export function createApp({ React }) {
             if (target) await load(target.host, target.path);
             else {
               setLoading(false);
-              setError('还没有远程工作区：先到「设置 → Presence」新建一个。');
+              notifyError('还没有远程工作区：先到「设置 → Presence」新建一个。');
             }
           } catch (err) {
             if (!cancelled) {
-              setError(err.message);
+              notifyError(err.message);
               setLoading(false);
             }
           }
@@ -1281,7 +1683,7 @@ export function createApp({ React }) {
       const startUpload = async (items) => {
         if (!items || items.length === 0) return;
         if (!host) {
-          setError('还没有选择远程目录');
+          notifyError('还没有选择远程目录');
           return;
         }
         setJob({ kind: 'upload', label: `上传 0/${items.length}`, percent: 0, detail: '' });
@@ -1295,10 +1697,11 @@ export function createApp({ React }) {
             });
           });
           setJob({ kind: 'done', label: `已上传 ${result.files} 个文件`, percent: 100, detail: humanSize(result.bytes) });
+          notifySuccess(`已上传 ${result.files} 个文件`);
           await load(host, path);
           setTimeout(() => setJob(null), 2500);
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
           setJob(null);
         }
       };
@@ -1335,7 +1738,7 @@ export function createApp({ React }) {
           if (!dataTransfer) return;
           collectDroppedFiles(dataTransfer)
             .then((items) => dropHandler.current?.(items))
-            .catch((err) => setError(err.message));
+            .catch((err) => notifyError(err.message));
         };
         window.addEventListener('dragenter', onDragOver, true);
         window.addEventListener('dragover', onDragOver, true);
@@ -1392,11 +1795,11 @@ export function createApp({ React }) {
             return;
           } catch (err) {
             setPreview(null);
-            setError(`${err.message}（将改用保存对话框）`);
+            notifyError(`${err.message}（将改用保存对话框）`);
           }
         }
         setPreview(null);
-        await saveRemoteFile(host, entry.path, entry.name).catch((err) => setError(err.message));
+        await saveRemoteFile(host, entry.path, entry.name).catch((err) => notifyError(err.message));
       };
 
       const downloadEntry = async (entry) => {
@@ -1421,7 +1824,7 @@ export function createApp({ React }) {
           }
           await saveRemoteFile(host, entry.path, entry.name);
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
           setJob(null);
         }
       };
@@ -1438,7 +1841,7 @@ export function createApp({ React }) {
           setCreatingFolder(null);
           await load(host, path);
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
         }
       };
 
@@ -1448,7 +1851,7 @@ export function createApp({ React }) {
           await request(`/remove?host=${encodeURIComponent(host)}&path=${encodeURIComponent(entry.path)}`, {});
           await load(host, path);
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
         }
       };
 
@@ -1573,10 +1976,6 @@ export function createApp({ React }) {
             onChange: (event) => setFilter(event.target.value),
           }),
         ]),
-        error ? h('div', { key: 'error', className: 'dp-banner' }, [
-          h(Icon, { key: 'i', name: 'alert', size: 14 }),
-          h('span', { key: 't' }, error),
-        ]) : null,
         creatingFolder !== null
           ? h('div', { key: 'newfolder', className: 'dp-newfolder' }, [
               h('input', {
@@ -1703,7 +2102,13 @@ export function createApp({ React }) {
                 }),
                 h('span', { key: 't' }, '记住这台'),
               ]),
-              auth.error ? h('div', { key: 'err', className: 'dp-banner', style: { margin: 0 } }, auth.error) : null,
+              auth.error
+                ? h('div', { key: 'err', className: 'dp-banner', style: { margin: 0 } },
+                    h('div', { key: 'body', className: 'dp-banner-body' }, [
+                      h('span', { key: 'title', className: 'dp-banner-title' }, humanizeError(auth.error).title),
+                      h('span', { key: 'hint', className: 'dp-banner-hint' }, humanizeError(auth.error).hint || humanizeError(auth.error).detail),
+                    ]))
+                : null,
               h('div', { key: 'actions', className: 'dp-auth-actions' }, [
                 h('button', { key: 'cancel', type: 'button', className: 'dp-tool', onClick: () => setAuth(null) }, '取消'),
                 h('button', {
@@ -1759,7 +2164,7 @@ export function createApp({ React }) {
                           setCopied(true);
                           setTimeout(() => setCopied(false), 1500);
                         } catch (err) {
-                          setError(`复制失败：${err.message}`);
+                          notifyError(`复制失败：${err.message}`);
                         }
                       },
                     }, [h(Icon, { key: 'i', name: 'copy', size: 14 }), h('span', { key: 't' }, copied ? '已复制' : '复制')])
@@ -1817,7 +2222,7 @@ export function createApp({ React }) {
                   key: 'save',
                   type: 'button',
                   className: 'dp-tool dp-tool--primary',
-                  onClick: () => saveRemoteFile(host, preview.path, preview.name).catch((err) => setError(err.message)),
+                  onClick: () => saveRemoteFile(host, preview.path, preview.name).catch((err) => notifyError(err.message)),
                 }, [h(Icon, { key: 'i', name: 'download', size: 15 }), h('span', { key: 't' }, '保存到本地')]),
               ]),
             ]))
@@ -1839,7 +2244,6 @@ export function createApp({ React }) {
       const [remotePort, setRemotePort] = useState('');
       const [loading, setLoading] = useState(true);
       const [busy, setBusy] = useState(false);
-      const [error, setError] = useState(null);
       const [copied, setCopied] = useState(null);
 
       const load = useCallback(async () => {
@@ -1848,10 +2252,10 @@ export function createApp({ React }) {
           const list = state.hosts ?? [];
           setHosts(list);
           setTunnels(listing.tunnels ?? []);
-          setError(null);
+          notifyError(null);
           setHost((current) => current || list.find((item) => item.connected)?.alias || list[0]?.alias || '');
         } catch (err) {
-          setError(err.message);
+          notifyError(tunnelErrorInfo(err.message));
         } finally {
           setLoading(false);
         }
@@ -1885,28 +2289,24 @@ export function createApp({ React }) {
       const startTunnel = async () => {
         if (busy) return;
         if (!host) {
-          setError('先选一台机器');
+          notifyError({ title: '先选一台机器', hint: '在上面的「机器」下拉框里选一台远程机器' });
           return;
         }
-        const port = Number(remotePort);
-        if (!Number.isInteger(port) || port < 1 || port > 65535) {
-          setError('远程端口必须是 1-65535');
+        const split = splitHostPort(remoteHost, remotePort);
+        if (!split.port) {
+          notifyError({ title: '远程端口无效', hint: '填写 1-65535 的端口号，例如 8000 / 6000 / 3000' });
           return;
         }
+        if (split.host !== remoteHost.trim()) setRemoteHost(split.host);
         setBusy(true);
-        setError(null);
+        notifyError(null);
         try {
-          await request('/tunnels', {
-            host,
-            remotePort: port,
-            remoteHost: remoteHost.trim() || '127.0.0.1',
-          });
+          const created = await request('/tunnels', { host, remotePort: split.port, remoteHost: split.host });
           setRemotePort('');
           await load();
+          notifySuccess(`端口转发已建立：${created.tunnel?.url ?? ''}`);
         } catch (err) {
-          setError(isAuthMessage(err.message)
-            ? `${host} 需要密码登录：先到「远程文件」面板连接一次（可勾选记住），再回来转发。`
-            : err.message);
+          notifyError(tunnelErrorInfo(err.message));
         } finally {
           setBusy(false);
         }
@@ -1916,8 +2316,9 @@ export function createApp({ React }) {
         try {
           await request(`/tunnels?id=${encodeURIComponent(id)}`, undefined, 'DELETE');
           await load();
+          notifySuccess('端口转发已停止');
         } catch (err) {
-          setError(err.message);
+          notifyError(tunnelErrorInfo(err.message));
         }
       };
 
@@ -1926,8 +2327,9 @@ export function createApp({ React }) {
           await navigator.clipboard.writeText(tunnel.url);
           setCopied(tunnel.id);
           setTimeout(() => setCopied(null), 1500);
+          notifySuccess('已复制到剪贴板');
         } catch (err) {
-          setError(err.message);
+          notifyError({ title: '复制失败', hint: '浏览器拒绝了剪贴板操作，可以手动选中 URL 复制', detail: err.message });
         }
       };
 
@@ -2005,48 +2407,54 @@ export function createApp({ React }) {
           }, h('span', { key: 'spin', className: loading ? 'dp-spin-wrap dp-spinning' : 'dp-spin-wrap' }, h(Icon, { name: 'refresh', size: 15 }))),
         ]),
         h('div', { key: 'form', className: 'dp-form' }, [
-          h('select', {
-            key: 'host',
-            className: 'dp-select',
-            value: host,
-            title: '远程机器',
-            onChange: (event) => setHost(event.target.value),
-          }, hosts.map((item) => h('option', { key: item.alias, value: item.alias }, item.alias))),
-          h('input', {
-            key: 'remoteHost',
-            className: 'dp-input dp-input--host dp-mono',
-            value: remoteHost,
-            title: '远程主机地址（默认 127.0.0.1）',
-            placeholder: '127.0.0.1',
-            onChange: (event) => setRemoteHost(event.target.value),
-          }),
-          h('span', { key: 'arrow', className: 'dp-tunnel-arrow dp-mono' }, '→'),
-          h('input', {
-            key: 'remotePort',
-            className: 'dp-input dp-input--port dp-mono',
-            value: remotePort,
-            inputMode: 'numeric',
-            placeholder: '8080',
-            title: '远程端口',
-            onChange: (event) => setRemotePort(event.target.value.replace(/[^\d]/gu, '')),
-            onKeyDown: (event) => {
-              if (event.key === 'Enter') startTunnel();
-            },
-          }),
-          h('button', {
-            key: 'go',
-            type: 'button',
-            className: 'dp-tool dp-tool--primary',
-            disabled: busy || !host || !remotePort,
-            onClick: startTunnel,
-          }, busy
-            ? [h('span', { key: 'spin', className: 'dp-spin-wrap dp-spinning' }, h(Icon, { name: 'refresh', size: 14 })), h('span', { key: 't' }, '转发中…')]
-            : '开始转发'),
+          h('div', { key: 'host', className: 'dp-field', style: { flex: '1 1 100%' } }, [
+            h('label', { key: 'label', className: 'dp-field-label' }, '机器'),
+            h('select', {
+              key: 'select',
+              className: 'dp-select',
+              value: host,
+              onChange: (event) => setHost(event.target.value),
+            }, hosts.map((item) => h('option', { key: item.alias, value: item.alias },
+              item.connected ? `${item.alias}（已连接）` : item.alias))),
+          ]),
+          h('div', { key: 'row', className: 'dp-form-row' }, [
+            h('div', { key: 'remoteHost', className: 'dp-field dp-field--host' }, [
+              h('label', { key: 'label', className: 'dp-field-label' }, '远程主机'),
+              h('input', {
+                key: 'input',
+                className: 'dp-input dp-mono',
+                value: remoteHost,
+                placeholder: '127.0.0.1',
+                onChange: (event) => setRemoteHost(event.target.value),
+              }),
+            ]),
+            h('div', { key: 'remotePort', className: 'dp-field dp-field--port' }, [
+              h('label', { key: 'label', className: 'dp-field-label' }, '远程端口'),
+              h('input', {
+                key: 'input',
+                className: 'dp-input dp-mono',
+                value: remotePort,
+                inputMode: 'numeric',
+                placeholder: '8000',
+                onChange: (event) => setRemotePort(event.target.value.replace(/[^\d]/gu, '')),
+                onKeyDown: (event) => {
+                  if (event.key === 'Enter') startTunnel();
+                },
+              }),
+            ]),
+            h('button', {
+              key: 'go',
+              type: 'button',
+              className: 'dp-tool dp-tool--primary',
+              disabled: busy || !host || !remotePort,
+              onClick: startTunnel,
+            }, busy
+              ? [h('span', { key: 'spin', className: 'dp-spin-wrap dp-spinning' }, h(Icon, { name: 'refresh', size: 14 })), h('span', { key: 't' }, '转发中…')]
+              : '开始转发'),
+          ]),
+          h('div', { key: 'hint', className: 'dp-form-hint' },
+            `将 ${host || '远程机器'} 上的 ${remoteHost || '127.0.0.1'}:${remotePort || '端口'} 映射到本地随机端口；转发成功后点行尾的 ↗ 在浏览器打开。`),
         ]),
-        error ? h('div', { key: 'error', className: 'dp-banner' }, [
-          h(Icon, { key: 'i', name: 'alert', size: 14 }),
-          h('span', { key: 't' }, error),
-        ]) : null,
         h('div', { key: 'list', className: 'dp-list' },
           loading
             ? h('div', { className: 'dp-loading' }, h(Spinner, { label: '加载中…' }))
@@ -2055,7 +2463,7 @@ export function createApp({ React }) {
                   h('span', { key: 'icon', className: 'dp-empty-icon' }, h(Icon, { name: 'server', size: 22 })),
                   h('span', { key: 'title' }, '还没有端口转发'),
                   h('span', { key: 'hint', className: 'dp-empty-hint' },
-                    '选机器、填远程端口（如 8080 / 6006 / 3000），点「开始转发」；这里会一直列出正在转发的端口。'),
+                    '填一个远程端口（如 8000 / 6000 / 3000）再点「开始转发」就能在浏览器里访问。agent 用 presence_forward 打开的转发也会自动出现在这里。'),
                 ])
               : groups.map(([alias, items]) => h('div', { key: alias, className: 'dp-group' }, [
                   h('div', { key: 'head', className: 'dp-group-head' }, [
@@ -2077,7 +2485,6 @@ export function createApp({ React }) {
       const [activeId, setActiveId] = useState(null);
       const [browse, setBrowse] = useState(null);
       const [busy, setBusy] = useState(false);
-      const [error, setError] = useState(null);
       const [pendingHost, setPendingHost] = useState(null);
       const [password, setPassword] = useState('');
       const [remember, setRemember] = useState(false);
@@ -2102,9 +2509,9 @@ export function createApp({ React }) {
           setWorkspaces(listing.workspaces ?? []);
           setTunnels(forwards.tunnels ?? []);
           setActiveId(listing.active ?? null);
-          setError(null);
+          notifyError(null);
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
         } finally {
           setLoadingList(false);
         }
@@ -2131,11 +2538,11 @@ export function createApp({ React }) {
       const addManualHost = useCallback(async () => {
         const text = manualText.trim();
         if (!text) {
-          setError('请输入 ssh 命令或 user@host[:port]');
+          notifyError('请输入 ssh 命令或 user@host[:port]');
           return;
         }
         setManualBusy(true);
-        setError(null);
+        notifyError(null);
         setManualWarnings([]);
         try {
           const result = await request('/custom-hosts', {
@@ -2149,8 +2556,9 @@ export function createApp({ React }) {
           setManualNote('');
           setManualOpen(false);
           await loadList();
+          notifySuccess(`已添加主机 ${result.entry.alias}`);
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
         } finally {
           setManualBusy(false);
         }
@@ -2161,7 +2569,7 @@ export function createApp({ React }) {
           await request(`/tunnels?id=${encodeURIComponent(id)}`, undefined, 'DELETE');
           await loadList();
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
         }
       }, [loadList]);
 
@@ -2170,8 +2578,9 @@ export function createApp({ React }) {
         try {
           await request(`/custom-hosts?alias=${encodeURIComponent(alias)}`, {}, 'DELETE');
           await loadList();
+          notifySuccess('主机已删除');
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
         } finally {
           setBusy(false);
         }
@@ -2179,7 +2588,7 @@ export function createApp({ React }) {
 
       const openBrowser = useCallback(async (host, path) => {
         setBusy(true);
-        setError(null);
+        notifyError(null);
         try {
           const query = new URLSearchParams({ host });
           if (path) query.set('path', path);
@@ -2187,7 +2596,7 @@ export function createApp({ React }) {
           setBrowse(data);
           setMode('browse');
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
         } finally {
           setBusy(false);
         }
@@ -2196,7 +2605,7 @@ export function createApp({ React }) {
       /** Browse the files of an existing workspace. */
       const openFiles = useCallback(async (host, path) => {
         setBusy(true);
-        setError(null);
+        notifyError(null);
         setPreview(null);
         try {
           const query = new URLSearchParams({ host });
@@ -2205,7 +2614,7 @@ export function createApp({ React }) {
           setFiles(data);
           setMode('files');
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
         } finally {
           setBusy(false);
         }
@@ -2213,12 +2622,12 @@ export function createApp({ React }) {
 
       const openFile = useCallback(async (host, path) => {
         setBusy(true);
-        setError(null);
+        notifyError(null);
         try {
           const query = new URLSearchParams({ host, path });
           setPreview(await request(`/file?${query.toString()}`));
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
         } finally {
           setBusy(false);
         }
@@ -2227,7 +2636,7 @@ export function createApp({ React }) {
       /** Connect first, so a password host asks before it tries to browse. */
       const pickHost = useCallback(async (host, secret) => {
         setBusy(true);
-        setError(null);
+        notifyError(null);
         try {
           await request('/connect', { host, password: secret ?? '', remember: secret ? remember : false });
           setPendingHost(null);
@@ -2237,9 +2646,9 @@ export function createApp({ React }) {
         } catch (err) {
           if (/password|authenticat/i.test(err.message)) {
             setPendingHost(host);
-            setError(err.message);
+            notifyError(err.message);
           } else {
-            setError(err.message);
+            notifyError(err.message);
           }
         } finally {
           setBusy(false);
@@ -2249,14 +2658,14 @@ export function createApp({ React }) {
       const chooseFolder = useCallback(async () => {
         if (!browse) return;
         setBusy(true);
-        setError(null);
+        notifyError(null);
         try {
           await request('/workspaces', { host: browse.host, path: browse.path });
           await loadList();
           setMode('list');
           setBrowse(null);
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
         } finally {
           setBusy(false);
         }
@@ -2268,7 +2677,7 @@ export function createApp({ React }) {
           const result = await request('/workspaces', { activate: id });
           setActiveId(result.active ?? null);
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
         } finally {
           setBusy(false);
         }
@@ -2281,7 +2690,7 @@ export function createApp({ React }) {
           setWorkspaces(result.workspaces ?? []);
           if (activeId === id) setActiveId(null);
         } catch (err) {
-          setError(err.message);
+          notifyError(err.message);
         } finally {
           setBusy(false);
         }
@@ -2299,8 +2708,8 @@ export function createApp({ React }) {
           : `${workspaces.length} 个工作区`),
         h('div', { key: 'spacer', style: { flex: 1 } }),
         mode === 'list'
-          ? Button({ label: '新建', onClick: () => { setMode('new'); setError(null); }, primary: true })
-          : Button({ label: '返回', onClick: () => { setMode('list'); setBrowse(null); setFiles(null); setPreview(null); setError(null); } }),
+          ? Button({ label: '新建', onClick: () => { setMode('new'); notifyError(null); }, primary: true })
+          : Button({ label: '返回', onClick: () => { setMode('list'); setBrowse(null); setFiles(null); setPreview(null); notifyError(null); } }),
       ]);
 
       let body;
@@ -2371,7 +2780,7 @@ export function createApp({ React }) {
             h('div', { key: 'spacer', style: { flex: 1 } }),
             manualOpen
               ? null
-              : Button({ label: '手动添加主机', small: true, onClick: () => { setManualOpen(true); setError(null); setManualWarnings([]); } }),
+              : Button({ label: '手动添加主机', small: true, onClick: () => { setManualOpen(true); notifyError(null); setManualWarnings([]); } }),
           ]),
           manualForm,
           hosts.length === 0
@@ -2668,7 +3077,6 @@ export function createApp({ React }) {
           key: 'sub',
           style: { color: C.muted, fontSize: 12, margin: '2px 0 0' },
         }, '选一台机器和一个远程文件夹，agent 就只在这个文件夹里工作，连接常驻复用，远端不安装任何东西。'),
-        error ? h(Banner, { key: 'error' }, error) : null,
         loadingList
           ? h('div', {
               key: 'loading',
@@ -2684,9 +3092,15 @@ export function createApp({ React }) {
     }
 
     return {
+      __test: { humanizeError, pushNotice, t, LOCALE, noticeStore, splitHostPort },
       inject: ['slots'],
       apply(ctx) {
         ensureStyles();
+        if (ctx.effect) {
+          ctx.effect(() => mountToaster(ReactDOM), 'presence.toasts');
+        } else {
+          mountToaster(ReactDOM);
+        }
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',
           id: 'presence',

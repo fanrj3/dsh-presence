@@ -303,7 +303,21 @@ export function presenceRoutes(pool, late = {}) {
         if (request.method === 'POST') {
           const body = await readJson(request);
           const host = String(body.host ?? '').trim();
-          const remotePort = Number(body.remotePort);
+          let remoteHost = typeof body.remoteHost === 'string' && body.remoteHost.trim()
+            ? body.remoteHost.trim()
+            : '127.0.0.1';
+          let remotePort = Number(body.remotePort);
+          // Accept "host:port" typed into remoteHost (the panel splits it too,
+          // but API callers should not get "1.2.3.4:8080:8080" in the error).
+          const bracketed = /^\[([^\]]+)\]:(\d{1,5})$/u.exec(remoteHost);
+          const plain = bracketed ? null : /^[^:]+:(\d{1,5})$/u.exec(remoteHost);
+          if (bracketed) {
+            remoteHost = bracketed[1];
+            remotePort = Number(bracketed[2]);
+          } else if (plain) {
+            remoteHost = remoteHost.slice(0, remoteHost.lastIndexOf(':'));
+            remotePort = Number(plain[1]);
+          }
           if (!host) {
             send(response, 400, { ok: false, error: 'host is required' });
             return;
@@ -315,7 +329,7 @@ export function presenceRoutes(pool, late = {}) {
           try {
             const tunnel = await pool.openTunnel(host, {
               localPort: body.localPort ? Number(body.localPort) : 0,
-              remoteHost: typeof body.remoteHost === 'string' && body.remoteHost ? body.remoteHost : '127.0.0.1',
+              remoteHost,
               remotePort,
             });
             send(response, 200, { ok: true, tunnel: { ...tunnel, url: `http://127.0.0.1:${tunnel.localPort}` } });
