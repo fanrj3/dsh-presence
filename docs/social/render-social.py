@@ -238,46 +238,133 @@ def build_cover(dark: bool) -> Image.Image:
     return c.convert("RGB")
 
 
-TOOLS = [
-    ("presence_hosts", "列出远程机器"), ("presence_connect", "建立 / 复用连接"),
-    ("presence_exec", "执行命令"), ("presence_read", "读取文件"),
-    ("presence_write", "写入文件"), ("presence_edit", "精确编辑"),
-    ("presence_search", "内容搜索"), ("presence_glob", "文件查找"),
-    ("presence_import", "上传文件"), ("presence_export", "下载文件"),
-    ("presence_jobs", "后台任务"), ("presence_forward", "端口转发"),
-    ("presence_terminal", "持久终端"), ("presence_trash", "回收站"),
-]
+def tool_icon(d: ImageDraw.ImageDraw, x: int, y: int, size: int, name: str, color=(226, 232, 240)) -> None:
+    """Simple 2px-ish stroke glyphs for the 14 tools (no font dependencies)."""
+    s = size
+    w = max(2, round(s / 16))
+    if name == "presence_hosts":
+        for i in range(2):
+            top = y + 4 + i * (s // 2 - 2)
+            d.rounded_rectangle([x + 2, top, x + s - 2, top + s // 2 - 5], radius=3, outline=color, width=w)
+            d.ellipse([x + s - 9, top + 4, x + s - 5, top + 8], fill=color)
+    elif name == "presence_connect":
+        d.line([(x + 2, y + s // 2), (x + s - 2, y + s // 2)], fill=color, width=w)
+        d.arc([x + s // 4, y + s // 4, x + s - 2, y + s - 2], start=270, end=90, fill=color, width=w)
+        d.arc([x + 2, y + s // 4, x + s // 4 + s // 2, y + s - 2], start=90, end=270, fill=color, width=w)
+    elif name == "presence_exec":
+        d.rounded_rectangle([x + 2, y + 4, x + s - 2, y + s - 4], radius=3, outline=color, width=w)
+        d.line([(x + 8, y + 11), (x + 14, y + 16), (x + 8, y + 21)], fill=color, width=w, joint="curve")
+        d.line([(x + 18, y + 21), (x + 26, y + 21)], fill=color, width=w)
+    elif name in ("presence_read", "presence_write", "presence_edit"):
+        d.rounded_rectangle([x + 6, y + 3, x + s - 6, y + s - 3], radius=3, outline=color, width=w)
+        if name == "presence_read":
+            for i in range(3):
+                d.line([(x + 10, y + 9 + i * 5), (x + s - 10, y + 9 + i * 5)], fill=color, width=w)
+        elif name == "presence_write":
+            d.line([(x + s // 2, y + 9), (x + s // 2, y + s - 9)], fill=color, width=w)
+            d.line([(x + s // 2 - 5, y + s - 14), (x + s // 2, y + s - 9), (x + s // 2 + 5, y + s - 14)], fill=color, width=w)
+        else:
+            d.line([(x + 10, y + s - 12), (x + s - 10, y + 12)], fill=color, width=w)
+            d.line([(x + 9, y + s - 6), (x + 16, y + s - 9)], fill=color, width=w)
+    elif name == "presence_search":
+        d.ellipse([x + 4, y + 4, x + s - 10, y + s - 10], outline=color, width=w)
+        d.line([(x + s - 12, y + s - 12), (x + s - 3, y + s - 3)], fill=color, width=w + 1)
+    elif name == "presence_glob":
+        d.line([(x + 3, y + s - 8), (x + 3, y + 8)], fill=color, width=w)
+        d.line([(x + 3, y + 8), (x + s - 12, y + 8), (x + s - 12, y + s - 8), (x + 3, y + s - 8)], fill=color, width=w, joint="curve")
+        d.ellipse([x + s - 16, y + s - 16, x + s - 4, y + s - 4], outline=color, width=w)
+        d.line([(x + s - 7, y + s - 7), (x + s - 2, y + s - 2)], fill=color, width=w)
+    elif name == "presence_import":
+        d.line([(x + s // 2, y + 3), (x + s // 2, y + s - 10)], fill=color, width=w)
+        d.line([(x + s // 2 - 6, y + s - 16), (x + s // 2, y + s - 10), (x + s // 2 + 6, y + s - 16)], fill=color, width=w)
+        d.line([(x + 5, y + s - 4), (x + s - 5, y + s - 4)], fill=color, width=w)
+    elif name == "presence_export":
+        d.line([(x + s // 2, y + s - 3), (x + s // 2, y + 10)], fill=color, width=w)
+        d.line([(x + s // 2 - 6, y + 16), (x + s // 2, y + 10), (x + s // 2 + 6, y + 16)], fill=color, width=w)
+        d.line([(x + 5, y + s - 4), (x + s - 5, y + s - 4)], fill=color, width=w)
+    elif name == "presence_jobs":
+        d.ellipse([x + 4, y + 4, x + s - 4, y + s - 4], outline=color, width=w)
+        d.line([(x + s // 2, y + 10), (x + s // 2, y + s // 2), (x + s - 9, y + s // 2 + 4)], fill=color, width=w, joint="curve")
+    elif name == "presence_forward":
+        d.line([(x + 4, y + 12), (x + s - 5, y + 12)], fill=color, width=w)
+        d.line([(x + s - 11, y + 7), (x + s - 5, y + 12), (x + s - 11, y + 17)], fill=color, width=w)
+        d.line([(x + 5, y + s - 12), (x + s - 4, y + s - 12)], fill=color, width=w)
+        d.line([(x + 11, y + s - 17), (x + 5, y + s - 12), (x + 11, y + s - 7)], fill=color, width=w)
+    elif name == "presence_terminal":
+        d.rounded_rectangle([x + 2, y + 5, x + s - 2, y + s - 5], radius=3, outline=color, width=w)
+        d.line([(x + 7, y + 12), (x + 13, y + 17), (x + 7, y + 22)], fill=color, width=w, joint="curve")
+        d.line([(x + 17, y + 22), (x + 24, y + 22)], fill=color, width=w)
+    elif name == "presence_trash":
+        d.line([(x + 5, y + 9), (x + s - 5, y + 9)], fill=color, width=w)
+        d.rounded_rectangle([x + 8, y + 9, x + s - 8, y + s - 5], radius=3, outline=color, width=w)
+        d.line([(x + s // 2 - 5, y + 4), (x + s // 2 + 5, y + 4)], fill=color, width=w)
+        d.line([(x + s // 2 - 4, y + 13), (x + s // 2 - 4, y + s - 9)], fill=color, width=w)
+        d.line([(x + s // 2 + 4, y + 13), (x + s // 2 + 4, y + s - 9)], fill=color, width=w)
+
+
+def node_icon(d: ImageDraw.ImageDraw, cx: int, cy: int, kind: str, color=(255, 255, 255)) -> None:
+    r = 18
+    if kind == "chat":
+        d.rounded_rectangle([cx - r, cy - r + 4, cx + r, cy + r - 4], radius=8, outline=color, width=3)
+        d.line([(cx - 6, cy + r - 4), (cx - 2, cy + r + 4)], fill=color, width=3)
+    elif kind == "agent":
+        d.rounded_rectangle([cx - r + 2, cy - r + 6, cx + r - 2, cy + r], radius=8, outline=color, width=3)
+        d.ellipse([cx - 8, cy - 8, cx - 2, cy - 2], fill=color)
+        d.ellipse([cx + 2, cy - 8, cx + 8, cy - 2], fill=color)
+        d.line([(cx, cy - r - 2), (cx, cy - r + 4)], fill=color, width=3)
+        d.ellipse([cx - 3, cy - r - 5, cx + 3, cy - r + 1], fill=color)
+    elif kind == "link":
+        d.line([(cx - r, cy), (cx + r, cy)], fill=color, width=3)
+        d.arc([cx - r - 4, cy - r, cx + r + 4, cy + r], start=200, end=340, fill=color, width=3)
+    elif kind == "remote":
+        d.rounded_rectangle([cx - r, cy - r + 2, cx + r, cy + r], radius=5, outline=color, width=3)
+        d.line([(cx - 10, cy + 4), (cx - 4, cy + 10), (cx - 10, cy + 16)], fill=color, width=3, joint="curve")
+        d.line([(cx - 2, cy + 16), (cx + 8, cy + 16)], fill=color, width=3)
 
 
 def build_tools() -> Image.Image:
     c = dark_canvas()
+    c.alpha_composite(glow(540, 1000, 560, BLUE, 0.22))
     d = ImageDraw.Draw(c)
     brand(c, True)
-    y = headline(d, [("全部工具", False), ("和本地一样顺手", True)], True, 230)
-    sub_line(d, y + 2, "14 个工具 · 一条常驻连接 · 远端零安装", True)
+    y = headline(d, [("14 个工具", False), ("和本地一样顺手", True)], True, 220)
+    sub_line(d, y + 2, "全部走同一条常驻连接 · 远端零安装", True)
 
     col_x = [96, 558]
-    row_h, gap_y = 66, 12
-    top = 648
-    name_f, desc_f = font(FONT_MONO, 21), font(FONT_CN, 17)
-    for index, (name, desc) in enumerate(TOOLS):
+    card_w, card_h = 426, 72
+    gap_y = 10
+    top = 632
+    for index, (name, desc, icon) in enumerate(TOOLS):
         col = index % 2
         row = index // 2
         x = col_x[col]
-        cy = top + row * (row_h + gap_y)
-        card = glass_card(c, (x, cy), (426, row_h), radius=18, dark=True, alpha=225)
+        cy = top + row * (card_h + gap_y)
+        card = glass_card(c, (x, cy), (card_w, card_h), radius=20, dark=True, alpha=232)
         c.alpha_composite(card, (x, cy))
         d = ImageDraw.Draw(c)
-        d.text((x + 18, cy + 9), name, font=name_f, fill=(226, 232, 240))
-        d.text((x + 18, cy + 36), desc, font=desc_f, fill=SLATE)
-    # footer line
-    d = ImageDraw.Draw(c)
-    d.line([(96, 1310), (W - 96, 1310)], fill=(255, 255, 255, 26), width=1)
-    d.text((96, 1326), "同一进程内复用连接：1 次握手，之后每次调用都是往返毫秒级",
-           font=font(FONT_CN, 20), fill=SLATE)
+        # icon tile
+        d.rounded_rectangle([x + 12, cy + 12, x + 60, cy + 60], radius=14,
+                            fill=(30, 41, 74, 255), outline=(255, 255, 255, 22), width=1)
+        tool_icon(d, x + 22, cy + 22, 28, name, color=(147, 197, 253))
+        d.text((x + 74, cy + 13), name, font=font(FONT_MONO, 20), fill=(226, 232, 240))
+        d.text((x + 74, cy + 40), desc, font=font(FONT_CN, 17), fill=SLATE)
+
+    d.line([(96, 1316), (W - 96, 1316)], fill=(255, 255, 255, 24), width=1)
+    d.text((96, 1330), "14 个工具 = 读 / 写 / 编辑 / 搜索 / 执行 / 传输 / 任务 / 转发 / 终端 / 回收站",
+           font=font(FONT_CN, 19), fill=SLATE)
     c.alpha_composite(grain(6))
     return c.convert("RGB")
 
+
+TOOLS = [
+    ("presence_hosts", "列出远程机器", "hosts"), ("presence_connect", "建立 / 复用连接", "connect"),
+    ("presence_exec", "执行命令", "exec"), ("presence_read", "读取文件", "read"),
+    ("presence_write", "写入文件", "write"), ("presence_edit", "精确编辑", "edit"),
+    ("presence_search", "内容搜索", "search"), ("presence_glob", "文件查找", "glob"),
+    ("presence_import", "上传文件", "import"), ("presence_export", "下载文件", "export"),
+    ("presence_jobs", "后台任务", "jobs"), ("presence_forward", "端口转发", "forward"),
+    ("presence_terminal", "持久终端", "terminal"), ("presence_trash", "回收站", "trash"),
+]
 
 NODES = [
     ("01", "你说", "把训练跑起来，失败就修", "chat"),
@@ -291,18 +378,17 @@ def build_workflow() -> Image.Image:
     c = dark_canvas()
     d = ImageDraw.Draw(c)
     brand(c, True)
-    y = headline(d, [("它真的", False), ("在那台机器上干活", True)], True, 210)
+    y = headline(d, [("它真的", False), ("在那台机器上干活", True)], True, 205)
     sub_line(d, y + 2, "从一句话到远端结果，中间只有一条常驻连接", True)
 
     x_card, w_card = 214, 770
-    top, h_card, gap = 548, 138, 44
-    # connecting glow line
+    top, h_card, gap = 540, 148, 40
     line = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     ld = ImageDraw.Draw(line)
-    x_line = x_card - 44
-    ld.line([(x_line, top + 40), (x_line, top + 3 * (h_card + gap) + h_card - 40)],
-            fill=(47, 107, 255, 190), width=3)
-    c.alpha_composite(line.filter(ImageFilter.GaussianBlur(6)))
+    x_line = x_card - 46
+    ld.line([(x_line, top + 50), (x_line, top + 3 * (h_card + gap) + h_card - 50)],
+            fill=(47, 107, 255, 200), width=3)
+    c.alpha_composite(line.filter(ImageFilter.GaussianBlur(7)))
     c.alpha_composite(line.filter(ImageFilter.GaussianBlur(1.2)))
 
     for index, (num, title, desc, kind) in enumerate(NODES):
@@ -310,19 +396,19 @@ def build_workflow() -> Image.Image:
         card = glass_card(c, (x_card, cy), (w_card, h_card), radius=26, dark=True)
         c.alpha_composite(card, (x_card, cy))
         d = ImageDraw.Draw(c)
-        # node dot on the rail
-        d.ellipse([x_line - 11, cy + 56, x_line + 11, cy + 78], fill=BLUE_LIGHT,
+        d.ellipse([x_line - 11, cy + 61, x_line + 11, cy + 83], fill=BLUE_LIGHT,
                   outline=(255, 255, 255, 120), width=2)
-        d.text((x_card + 28, cy + 26), num, font=font(FONT_MONO, 18), fill=BLUE_LIGHT)
-        d.text((x_card + 78, cy + 20), title, font=font(FONT_CN_BOLD, 34), fill=WHITE)
-        d.text((x_card + 78, cy + 76), desc, font=font(FONT_CN, 22), fill=SLATE)
+        # icon disc
+        d.ellipse([x_card + 26, cy + 40, x_card + 94, cy + 108], fill=(30, 41, 74, 255),
+                  outline=(255, 255, 255, 22), width=1)
+        node_icon(d, x_card + 60, cy + 74, kind, color=(191, 219, 254))
+        d.text((x_card + 116, cy + 26), num, font=font(FONT_MONO, 18), fill=BLUE_LIGHT)
+        d.text((x_card + 160, cy + 20), title, font=font(FONT_CN_BOLD, 34), fill=WHITE)
+        d.text((x_card + 116, cy + 84), desc, font=font(FONT_CN, 21), fill=SLATE)
         if kind == "remote":
-            # little green live dot
-            d.ellipse([x_card + w_card - 46, cy + 30, x_card + w_card - 32, cy + 44], fill=GREEN)
+            d.ellipse([x_card + w_card - 44, cy + 28, x_card + w_card - 30, cy + 42], fill=GREEN)
 
-    # result arrow back
     d = ImageDraw.Draw(c)
-    d.text((96, 1268), "结果直接回到对话，不需要你再手动 ssh", font=font(FONT_CN, 21), fill=SLATE)
     cx = 96
     for label in ["零安装", "断线重连", "端口转发"]:
         cx += chip(d, cx, 1300, label, dark=True) + 12
@@ -330,45 +416,74 @@ def build_workflow() -> Image.Image:
     return c.convert("RGB")
 
 
+def wallpaper() -> Image.Image:
+    c = vgradient((16, 32, 64), (44, 20, 52)).convert("RGBA")
+    c.alpha_composite(glow(280, 420, 620, (34, 211, 238), 0.55))
+    c.alpha_composite(glow(860, 760, 700, (47, 107, 255), 0.50))
+    c.alpha_composite(glow(420, 1230, 560, (251, 146, 60), 0.34))
+    c.alpha_composite(glow(950, 180, 420, (124, 58, 237), 0.30))
+    # vignette
+    y, x = np.ogrid[:H, :W]
+    vig = np.clip(np.sqrt(((x - W / 2) / (W * 0.72)) ** 2 + ((y - H / 2) / (H * 0.72)) ** 2) - 0.35, 0, 1)
+    dark = np.zeros((H, W, 4), dtype=np.uint8)
+    dark[..., 3] = (vig * 150).astype(np.uint8)
+    c.alpha_composite(Image.fromarray(dark, "RGBA"))
+    return c
+
+
+def ring(d: ImageDraw.ImageDraw, cx: int, cy: int, radius: int, pct: float, color, width=7) -> None:
+    d.arc([cx - radius, cy - radius, cx + radius, cy + radius], start=-90, end=270,
+          fill=(255, 255, 255, 40), width=width)
+    d.arc([cx - radius, cy - radius, cx + radius, cy + radius], start=-90,
+          end=-90 + int(360 * pct), fill=color, width=width)
+
+
 def build_shot_frame() -> Image.Image:
-    c = dark_canvas()
-    d = ImageDraw.Draw(c)
-    brand(c, True)
-    y = headline(d, [("真实界面", False), ("截图放这里", True)], True, 220)
-    sub_line(d, y + 2, "把你的 DSH 截图贴进发光框，再加 2–3 个标注", True)
+    c = wallpaper()
+    # big soft panel shadow
+    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle([96, 620, 984, 1200], radius=44, fill=(0, 0, 0, 150))
+    c.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(52)))
 
-    # ambient rings behind the frame (Figma "layer blur" look)
-    rings = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    rd = ImageDraw.Draw(rings)
-    cx, cy = W // 2, 940
-    for radius, alpha in [(360, 60), (270, 70), (190, 80)]:
-        rd.ellipse([cx - radius, cy - radius * 0.62, cx + radius, cy + radius * 0.62],
-                   outline=(47, 107, 255, alpha), width=26)
-    c.alpha_composite(rings.filter(ImageFilter.GaussianBlur(34)))
-
-    frame = Image.new("RGBA", (880, 520), (0, 0, 0, 0))
-    fd = ImageDraw.Draw(frame)
-    fd.rounded_rectangle([0, 0, 879, 519], radius=26, fill=(13, 20, 39, 200),
+    panel = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    pd = ImageDraw.Draw(panel)
+    pd.rounded_rectangle([96, 600, 984, 1180], radius=44, fill=(10, 15, 30, 205),
                          outline=(255, 255, 255, 34), width=2)
-    # dashed placeholder
-    for x in range(40, 840, 26):
-        fd.line([(x, 200), (min(x + 13, 840), 200)], fill=(91, 155, 255, 200), width=2)
-    for x in range(40, 840, 26):
-        fd.line([(x, 330), (min(x + 13, 840), 330)], fill=(91, 155, 255, 200), width=2)
-    fd.text((250, 232), "替换成你的 DSH 截图", font=font(FONT_CN, 40), fill=WHITE)
-    fd.text((214, 292), "建议 1600×1000 以上，圆角 24，深色主题", font=font(FONT_CN, 21), fill=SLATE)
-    fd.text((60, 40), "presence", font=font(FONT_MONO, 22), fill=(148, 163, 184))
-    c.alpha_composite(frame, (100, 690))
-
-    # callout dots suggestion
+    # inner top highlight
+    pd.rounded_rectangle([100, 604, 980, 1176], radius=42, outline=(255, 255, 255, 18), width=1)
+    c.alpha_composite(panel)
     d = ImageDraw.Draw(c)
-    for label, xy in [("①", (150, 720)), ("②", (874, 820)), ("③", (150, 1120))]:
-        d.ellipse([xy[0] - 20, xy[1] - 20, xy[0] + 20, xy[1] + 20], fill=(47, 107, 255, 235))
-        d.text((xy[0] - 10, xy[1] - 17), label, font=font(FONT_CN, 24), fill=WHITE)
 
-    d.text((96, 1256), "光晕配方（Figma）：发光圆环 → Layer blur 60；", font=font(FONT_CN, 20), fill=SLATE)
-    d.text((96, 1290), "底盘径向渐变 → 混合模式 Screen；再叠 3% 噪点纹理。", font=font(FONT_CN, 20), fill=SLATE)
-    c.alpha_composite(grain(6))
+    # headline above panel
+    brand(c, True)
+    y = headline(d, [("真实截图", False), ("放进玻璃卡片", True)], True, 176)
+    sub_line(d, y + 2, "壁纸底 + 毛玻璃 + 柔投影 + 内高光", True)
+
+    d.text((140, 646), "把 DSH 截图贴在虚框里", font=font(FONT_CN, 26), fill=(226, 232, 240))
+    d.text((140, 688), "1600×1000 以上 · 深色主题 · 圆角 32", font=font(FONT_CN, 19), fill=SLATE)
+    for y0 in (770, 1040):
+        for x0 in range(140, 940, 26):
+            d.line([(x0, y0), (min(x0 + 13, 940), y0)], fill=(91, 155, 255, 170), width=2)
+
+    # floating glass widget (like a system widget)
+    widget = Image.new("RGBA", (330, 176), (0, 0, 0, 0))
+    wd = ImageDraw.Draw(widget)
+    wd.rounded_rectangle([0, 0, 329, 175], radius=26, fill=(12, 18, 34, 220),
+                         outline=(255, 255, 255, 40), width=2)
+    wd.text((24, 20), "Presence · 会话", font=font(FONT_CN, 19), fill=(226, 232, 240))
+    wd.text((24, 52), "连接复用", font=font(FONT_CN, 17), fill=SLATE)
+    ring(wd, 92, 128, 34, 0.86, BLUE_LIGHT)
+    wd.text((72, 118), "13", font=font(FONT_MONO, 20), fill=WHITE)
+    wd.text((62, 142), "ms", font=font(FONT_MONO, 13), fill=SLATE)
+    wd.text((168, 60), "工具调用", font=font(FONT_CN, 17), fill=SLATE)
+    ring(wd, 204, 128, 34, 0.72, GREEN)
+    wd.text((190, 118), "14", font=font(FONT_MONO, 20), fill=WHITE)
+    wd.text((182, 142), "个", font=font(FONT_CN, 13), fill=SLATE)
+    c.alpha_composite(widget, (690, 640))
+
+    d.text((96, 1246), "叠层顺序：壁纸 → 柔投影 → 毛玻璃面板 → 截图 → 内高光 → 全局 3% 噪点",
+           font=font(FONT_CN, 19), fill=(203, 213, 225))
+    c.alpha_composite(grain(7))
     return c.convert("RGB")
 
 
