@@ -19,6 +19,15 @@ $dist = Join-Path $root 'dist'
 
 Write-Host "packaging Presence $Version from $root"
 
+# client.js is generated from client-src/ (see scripts/build-client.mjs). Rebuild
+# it first so the zip can never contain source that disagrees with the bundle.
+$devModules = Join-Path $root '.dev\node_modules'
+if (-not (Test-Path $devModules)) {
+  throw 'build dependencies missing: run `npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data @codemirror/theme-one-dark`'
+}
+node (Join-Path $root 'scripts\build-client.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'client build failed' }
+
 # Fail fast on a syntax error rather than shipping a broken bundle.
 $sources = @('index.js', 'client.js') + (Get-ChildItem (Join-Path $root 'src') -Recurse -File -Include *.js, *.mjs | ForEach-Object { $_.FullName.Substring($root.Length + 1) })
 foreach ($source in $sources) {

@@ -225,7 +225,8 @@ DSH 右侧的终端面板原本只会起**本机** shell，cwd 被设成挂载�
 | 拖本地**文件**到列表 / `＋ 文件` | 上传到当前远端目录，底部显示百分比进度 |
 | 拖本地**文件夹**到列表 / `＋ 文件夹` | 按原目录结构递归 `mkdir` + 逐文件上传（有进度） |
 | 双击图片 | 弹窗预览（走 `/raw` 直出字节） |
-| 双击文本 / 代码 | 弹窗预览前 256 KiB：**行号 + 语法高亮**（注释/字符串/数字/关键字/函数调用着色），等宽字体 |
+| 双击视频 / 音频 / PDF | 弹窗内原生播放器（`<video controls>` / `<audio controls>`）或 PDF 阅读器（`<iframe>`，`/raw` 支持 Range，可拖动进度） |
+| 双击文本 / 代码 | 弹窗内 **CodeMirror 6** 只读预览：行号、代码折叠、语法高亮（按扩展名自动识别语言）、等宽字体（Cascadia Code / Consolas 兜底）、跟随主题明暗配色；文本上限 256 KiB |
 | 双击其它类型（或预览失败） | 调起系统「另存为」对话框（File System Access API；不可用时回退浏览器下载） |
 | 行尾 `↓` 文件 | 保存单个文件到本地 |
 | 行尾 `↓` 文件夹 | 选一个本地目标文件夹 → **递归下载成真实目录树**（Xftp 的"下载文件夹"），底部有进度 |
@@ -275,13 +276,18 @@ DSH 右侧的终端面板原本只会起**本机** shell，cwd 被设成挂载�
 
 ## 开发与版本管理
 
-源码在 git 里（`main` 分支，版本用 tag 标记，例如 `v0.7.1`）。仓库只跟踪源码：
+源码在 git 里（`main` 分支，版本用 tag 标记，例如 `v0.14.0`）。仓库只跟踪源码；**`client.js` 是构建产物**，源码在 `client-src/`：
 
 ```bash
-npm install                       # 依赖只有 ssh2；node_modules 不进 git
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.7.1
-# → dist/presence-plugin-0.7.1.zip（内含 node_modules，可直接被 DSH 安装）
+npm install                       # 运行时依赖只有 ssh2；node_modules 不进 git
+npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
+  @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data @codemirror/theme-one-dark
+node scripts/build-client.mjs     # client-src/{entry,app,editor}.js → client.js（IIFE，含 CodeMirror）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.14.0
+# → dist/presence-plugin-0.14.0.zip（内含 node_modules 与已构建的 client.js，可直接被 DSH 安装）
 ```
+
+`package.ps1` 会先跑 `build-client.mjs`，保证 zip 里的 `client.js` 与源码一致；`client-src/node_modules`、`.dev/`、`.npm-cache/` 都在 gitignore 里。
 
 改动后至少跑这些验证（都需要一台可 ssh 的主机）：
 

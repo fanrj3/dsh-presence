@@ -1,6 +1,11 @@
 # Runtime dependencies (reinstall with `npm install`; the shipped zip bundles them)
 node_modules/
 
+# Build-only toolchain and caches (see scripts/build-client.mjs)
+.dev/
+.npm-cache/
+client-src/node_modules/
+
 # Package-manager caches
 .pnpm-store/
 

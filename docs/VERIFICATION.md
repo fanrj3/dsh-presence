@@ -299,6 +299,26 @@ host 端新增 6 个 API（`src/api.js`，双前缀注册）：
 
 **验证**：`client.js` 语法检查通过；CSS 括号平衡检查通过；服务端未改动（沿用 API 7/7、regression 7/7、safety 24/24）；打包 `--check` 通过。
 
+## 〇之十三、第十四轮：预览改用 CodeMirror 6 + 媒体预览 + 客户端构建管线（0.14.0）
+
+问题：代码预览是手写的正则高亮 + 手写行号；字体没保证（这个环境里 fallback 到了比例字体），也没有编辑器的观感（无折叠、无选区、无滚动边栏）。媒体只能预览图片。
+
+做法：**复用成熟组件，不再手搓**。
+
+- **CodeMirror 6**（`codemirror` + `@codemirror/language-data`）：只读 `EditorView`，行号、代码折叠、按文件扩展名自动识别语言（`LanguageDescription.matchFilename`，覆盖 40+ 语言）、`HighlightStyle` 自定义配色、跟随主题明暗（读取 `--dsw-alias-bg-layer-1` 亮度判断）、`EditorState.readOnly` + `EditorView.editable.of(false)`
+- **字体**：显式 `"Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, "Courier New", "Microsoft YaHei", ui-monospace, monospace` —— Windows 一定有 Consolas，不再依赖 `--ds-font-family-code` 的解析结果
+- **媒体**：图片（`<img>`）、视频（`<video controls>`）、音频（`<audio controls>`）、PDF（`<iframe>`，`/raw` 已支持 Range 所以能拖动进度）；都不支持的才走另存为
+- **构建管线**：`client.js` 由 `client-src/{entry,app,editor}.js` 经 Rollup 打包（IIFE、terser 压缩、CodeMirror 内联 `inlineDynamicImports`）。构建依赖装在 `.dev/`（gitignored），运行时 zip 仍只依赖 `ssh2`
+- `package.ps1` 现在**先构建再检查**：`.dev` 缺失直接报错并给出安装命令；构建产物 `client.js` 1.58 MB（压缩前 2.9 MB）
+
+验证：
+- `node scripts/build-client.mjs` → `client.js 1614 KiB (minified: true)`
+- `node --check client.js` 通过
+- 无浏览器冒烟测试（vm + 假 `window.__ModuleLoader__` / React stub）：bundle 注册 `id=dsh-presence`，factory 返回 `{ inject, apply }` —— **PASS**
+- 服务端未改动：API 7/7、regression 7/7
+
+**仍未做**：真正的编辑（现在是只读预览）、语法高亮主题与宿主主题的 token 级联动（当前按亮度二选一调色板）。
+
 
 
 **验证**（全部在真实主机 server 上）：
