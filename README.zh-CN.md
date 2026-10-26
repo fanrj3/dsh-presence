@@ -9,7 +9,7 @@
 给 coding agent 用的持久远程工作区、原生文件编辑、搜索、命令执行、终端和端口转发
 —— **远端不需要安装任何东西**。
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [版本记录](docs/RELEASE.md) · [MCP server](https://github.com/fanrj3/dsh-presence/blob/feat/mcp/mcp/README.md)
+[English](README.md) · [简体中文](README.zh-CN.md) · [版本记录](docs/RELEASE.md) · [MCP server](mcp/README.md)
 
 [![npm plugin](https://img.shields.io/npm/v/@rjfan/dsh-presence?label=dsh%20plugin&color=2f6bff)](https://www.npmjs.com/package/@rjfan/dsh-presence)
 [![npm mcp](https://img.shields.io/npm/v/presence-mcp?label=presence-mcp&color=2f6bff)](https://www.npmjs.com/package/presence-mcp)
@@ -99,7 +99,7 @@ npx -y presence-mcp            # 20 个工具，走 stdio
 ```
 
 Codex TOML、Claude Code、OpenCode、Cursor/Windsurf 的完整配置见
-[mcp/README.md](https://github.com/fanrj3/dsh-presence/blob/feat/mcp/mcp/README.md)。
+[mcp/README.md](mcp/README.md)。
 
 ## 工作原理
 

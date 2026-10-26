@@ -1,0 +1,60 @@
+{
+  "name": "presence-mcp",
+  "version": "0.2.1",
+  "description": "MCP server for Presence: use any SSH machine from Codex CLI, Claude Code, OpenCode and other MCP clients. One persistent connection per host, nothing installed on the remote side.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "presence-mcp": "server.mjs"
+  },
+  "files": [
+    "server.mjs",
+    "app.mjs",
+    "tools.mjs",
+    "lib/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "smoke": "node test/smoke.mjs",
+    "integration": "node test/integration.mjs",
+    "stdio": "node test/stdio-client.mjs",
+    "check": "node server.mjs --check",
+    "test": "node test/smoke.mjs",
+    "packaged": "node test/packaged.mjs",
+    "sync-kernel": "node scripts/sync-kernel.mjs",
+    "sync-kernel:check": "node scripts/sync-kernel.mjs --check",
+    "prepack": "node scripts/sync-kernel.mjs --check"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fanrj3/dsh-presence.git",
+    "directory": "mcp"
+  },
+  "homepage": "https://github.com/fanrj3/dsh-presence/tree/main/mcp#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "presence",
+    "ssh",
+    "remote",
+    "codex",
+    "claude-code",
+    "opencode",
+    "cursor",
+    "devtools"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ssh2": "^1.17.0",
+    "zod": "^3.25.0"
+  }
+}

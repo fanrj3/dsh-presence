@@ -9,7 +9,7 @@
 Persistent remote workspaces, native file editing, search, exec, terminals and port
 forwards for coding agents — with **nothing installed on the remote host**.
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [Releases](docs/RELEASE.md) · [MCP server](https://github.com/fanrj3/dsh-presence/blob/feat/mcp/mcp/README.md)
+[English](README.md) · [简体中文](README.zh-CN.md) · [Releases](docs/RELEASE.md) · [MCP server](mcp/README.md)
 
 [![npm plugin](https://img.shields.io/npm/v/@rjfan/dsh-presence?label=dsh%20plugin&color=2f6bff)](https://www.npmjs.com/package/@rjfan/dsh-presence)
 [![npm mcp](https://img.shields.io/npm/v/presence-mcp?label=presence-mcp&color=2f6bff)](https://www.npmjs.com/package/presence-mcp)
@@ -100,7 +100,7 @@ npx -y presence-mcp            # 20 tools over stdio
 }
 ```
 
-See [mcp/README.md](https://github.com/fanrj3/dsh-presence/blob/feat/mcp/mcp/README.md) for Codex TOML, Claude Code, OpenCode and
+See [mcp/README.md](mcp/README.md) for Codex TOML, Claude Code, OpenCode and
 Cursor/Windsurf examples.
 
 ## How it works
