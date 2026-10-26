@@ -52,7 +52,7 @@ connection per host**. The remote side is still plain `sshd`: SFTP, exec and a P
 ### 1. Install the DSH plugin
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.17.6
+dsh plugin add @rjfan/dsh-presence@0.17.7
 ```
 
 From a source checkout:
@@ -210,7 +210,7 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.17.6
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.17.7
 # → dist/presence-plugin-0.17.6.zip
 ```
 

@@ -4,7 +4,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerTools } from './tools.mjs';
 
-export const VERSION = '0.2.1';
+export const VERSION = '0.2.2';
 
 const INSTRUCTIONS = `Presence exposes remote machines from ~/.ssh/config as if they were local.
 

@@ -179,12 +179,15 @@ export async function guardDestructive({ connection, command, cwd = null, worksp
     `host: ${host}`,
     `command: ${String(command).replace(/\s+/g, ' ').slice(0, 400)}`,
     cwd ? `cwd: ${cwd}` : null,
-    resolved.length > 0 ? 'resolved targets:' : 'resolved targets: (none: the command would touch nothing)',
+    resolved.length > 0 ? 'resolved targets:' : 'resolved targets: (none - the command would touch nothing)',
     ...resolved.map((entry) => `  ${entry.type}  ${entry.path}  ${entry.entries}  ${entry.size}`),
     confirm
       ? null
       : 'Pass confirm:true to execute it. Prefer presence_trash when the files are in a workspace (recoverable).',
   ].filter(Boolean);
 
-  return { kind, report: report.join('\n'), resolved, targets: resolved.map((entry) => entry.path) };
+  // `targets` is the machine-readable twin of the report's target block:
+  // callers that answer in JSON (presence_exec format:'json') do not need to
+  // parse the text, and existing callers keep reading `report`/`resolved`.
+  return { kind, report: report.join('\n'), resolved, targets: resolved };
 }
