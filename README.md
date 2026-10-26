@@ -372,3 +372,7 @@ node scripts/probe.mjs server
 ```
 
 需要本机有 Node ≥ 22.19。`ssh2` 是唯一的运行时依赖。
+
+## Star History
+
+[![Star History Chart](assets/star-history.png)](https://star-history.com/#fanrj3/dsh-presence&Date)
