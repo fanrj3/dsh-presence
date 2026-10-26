@@ -1,377 +1,248 @@
+<div align="center">
+
+<img src="assets/icon-180.png" width="88" alt="Presence icon" />
+
 # Presence
 
-让 coding agent 在多台服务器上「像在当地一样工作」。
+**Your SSH hosts, as local tabs.**
 
-不改远端、不装东西、不配环境：从你已有的 `~/.ssh/config` 里挑一台机器，连上之后，
-读写、搜索、执行、开终端都走同一条常驻连接，操作感受和本地文件系统一致。
+Persistent remote workspaces, native file editing, search, exec, terminals and port
+forwards for coding agents — with **nothing installed on the remote host**.
 
-[![dsh-plugin](https://img.shields.io/badge/dsh--plugin-listing-2f6bff)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
-[![License: MIT](https://img.shields.io/badge/license-MIT-2f6bff)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.17.6-2f6bff)](docs/RELEASE.md)
+[English](README.md) · [简体中文](README.zh-CN.md) · [Releases](docs/RELEASE.md) · [MCP server](https://github.com/fanrj3/dsh-presence/blob/feat/mcp/mcp/README.md)
 
-> 也提供独立 **MCP server**（`mcp/`），让 Codex CLI / Claude Code / OpenCode 等不支持 DSH 插件的 agent
-> 用上同一套远程能力：[`mcp/README.md`](mcp/README.md)。
+[![npm plugin](https://img.shields.io/npm/v/@rjfan/dsh-presence?label=dsh%20plugin&color=2f6bff)](https://www.npmjs.com/package/@rjfan/dsh-presence)
+[![npm mcp](https://img.shields.io/npm/v/presence-mcp?label=presence-mcp&color=2f6bff)](https://www.npmjs.com/package/presence-mcp)
+[![license](https://img.shields.io/badge/license-MIT-2f6bff)](LICENSE)
+[![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-listing-2f6bff)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
 
-![Presence 封面（浅色）](docs/social/cover-light.png)
+</div>
+
+![Presence — remote machines as local tabs](docs/social/cover-light.png)
 
 ---
 
-## 为什么不是「agent 跑在远端」
+## Why
 
-| 方案 | 问题 |
+Running an agent on every remote machine means installing it N times, upgrading it N
+times and configuring proxies per host. Running `ssh host '<command>'` from the local
+agent means a new handshake per command, no native file tools and no continuity.
+
+Presence keeps the agent local and **extends its reach through one persistent SSH
+connection per host**. The remote side is still plain `sshd`: SFTP, exec and a PTY.
+
+| Approach | Cost |
 | --- | --- |
-| 每台服务器装 agent | 装 N 次、升级 N 次；要代理的机器还要逐台配代理 |
-| agent 本机执行 `ssh host ...` | 每条命令一次握手；远端原生工具用不上；上下文不连续 |
-| **Presence** | agent 留在本机（一套模型/代理/配置），能力通过一条常驻连接伸到远端 |
+| Install the agent on every host | N installs, N upgrades, per-host proxying |
+| `ssh host '<command>'` per call | Handshake per command, no file tools, no sessions |
+| **Presence** | One connection per host, native tools, nothing installed remotely |
 
-## 设计原则
+## Features
 
-1. **远端零安装**：只用 sshd 自带能力（SFTP 子系统、exec、shell/PTY），远端不落任何文件、不改任何配置。
-2. **一次握手**：每台机器一条常驻 SSH 连接，之后所有操作都是这条连接上的请求，不再重连。
-3. **用目标机的原生工具**：搜索交给目标机的 `rg`/`grep`，命令在目标机的 shell 里跑，路径语义、权限、编码都是本地的。
-4. **像本地一样**：结构化返回（退出码、stdout/stderr 分开、超时、取消），文件写入是原子替换，编辑冲突会明确报错而不是猜。
+- **Remote zero-install** — uses only `sshd` built-ins: the SFTP subsystem, exec channels and a PTY.
+- **One handshake** — a pool keeps one connection per host; every later call is a request on it.
+- **Native remote tools** — `rg`/`grep` runs on the target, commands run in the target shell; path, permission and encoding semantics are the remote ones.
+- **Local-like edits** — atomic writes, mode preservation, ambiguity refusal, read-before-write guard, `presence_edit` with dry-run diffs.
+- **Real workspaces** — a remote directory becomes a normal DSH workspace with a file tree and terminals that open **on the remote machine**.
+- **Recoverable deletes** — destructive shell commands dry-run first; `presence_trash` moves paths to a remote trash with restore.
+- **Two shells, one kernel** — the DSH plugin and a standalone MCP server (`presence-mcp`, 20 tools) share the same kernel.
 
-## 架构
+## Quick start
 
-```
-┌──────────────────────────────┐
-│ DSH 插件（现在） / MCP（以后）│  同一内核，两种外壳
-└──────────────┬───────────────┘
-               │
-        Presence 内核
-        ├── ssh-config  从 ~/.ssh/config 读出主机、端口、用户、密钥、跳板
-        ├── connection  一条常驻连接：SFTP / exec / PTY，通道池 + 取消 + 超时
-        └── host pool   每台机器一条连接，按需建立、闲置回收
-               │
-        SSH（沿用你已有的密钥、known_hosts、跳板、代理）
-               │
-        目标机：Linux / macOS，sshd 自带能力即可
+### 1. Install the DSH plugin
+
+```sh
+dsh plugin add @rjfan/dsh-presence@0.17.6
 ```
 
-映射关系：
+From a source checkout:
 
-| Agent 的操作 | 走的通道 | 远端依赖 |
+```sh
+dsh plugin add /path/to/dsh-presence
+```
+
+### 2. Pick a host and open a workspace
+
+Open **Settings → Presence → New**, choose a host from `~/.ssh/config` (or paste a
+manual `ssh` command), then pick a remote folder. It appears as a workspace; the
+left sidebar, file tree, terminal and agent tools all use that remote directory.
+
+### 3. Work
+
+```text
+You: 把远程 8000 端口转发到本地，然后打开看看
+Agent: presence_forward { remotePort: 8000 }
+       → http://127.0.0.1:8000
+```
+
+## MCP server
+
+The same kernel is available to agents that cannot install DSH plugins (Codex CLI,
+Claude Code, OpenCode, Cursor, …).
+
+```sh
+npx -y presence-mcp            # 20 tools over stdio
+```
+
+```jsonc
+// Claude Desktop / OpenCode style
+{
+  "mcpServers": {
+    "presence": {
+      "command": "npx",
+      "args": ["-y", "presence-mcp"],
+      "env": {
+        "PRESENCE_HOST": "server",
+        "PRESENCE_WORKSPACE": "server:/srv/app"
+      }
+    }
+  }
+}
+```
+
+See [mcp/README.md](https://github.com/fanrj3/dsh-presence/blob/feat/mcp/mcp/README.md) for Codex TOML, Claude Code, OpenCode and
+Cursor/Windsurf examples.
+
+## How it works
+
+```text
+┌───────────────────────────────┐
+│  DSH plugin  /  MCP server    │  two shells, one kernel
+└──────────────┬────────────────┘
+               │
+        Presence kernel
+        ├── ssh-config   hosts, ports, users, keys, jumps from ~/.ssh/config
+        ├── connection   one persistent connection: SFTP / exec / PTY + pool + cancel
+        └── host pool    one connection per host, created on demand, idle-collected
+               │
+        SSH (your existing keys, known_hosts, jumps, proxies)
+               │
+        target: Linux / macOS, stock sshd
+```
+
+| Agent operation | Channel | Remote dependency |
 | --- | --- | --- |
-| 读 / 写 / 编辑 / 列目录 / stat | SFTP 子系统 | sshd 内置 `sftp-server` |
-| 执行命令、搜索（rg/grep）、git | exec channel | 目标机已有的命令 |
-| 交互式终端 | shell channel + PTY | 目标机的登录 shell |
+| read / write / edit / list / stat | SFTP subsystem | `sftp-server` (stock sshd) |
+| exec, search (`rg`/`grep`), git | exec channel | commands already on the host |
+| interactive terminal | shell channel + PTY | the host's login shell |
 
-## 实测（server，Ubuntu 20.04，IPv6）
+Measured on a Linux host:
 
-| 操作 | 耗时 |
+| Operation | Latency |
 | --- | --- |
-| 传统 `ssh host <cmd>`，每次新连接 | 520 – 540 ms |
-| Presence 建连（一次握手，含密钥认证） | 145 ms |
+| `ssh host '<cmd>'` (new connection every time) | 520–540 ms |
+| Presence connect (one handshake, key auth) | 145 ms |
 | Presence `sftp stat` | p50 0.6 ms / p95 0.9 ms |
-| Presence `exec true`（新通道 + 起 shell） | p50 7.6 ms |
-| 8 个 exec 通道并发 | 合计 15 ms |
-| 50 个 sftp 请求流水线并发 | 合计 3 – 13 ms |
+| Presence `exec true` (new channel + shell) | p50 7.6 ms |
+| 8 concurrent exec channels | 15 ms total |
 
-即：把「每条命令一次握手」换成「一次握手 + 每次 0.6 ms」。
+> Keep TCP_NODELAY on: without it, request/response hits delayed ACK and p95 goes
+> from 0.9 ms to 48 ms.
 
-> 关键细节：必须开 TCP_NODELAY。不关 Nagle，请求/响应会撞上 delayed ACK，p95 从 0.9 ms 劣化到 48 ms。
+## Tools
 
-## 在 DSH 里使用
+The DSH plugin exposes 18 tools. Relative paths resolve against the active remote
+workspace; `host` is optional inside a workspace.
 
-仓库根目录本身就是一个 Bundle（`dsh.bundle.patch` 指向 `cordis.patch.yml`），安装：
+<details>
+<summary><b>Show all tools</b></summary>
 
-```
-plugin_manager { action: "install_bundle", target: "D:\\04_Dev\\Presence" }
-```
-
-装好后模型可见这些工具：
-
-| 工具 | 作用 |
+| Tool | What it does |
 | --- | --- |
-| `presence_hosts` | 列出 ssh config 里的机器与当前连接状态；默认主机（当前工作区所在机器）标 `*`；`format:"json"` => `[{alias,address,user,hostname,port,source,state,connected,default}]` |
-| `presence_connect` | 建立常驻连接并报告远端身份；`format:"json"` => `{host,user,hostname,kernel,arch,platform,connectedAtMs}` |
-| `presence_exec` | 在远端执行命令；默认 `pipefail`，支持 `background:true`、`waitForPort`、`timeoutMs`（超时会真杀进程树）；输出默认去 ANSI、首尾截断 16KiB（`maxOutput`/`raw` 可调），全量落盘并给路径；`format:"json"` 返回结构化 `{cwd, command, exitCode, signal, durationMs, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated}`（stdout/stderr 各截 16KiB，仍是合法 JSON）；`saveStdout` 在 exit 0 后把 stdout 原子写到远端文件并报告字节数；**危险命令先 dry-run，需 `confirm:true`**；dry-run 在 `format:"json"` 下返回 `{dryRun,requiresConfirm,targets,command,report}` |
-| `presence_trash` | **可恢复删除**：把路径移入远端 `~/.dsh/presence-trash/<时间戳>/`，返回恢复路径；`action:'trash'` 会回查源是否已消失（`sourceRemoved`）并给 `restoreHint`/`sizeBytes`，可用 `paths[]` 一次移 1–50 个（单项失败不拖累其余，单个 `path` 的返回形状不变）；`list` 时间正确格式化、最新在前、可用 `path` 过滤，JSON 每条只给一个 `movedAtISO`；`restore` 支持 `format:"json"` |
-| `presence_jobs` | `list`（默认只看本会话）/ `status`（单任务：state/exit/pid/startedAt/logPath/logSize/command/cwd；运行中 `exitSummary` 为 `null`）/ `wait`（返回退出码 + 末尾日志，替代 sleep+tail；新增 `timedOut`）/ `stop`（按 jobId 或 pgid；停止后用远端 `ps -p` 验证 `alive`/`verified` 并给 exitCode/exitSignal，可再带 `port` 探测端口是否真的释放为 `portReleased`）；`list`/`status`/`wait`/`stop` 支持 `format:"json"` |
-| `presence_read` | 读远端文件，带行号与 offset/limit；大文件走远端窗口读取（行数真实）；二进制明确拒绝；`raw:true` 返回逐字节原样内容（无路径头/行号/footer），`numbered:false` 去行号与 footer 但保留路径头；读完会给 harness 记账，内置 `edit` 可直接用 |
-| `presence_read_many` | 一次读 1-50 个远端文件，按 `=== <path> ===` 分段；默认带行号、`raw:true` 原样，每文件最多 `limit` 行（默认 2000）；某个文件读不了只在该段报 `error: ...`，不会拖垮整次调用；总输出按 32KiB 截断 |
-| `presence_write` | 原子整体写入，自动创建父目录；**保留原文件 mode**，可用 `mode:"755"` 显式指定；写后 `stat` 回读，报告真实字节数、八进制 mode（如 `0644`，未显式设置也绝不会显示 `0`）和**完整** sha256；`ifMatchSha256` 是乐观锁：文件当前哈希不匹配（或读不到）就报错并同时给出期望值/当前值，一个字节都不写；`format:"json"` => `{path, sizeBytes, mode, sha256}` |
-| `presence_edit` | 精确文本替换（`old`/`new` 与 `replace_all` 别名都认），锚点不唯一就报错，保留 mode；返回上下文 ±2 行、最多 100 行/8KiB 的紧凑 diff；`dryRun:true` 只校验锚点并出 diff、不写文件，文本给出 `dry run: X B → Y B projected`；`format:"json"` => `{path, replaced, dryRun, bytesBefore, bytesAfter, sizeBytes, actualSizeBytes, projectedSizeBytes, diff}`（dryRun 时 `sizeBytes` 为磁盘现值，写入后为落盘大小） |
-| `presence_search` | 远端 rg 搜索；`countOnly` 只返回数量，超限返回 `truncated`/总数，路径不存在或正则非法直接报错；`format:"json"` => `{pattern, root, countOnly, matchCount, matches:[{file, line, column?, text}]}` |
-| `presence_glob` | 远端按 glob 找文件（支持绝对 pattern，返回 size/mtime，按新→旧排序）；`format:"json"` => `[{path, sizeBytes, mtimeISO, mtimeMs}]` |
-| `presence_stat` | 一次远端 `stat -c` 批量报告 1–100 个路径：类型 / 大小 / 八进制 mode / mtime，`hash:true` 时对普通文件追加 sha256；**缺失路径返回 `exists:false`（`type:"missing"`）而不是整次失败**，所以它同时是存在性检查；符号链接默认只描述链接本身，`followSymlinks:true` 才穿透；`format:"json"` => `[{path, exists, type, sizeBytes, mode, mtimeISO, mtimeMs, sha256?}]` |
-| `presence_port_probe` | 一次 exec 同时取回 `ss -ltnp` 的监听表（含 pid/process）和每个端口的 TCP 连接结果（`bash /dev/tcp`，无 bash 回退 python3 socket）：`ports` 1–20、`expect:"open"\|"closed"` 让 `ok` 直接表示「是否符合预期」、`waitMs` 每 250ms 轮询到满足或超时；用来证明服务真的起来了，或 stop/close 之后端口真的释放了；`format:"json"` => `[{port, listening, pid, process, probe, ok}]` |
-| `presence_http_probe` | 一条调用完成「等远端端口 → 开转发 → 本地 fetch 多个 path → 断言状态码与响应体 → **finally 必关转发** → 验证本地端口已释放」：`paths` 默认 `["/"]`、`expectStatus` 默认 `[200]`、`expectBody` 为必须全部出现在（拼接后）响应体里的子串；`pass` = 状态码全中且子串全中；`format:"json"` => `{forwardId, localPort, remotePort, results, pass, portReleased}` |
-| `presence_export` | 远端 → 本地真实文件（内容寻址去重、自动清理、返回 sha256），供 `present` / Explorer / Office 使用 |
-| `presence_import` | **本地 → 远端**（截图、附件、构建产物等），二进制安全、可设 mode、返回 sha256；`format:"json"` => `{remotePath, localPath, sizeBytes, sha256, mode}`（完整哈希）；上限 64 MiB |
-| `presence_forward` | 本地端口转发到远端端口（建立前预检端口）；`http://127.0.0.1:<port>` 访问远端服务；open/list/close 支持 `format:"json"` |
-| `presence_terminal` | open / write / read / close 持久终端；open 可给 `cwd` 与 `command`（默认 bash）并返回 `{terminalId,host,cwd,shell}`；write 默认返回本次输出，`ackOnly:true` 只回 ack、输出留给 read；带 `session` 时用 tmux，断线可重连；`close {killSession}` 彻底结束；五个动作都支持 `format:"json"` |
+| `presence_hosts` | List SSH hosts, connection state and default host (`format:"json"` supported). |
+| `presence_connect` | Open/reuse a host connection and report the remote identity. |
+| `presence_exec` | Run a remote command; `pipefail`, `background`, `waitForPort`, structured JSON, `script`, `saveStdout`; destructive commands dry-run first. |
+| `presence_jobs` | Manage background jobs: `list`, `status`, `wait` (with `timedOut`), `stop` (with `alive`/`verified`/`portReleased`), `purge`. |
+| `presence_read` | Read a remote file with line numbers, `offset`/`limit`, or `raw:true` for verbatim content. |
+| `presence_read_many` | Read 1–50 remote files in one call, with per-file byte/line caps. |
+| `presence_write` | Atomic write; preserves mode; returns real mode, size and full sha256; `ifMatchSha256` optimistic lock. |
+| `presence_edit` | Exact-text replacement or line-range replacement, with compact diff, `dryRun`, JSON fields. |
+| `presence_ls` | List a directory; `recursive`, `totalBytes`, JSON output. |
+| `presence_stat` | Batch `stat` for 1–100 paths: type, size, mode, mtime, optional sha256; missing paths return `exists:false`. |
+| `presence_search` | Remote `rg`/`grep` search, count-only mode, JSON matches. |
+| `presence_glob` | Find remote files by glob with size/mtime. |
+| `presence_import` | Local → remote binary-safe upload with mode and sha256. |
+| `presence_export` | Remote → local real file (content-addressed), for preview or native apps. |
+| `presence_forward` | Forward a remote port to `127.0.0.1`; open/list/close with JSON. |
+| `presence_port_probe` | Check listeners and TCP reachability for up to 20 ports; `expect:open|closed`, polling. |
+| `presence_http_probe` | Wait for port → forward → local HTTP assertions → close → verify the local port was released. |
+| `presence_terminal` | Persistent PTY: `open` with `cwd`/`command`, `write` (`ackOnly`), `read`, `close`; tmux-backed sessions survive reconnects. |
+| `presence_trash` | Recoverable delete: move to remote trash, list/restore; batch `paths[]`; returns `sourceRemoved` and `restoreHint`. |
 
-> 远程会话里内置 `grep`/`glob` 由插件**接管并转发到远端**（路径、大小写、截断规则与 `presence_search` 一致），不再出现"扫本地盘、静默空"的情况。
+</details>
 
-**本地 ↔ 远程文件通道**：
-- 本地 → 远程：`presence_import {source: "C:\\Users\\...\\attachments\\...\\a.png", to: "docs/a.png"}`
-- 远程 → 本地：`presence_export {path: "docs/a.png"}` → 返回本机真实路径（再 `present` 才能被 GUI/预览看到）
+## Safety and recovery
 
-### 危险命令护栏（防误删）
+- **Destructive commands never run unconfirmed.** `rm -r/-f`, `git clean -fdx`,
+  `find -delete`, `shred`, `truncate` and `dd of=` are first replayed with
+  no-op shims to expand their real targets; unset variables and protected paths
+  (workspace root, home, `/`, `.git`) are refused. A second call with
+  `confirm:true` is required to execute.
+- **Prefer `presence_trash`** for anything under a workspace: it moves the path to
+  `~/.dsh/presence-trash/<timestamp>/` and returns a restore hint.
+- **Writes are atomic** and keep the original file mode; `presence_edit` refuses
+  ambiguous anchors instead of guessing.
+- **Read before write**: built-in `read`/`write`/`edit` share a read-before-write
+  guard; `presence_write` records the observation so both APIs can be mixed.
 
-`presence_exec` 识别到 `rm -r/-f`、`git clean -fdx`、`find -delete`、`shred`、`truncate`、`dd of=/dev/...` 时**不会直接执行**：
+## Configuration
 
-1. 在"只报告不删除"的 shell 里重跑一遍（`rm` 被函数遮蔽、`find -delete` 换成 `-print`、`git clean` 加 `-n`），拿到**展开后的绝对目标**
-2. 无变量未定义检查：命令里出现未设置的 `$VAR` 直接拒绝（这正是那次 `.tmesh` 被删的原因）
-3. 无条件拒绝：工作区根目录、工作区根的任何祖先、家目录、`/`、`.git` 元数据
-4. 其余情况返回报告（目标类型 / 文件数 / 体积），**要执行必须再调一次并带 `confirm:true`**
+The plugin reads these environment variables on the host process:
 
-```
-presence_exec {command: "rm -rf .tmesh/$J"}
-→ destructive command needs confirmation (rm): nothing was executed yet
-  resolved targets:
-    dir  /srv/app/TensorMesh/.tmesh  128 files  42.1 MB
-  Pass confirm:true to execute it. Prefer presence_trash ...
-```
-
-工作区里要删东西，优先 `presence_trash {action:'trash', path:'build'}`：它是"移动到回收站 + 返回恢复路径"，零安装（就是远端 `mv`），后悔了 `action:'restore'` 放回去。
-
-**长任务推荐姿势**：`presence_exec {command, background:true}` → 拿到 jobId → `presence_jobs {action:'wait', jobId}` 等它结束（返回退出码和末尾日志）→ 需要时 `presence_jobs {action:'stop'}`。
-
-**「它真的起来了吗」一条调用验完**：`presence_port_probe {ports:[8010], expect:'open', waitMs:8000}` 同时给出监听表（pid/process）和 TCP 探测结果；`presence_http_probe {remotePort:8010, paths:['/','/src/main.js'], expectBody:['id="game"']}` 自己完成「等端口 → 开转发 → 本地 fetch → 断言 → 关转发 → 验证本地端口已释放」，不会留下悬挂隧道。`presence_stat` 则把 `stat`/`sha256sum`/`test -e` 这类兜底查询合并成一次远端调用（缺失路径返回 `exists:false`）。
-
-配置项（写在 `cordis.patch.yml` 的 `config` 里，会被你的补丁层覆盖）：
-
-| 字段 | 默认 | 含义 |
+| Variable | Default | Meaning |
 | --- | --- | --- |
-| `maxChannels` | 8 | 每连接并发通道数（sshd `MaxSessions` 默认 10，留一个给 SFTP） |
-| `connectTimeoutMs` | 25000 | 单次连接尝试上限 |
-| `idleTimeoutMs` | 900000 | 空闲多久断开；仍持有终端的连接不会被回收 |
-| `readOnly` | false | 拒绝写入与编辑，读取/搜索/执行不受影响 |
+| `PRESENCE_HOST` | — | Default SSH host (alias from `~/.ssh/config` or a manual host). |
+| `PRESENCE_WORKSPACE` | — | `host:/abs/path` to bind a remote workspace. |
+| `PRESENCE_PASSWORD_<ALIAS>` | — | Password for a host; `<ALIAS>` is uppercase with non-alphanumerics replaced by `_`. |
+| `PRESENCE_MAX_CHANNELS` | 8 | Concurrent channels per connection. |
+| `PRESENCE_CONNECT_TIMEOUT_MS` | 25000 | Connection attempt timeout. |
+| `PRESENCE_IDLE_TIMEOUT_MS` | 900000 | Idle connection timeout (connections with terminals are kept). |
+| `PRESENCE_READ_ONLY` | false | Refuse writes/edits; reads, search and exec still work. |
 
-### 工作区（这是使用入口）
+Full configuration and the path/permission matrix are in
+[docs/VERIFICATION.md](docs/VERIFICATION.md) and [docs/HANDOFF.md](docs/HANDOFF.md).
 
-面板：**设置 → Presence**
+## Development
 
-1. 「新建」→ 选一台机器（要密码的当场输入，可勾「记住这台」）；列表里的绿点 = 这台机器当前**已连接**，面板每 5 秒窗口获得焦点时都会刷新，不用重开
-2. 连接后进入**远程目录浏览器**：机器徽标 + 路径面包屑 + 条目计数；文件夹/文件分开排序，文件显示大小，条目多的目录自动出现筛选框
-3. 「用这个文件夹」→ 生成一个远程工作区
-4. 工作区按**机器分组**：每台机器一行（绿点 = 这台机器当前已连接），下面挂它的文件夹；可「浏览文件」（进入子目录、点文件在下方预览）「移除」
-
-**手动主机（不在 `~/.ssh/config` 里也可以）**：在选机器界面点「手动添加主机」，粘贴一条 ssh 命令即可，例如
-
-```text
-ssh -CAXY user@server
-```
-
-或者更简单的 `user@host[:2222]` / `ssh://user@host:2202` / `[IPv6]:port`。Presence 会解析 `-p`、`-l`、`-i`、`-A`、`-C`、`-o`（含 `ProxyJump` 警告）等参数，把主机保存在 `~/.dsh/presence/hosts.json`（**不会改 `~/.ssh/config`**），并在主机列表里标「手动」、可随时删除。手动主机和 config 主机在 `/state`、工作区、文件浏览器、终端里完全等价。
-
-> 不再有「设为当前」：每个会话以自己的 cwd 决定用哪台机器/哪个根，左侧每个远程工作区打开就能用。
-
-**改远端文件请用 `edit` / `write` / `presence_edit` / `presence_write`**，不要用 `sed -i`、`perl -pi` 或 shell 重定向——前者是原子写、有歧义拒绝和版本守卫，后者会绕过这些保护。
-
-会话在某个远程工作区里时，**agent 的工具不再需要 host**：
-
-| 调用 | 行为 |
-| --- | --- |
-| `presence_exec(command)` | 在那台机器的那个工作区根目录下执行 |
-| `presence_read('src/app.ts')` | 解析成 `<工作区根>/src/app.ts` |
-| `presence_read_many(['src/a.ts', 'src/b.ts'])` | 一次读多个文件，各自解析到 `<工作区根>/...` |
-| `presence_write` / `presence_edit` / `presence_search` / `presence_glob` | 同上，相对路径都相对工作区根 |
-| 绝对路径 / `~/路径` / `presence://host/path` / 本地挂载路径 | 全部等价可用；跨主机路径会明确报错 |
-
-每个模型步骤都会注入一行运行时上下文，说明当前会话是不是远程工作区、能用哪些工具。
-
-### 路径与权限矩阵（容易踩坑的地方）
-
-| 操作 | 相对路径 | 远端绝对 `/srv/...` | `presence://host/path` | 本地挂载 `C:\...\mounts\...` |
-| --- | --- | --- | --- | --- |
-| 内置 `read`/`write`/`edit` | ✅ | ✅ | ✅ | ✅ |
-| 内置 `grep`/`glob` | ✅ | ✅ | ✅ | ✅（插件转发到远端） |
-| 内置 `read_image` | ✅ | ✅ | ✅ | ✅（走 ctx.fs.readBytes，不需要先导出） |
-| `presence_*` 工具 | ✅ | ✅ | ✅ | ✅ |
-| `present` | 卡片预览 ✅ | — | — | 卡片预览 ✅ / **原生打开 ❌** |
-| Office / Python 等宿主程序 | 仅本地文件 | — | — | **❌ 需先 `presence_export`** |
-
-**工具远程能力一览**（哪些不用换写法）：
-- **自动远程**：`read`/`write`/`edit`（走挂载路径）、`grep`/`glob`（插件拦截转发）、`read_image`（走 ctx.fs 读字节，需 image-capable 模型）、`presence_*` 全套
-- **需要显式转换**：`present` 的原生打开、Office/Python 等宿主程序 → 先 `presence_export`，需要反向则 `presence_import`
-- **只看本地**：宿主 `glob`/`grep` 之外的本地命令、`pwsh`
-
-权限：
-- **ctx.fs 的写入范围 = 会话自己的工作区**（DSH `workspace-write` 策略）。工作区外（例如工作区是 `/srv/app`、你要写 `/srv/workspace`）会被 DSH 沙箱拒绝 —— 这是**策略限制，不是远端权限**；用 `presence_write` / `presence_exec` 就能写。
-- 远端 `/tmp` 同理：`ctx.fs` 不写远端 `/tmp`，用 `presence_write` / `presence_exec`。
-- 写入路径会做**远端 realpath 校验**：工作区里的符号链接指向工作区外时，写入会被拒绝（防沙箱逃逸）。
-- 覆盖写会**保留原文件 mode**（可执行文件不会因为 `edit` 变成 644）；新文件默认 644，可用 `presence_write {mode}` / `presence_import {mode}` 指定。
-- `present` 只记录路径：远程文件在应用内**预览可用**，但「原生打开」按钮不行；要在外部程序打开，先 `presence_export` 成真实本地文件再 `present`。
-
-工作区记录在 `~/.dsh/presence/workspaces.json`；同一 (机器, 目录) 只会有一条。
-
-### 真正的 DSH 工作区（本地挂载点）
-
-远程文件夹会以**本地挂载点**的形式注册成真正的 DSH 工作区：
-
-```
-C:\Users\<你>\.dsh\presence\mounts\<主机>\<远端绝对路径>
-```
-
-这个本地目录是**空的占位**，只为通过工作区注册表用 `node:fs/realpath` 做的「必须是真实目录」校验。Presence 的文件系统提供方把该目录下**所有路径**映射回远端，所以：
-
-| 行为 | 状态 |
-| --- | --- |
-| 左侧「工作区」列表出现该远程工作区 | ✅ |
-| 在它里面新建会话，cwd 是远程路径 | ✅ |
-| 文件树展开远程目录 | ✅ |
-| 内置 `read` / `write` / `edit` | ✅ 直接读写远端 |
-| 内置 `grep` / `glob` | ✅ 插件拦截并转发到远端（不是扫本地盘） |
-| `presence_exec` / `presence_terminal` | ✅ 在远端执行 |
-
-### 认证
-
-- **密钥**：ssh-agent → `IdentityFile` → 默认密钥（`id_ed25519`、`id_rsa`），按顺序尝试，失败原因归一化成人话。
-- **密码**：默认**只存在进程内存**，不落盘、不进会话日志。面板就绪前，可以用环境变量
-  `PRESENCE_PASSWORD_<ALIAS>`（别名大写、非字母数字换成下划线）提供，例如 `PRESENCE_PASSWORD_MY_SERVER`。
-- **「记住这台」**：面板里的开关，默认关闭；打开后密码交给 DSH 的凭据服务保管（落盘方式由该服务决定），重启免输。
-
-### 面板终端 = 远程 shell
-
-DSH 右侧的终端面板原本只会起**本机** shell，cwd 被设成挂载路径（空壳目录）。Presence 把 `terminal-controller` 的默认 shell 换成了一个 launcher（`scripts/presence-shell.ps1`，以 `-EncodedCommand` 内嵌在 `cordis.patch.yml` 里）：
-
-| 打开终端的会话 | 实际启动 |
-| --- | --- |
-| 远程工作区（cwd 在 `~/.dsh/presence/mounts/<host>/...` 下） | `ssh -t <host> "cd '<远端目录>' && exec $SHELL -l"` —— 就是那台机器、那个目录 |
-| 本地工作区 / 其它 cwd | 本机 `cmd.exe`，与原生行为一致 |
-
-所以：**在远程工作区点「新终端」，直接看到远端目录的提示符**；`git`、`tmux`、补全、颜色都走远端环境，远端仍然零安装（只用 ssh 客户端）。
-
-- launcher 源码在 `scripts/presence-shell.ps1`；改完运行 `node scripts/embed-shell.mjs` 重新内嵌（打包脚本会做 `--check`，stale 直接失败）
-- 想恢复原生行为：删掉 `cordis.patch.yml` 里 `# >>> presence-shell ... <<<` 那一段，重启
-- 需要密码的机器：ssh 会在终端里提示输入；密钥/ssh-agent 的机器无感
-- 终端窗口关掉 = ssh 断开；需要跨断线的持久 shell 用 agent 的 `presence_terminal {session}`（远端 tmux）
-
-### 侧边栏文件浏览器（XFTP 风格）
-
-右侧栏「开始」页多了一项 **远程文件**：一个远程目录面板，可以像 Xftp 一样传文件。
-
-| 操作 | 行为 |
-| --- | --- |
-| 拖本地**文件**到列表 / `＋ 文件` | 上传到当前远端目录，底部显示百分比进度 |
-| 拖本地**文件夹**到列表 / `＋ 文件夹` | 按原目录结构递归 `mkdir` + 逐文件上传（有进度） |
-| 双击图片 | 弹窗预览（走 `/raw` 直出字节） |
-| 双击视频 / 音频 / PDF | 弹窗内原生播放器（`<video controls>` / `<audio controls>`）或 PDF 阅读器（`<iframe>`，`/raw` 支持 Range，可拖动进度） |
-| 双击文本 / 代码 | 弹窗内 **CodeMirror 6** 只读预览：行号、代码折叠、语法高亮（按扩展名识别语言，JSON/YAML/TOML/XML/Markdown 也走同一视图）、等宽字体（Cascadia Code / Consolas 兜底）、跟随主题明暗配色、一键复制；文本上限 1 MiB，超出时顶部提示「已截断」 |
-| 双击其它类型（或预览失败） | 调起系统「另存为」对话框（File System Access API；不可用时回退浏览器下载） |
-| 行尾 `↓` 文件 | 保存单个文件到本地 |
-| 行尾 `↓` 文件夹 | 选一个本地目标文件夹 → **递归下载成真实目录树**（Xftp 的"下载文件夹"），底部有进度 |
-| 行尾 `🗑` | 移到**远端回收站**（可恢复，见 `presence_trash`） |
-| `新建` / `⟳` / 筛选框 | 新建文件夹 / 刷新 / 过滤当前目录 |
-| 顶栏下拉 | 切换机器（默认跟随当前会话的工作区，没有则用第一个工作区） |
-| 需要密码的机器 | 自动弹**密码对话框**（密码 / 「记住这台」/ 取消），连上后继续浏览当前目录 |
-| 取消「选择目标文件夹」 | 视为取消，不报错 |
-
-界面按 [OpenDesign](https://open-design.ai/zh/plugins/design-system-agentic/) 的规范实现，并**全部落在 harness 主题自己的 token 上**：4px 间距网格、圆角 4/8/12/pill（`--dsw-radius-*`）、`1px ring + 柔阴影`、动效 `100ms/300ms` + `cubic-bezier(.4,0,.2,1)`（`--ds-transition-duration-*` + `--ds-ease-in-out`）、交互底色 `--dsw-alias-interactive-bg-hover`、选中 `--dsw-alias-bg-multi-select`、强调 `--dsw-alias-state-business-primary`；图标为内置描边 SVG（不再用 emoji），行内文本禁止选中，工具栏/面包屑/操作按钮均为图标按钮。
-
-**关于"拖出"的准确说法**：
-- **文件可以拖出**到资源管理器：Chromium 的 `DownloadURL` 机制会把 URL 下载成临时文件再交给系统。
-- **文件夹不能拖出**，这是 web 平台限制而不是没实现：`DownloadURL` 只能表达"一个文件"；拖出目录必须由 Electron 主进程调 `webContents.startDrag({ files: [目录] })`，而 DSH 的 host 是独立 Node 子进程（`app.asar/lib/main.js:3794` `spawn(node)`），主进程与 host 之间只有 `/api/*` 转发，没有拖拽通道。要真正支持需要 DSH 上游加一条 IPC。
-- 等价的文件夹下载已实现（`↓` → 选目标目录 → 递归落地）。
-- 从资源管理器往页面拖**文件和文件夹**都稳定可用，且面板会拦截这次拖放（`stopPropagation`），不会再把文件同时塞进右侧聊天框。
-
-### 右侧栏「端口转发」
-
-远程机器上跑的网页服务（`npm run dev`、Jupyter、Gradio……）不用记 ssh 命令，右侧栏第二个标签 **端口转发** 就是它的列表：
-
-| 操作 | 行为 |
-| --- | --- |
-| 顶部表单（机器 / 远程主机 / 远程端口 / 本地端口） | 每个字段有可见标签；两行自适应布局，窄侧边栏也不会挤成一团。**本地端口留空时默认与远程端口相同**（8000 → 8000），被占用自动换一个随机端口并提示，也可以手动指定 |
-| 列表 | 按机器分组显示**当前所有转发**：`远程:端口 → 127.0.0.1:本地端口`；每行是图标按钮：↗ 打开（新标签直连）/ 复制 URL（点后变 ✓）/ 电源图标停止（hover 变红） |
-| 自动刷新 | 每 4 秒刷新一次：agent 用 `presence_forward` 开的隧道、或从别处关掉的隧道都会同步过来 |
-| 状态提示 | 首次进入显示加载动画；机器未连接时分组头标「未连接」；需要密码的机器会提示先去「远程文件」面板连接一次 |
-| 设置 → Presence | 工作区列表下方有一张卡片式只读列表（数量 chip + 地址 + 停止），不看右侧栏也能知道在转发什么 |
-| 底层 | 与 `presence_forward` 工具共用同一个注册表（`pool.openForward/listTunnels/closeTunnel`），HTTP API：`GET/POST/DELETE /api/presence/tunnels` |
-
-> 端口转发只在本地 `127.0.0.1` 上监听；隧道随连接断开或插件卸载自动关闭。
-
-**agent 也能开转发**：对 agent 说「把远程 8000 转发到本地」即可，它调用 `presence_forward`：
-
-```text
-presence_forward { "action": "open", "remotePort": 8000 }
-→ opened forward f3
-  local:  http://127.0.0.1:8000        ← 默认与远程同号；被占用会自动换并注明
-  remote: server:127.0.0.1:8000
-  The right-sidebar 端口转发 panel lists it automatically ...
-```
-
-面板每 4 秒轮询同一个注册表，所以 agent 开的隧道会**自动出现**在右侧栏（设置页那张卡片也会同步）。
-
-### 通知与错误
-
-所有错误和信息提示走**同一套通知**，不再各自糊一个红色内联块：
-
-| 特性 | 说明 |
-| --- | --- |
-| 位置 / 形态 | 窗口右下角栈式卡片（最多 5 条），**z-index 高于设置弹窗遮罩**，不会被压暗；左侧 severity 色条 + 图标 + 标题 + 建议 + 原始报错（等宽小字） |
-| 语言 | 跟随页面语言（**运行时读取 `<html lang>`**，不依赖模块加载时的快照）：中文环境全部中文；后端 ssh 的英文报错（认证失败、端口无监听、连接拒绝、DNS、超时、权限、无文件…）自动映射成中文标题 + 建议，原文保留为细节；英文环境走英文目录 |
-| 动画 | 进场 220ms 上浮淡入、退场 170ms 下沉淡出，底部还有一条随剩余时间收缩的进度条；`prefers-reduced-motion` 下自动关闭动画 |
-| 停留时间 | 成功 2.6s / 信息 3.6s / 警告 5.2s / 错误 **7s**，可手动点 × 关闭；错误不会再被后台轮询"瞬间清掉" |
-| 去重 | 同一条错误 8 秒内只弹一次，轮询失败不会刷屏 |
-| 覆盖范围 | 设置面板、远程文件面板、端口转发面板共用一个通知栈（`react-dom` 挂 `document.body`，单例） |
-
-## 当前状态
-
-- [x] 解析 `~/.ssh/config`（Host / HostName / Port / User / IdentityFile / Include / 全局默认 / 引号）
-- [x] 密钥认证：ssh-agent、多密钥顺序尝试、失败原因归一化
-- [x] SFTP 读 / 原子写 / 精确替换编辑 / 列目录 / stat / 二进制读取
-- [x] exec：独立通道、超时、取消、退出码、stdout/stderr 分离
-- [x] 通道池（受 sshd `MaxSessions` 约束）
-- [x] PTY 终端，随连接存活
-- [x] DSH Bundle：18 个工具，已装进 profile 并实测
-- [x] 密码认证（进程内存 / 环境变量），已接入连接层
-- [x] 设置页面板：服务器选择 → 远程目录浏览 → 创建远程工作区
-- [x] 工作区作用域：设为当前后，工具不需要 host，相对路径相对工作区根，上下文自动切换
-- [x] 面板内浏览工作区文件、预览内容
-- [x] 面板 API：仅本机 + 同源防护，跨站请求返回 403
-- [x] 每个模型步骤注入一行运行时上下文：工作区绑定（或机器总数 + 已连接清单）
-- [x] 断线自愈：连接掉线后被标记失效，下一次调用自动重建，无需手动重连
-- [ ] 密码登录的端到端实测（代码已就绪，暂无支持密码的目标机可测）
-- [ ] ProxyJump / ProxyCommand
-- [ ] 终端跨连接恢复（需要目标机已有 tmux 时复用）
-- [ ] MCP server（内核无 DSH 依赖，抽出即可复用）
-
-## 已知边界
-
-- **挂载路径是虚拟的**：`~/.dsh/presence/mounts/...` 只对 `ctx.fs` 生效，Explorer / Office / 宿主 Python 看不到远程文件（见上面的能力矩阵）。
-- **并发上限**：sshd 默认 `MaxSessions 10`，一条连接最多 10 个通道（已留一个给 SFTP，池子上限 8）。这是服务器策略，不是插件限制。
-- **终端生命周期**：PTY 跟随连接存活；需要跨断线/重启时用 `presence_terminal {session}`，它在目标机复用 `tmux`（仍然零安装）。
-- **SFTP 语义**：写文件用 `writeFile` + OpenSSH `posix-rename` 扩展做原子替换；没有该扩展的服务器退化为「删除后重命名」。覆盖写保留原文件 mode；新文件 644（受远端 umask 影响，可用 `mode` 指定）。
-- **`present` 的原生打开**：卡片预览可用，但"原生打开"按钮要求宿主进程能映射该路径；虚拟挂载路径映射不了，需先 `presence_export`。
-- **`read-before-write` 守卫**：只对内置 fs 工具生效；`presence_write` 绕开它，但会通过 `fs/observed` 事件给内置 `write`/`edit` 记账，所以两边可以混用。
-
-## 开发与版本管理
-
-源码在 git 里（`main` 分支，版本用 tag 标记，例如 `v0.14.0`）。仓库只跟踪源码；**`client.js` 是构建产物**，源码在 `client-src/`：
-
-```bash
-npm install                       # 运行时依赖只有 ssh2；node_modules 不进 git
+```sh
+npm install
 npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
-  @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data @codemirror/theme-one-dark
-node scripts/build-client.mjs     # client-src/{entry,app,editor}.js → client.js（IIFE，含 CodeMirror）
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.14.0
-# → dist/presence-plugin-0.14.0.zip（内含 node_modules 与已构建的 client.js，可直接被 DSH 安装）
+  @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
+  @codemirror/theme-one-dark
+node scripts/build-client.mjs
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.17.6
+# → dist/presence-plugin-0.17.6.zip
 ```
 
-`package.ps1` 会先跑 `build-client.mjs`，保证 zip 里的 `client.js` 与源码一致；`client-src/node_modules`、`.dev/`、`.npm-cache/` 都在 gitignore 里。
+Tests require one SSH-reachable host:
 
-改动后至少跑这些验证（都需要一台可 ssh 的主机）：
-
-```bash
-node scripts/regression.mjs server   # 传输层：符号链接写、行数、超时、落盘、二进制
-node scripts/job-probe.mjs server    # 后台任务 + 端口转发
-node scripts/feature-probe.mjs server # wait/会话过滤/pgid/就绪/搜索语义
-node scripts/import-probe.mjs server # 本地→远程二进制、mode、sha256
-node scripts/safety-probe.mjs server # 危险命令护栏 + 观测状态存储
+```sh
+node scripts/regression.mjs server     # transport, symlinks, timeouts, binary
+node scripts/job-probe.mjs server      # jobs + port forwarding
+node scripts/feature-probe.mjs server  # wait, sessions, pgid, readiness, search
+node scripts/import-probe.mjs server   # local→remote binary, mode, sha256
+node scripts/safety-probe.mjs server   # destructive guard + observation store
 ```
 
-`scripts/isolated-check.mjs` 需要在 Electron-as-Node 下跑（路径矩阵 + 沙箱围栏），打包时不会带进 zip。
+## Known limits
 
-## 运行
+- The mount path (`~/.dsh/presence/mounts/...`) is virtual: it works through
+  `ctx.fs` / agent tools, but native apps (Explorer, Office, host Python) cannot
+  see it — use `presence_export` first.
+- SSH `MaxSessions` (default 10) bounds concurrent channels; the pool uses at most 8.
+- PTY terminals follow the connection; cross-reconnect shells need `tmux` on the target
+  (used automatically by `presence_terminal { session }`).
+- ProxyJump/ProxyCommand are parsed and warned about, but not used for dialing yet.
 
-```bash
-node scripts/probe.mjs server
-```
+## Contributing
 
-需要本机有 Node ≥ 22.19。`ssh2` 是唯一的运行时依赖。
+Issues and PRs are welcome. For a feature, open an issue describing the remote
+workflow you want; for a fix, keep the diff focused and add a probe under
+`scripts/` when behavior changes.
+
+## License
+
+[MIT](LICENSE)
 
 ## Star History
 
