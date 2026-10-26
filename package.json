@@ -1,7 +1,6 @@
 {
-  "name": "dsh-presence",
+  "name": "@rjfan/dsh-presence",
   "version": "0.17.5",
-  "private": true,
   "type": "module",
   "description": "Work on any machine in your ssh config as if it were local: persistent connections, native file editing, search, exec and terminals, with nothing installed on the remote host.",
   "icon": "icon.svg",
@@ -76,5 +75,8 @@
     "terminal",
     "mcp",
     "agent-tools"
-  ]
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }
