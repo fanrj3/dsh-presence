@@ -498,6 +498,44 @@ ssh2 1.17 **同步抛 `Not connected`**，异常从 EventEmitter 回调冒泡成
 - 仓库既有探针：regression **7/7**、safety **24/24**、feature **14/14**、job **6/6**、import **3/3**、tunnel-crash **5/5**（合计 **59/59**）。
 - `scripts/package.ps1 -Version 0.17.4` 生成 `dist/presence-plugin-0.17.4.zip`（1.15 MB，含 node_modules 与重建后的 client.js）。
 
+## 〇之二十二、第二十三轮：工具返回值与新增探针（0.17.5）
+
+来源：同一次真实客户端压测（`Presence-mcp/mcp/TOOLTEST-REPORT.md`：22 步 / 17 个工具）之后，MCP 0.2.0 的工具层修复。本轮把其中 3 个新工具与 11 项格式/行为修正移植进插件（行为参照 MCP，代码按插件自己的 `tool({...})` 与 `pickScope`/`remotePath`/`shq` 风格重写，未抄 zod）。工具数 15 → 18；默认文本输出除下列注明处外保持原样。
+
+**新增工具**
+
+- `presence_stat`：一次远端 `stat -c` 批量报告 1–100 个路径（类型 / 大小 / 八进制 mode / mtime），`hash:true` 时对普通文件追加 `sha256sum`；**缺失路径返回 `exists:false` / `type:"missing"`**，不让整次调用失败；符号链接默认只描述链接本身，`followSymlinks:true` 才穿透；`format:"json"` => `[{path, exists, type, sizeBytes, mode, mtimeISO, mtimeMs, sha256?}]`。
+- `presence_port_probe`：一次 exec 同时取回 `ss -ltnp`（pid/process）与每个端口的 TCP 探测结果（`bash /dev/tcp`；无 bash 或无 `/dev/tcp` 时回退 python3 socket）；`ports` 1–20、`expect:"open"|"closed"`、`waitMs` 每 250 ms 轮询到满足或超时；`format:"json"` => `[{port, listening, pid, process, probe, ok}]`。
+- `presence_http_probe`：一次调用完成「等远端端口 → `openForward` → 本地 `fetch` 多个 path → 断言状态码/响应体 → **finally 必关转发** → 探测本地端口已释放」；`pass` = 所有状态码命中且所有 `expectBody` 子串都出现在拼接后的响应体里；`format:"json"` => `{forwardId, localPort, remotePort, results, pass, portReleased}`。
+
+**格式与行为**
+
+- `presence_hosts`：`format:"json"` => `[{alias, address, user, hostname, port, source, state, connected, default}]`；文本给默认主机（当前工作区所在机器）加 `*`。
+- `presence_connect`：`format:"json"` => `{host, user, hostname, kernel, arch, platform, connectedAtMs}`。
+- `presence_search`：`format:"json"` => `{pattern, root, countOnly, matchCount, truncated, matches:[{file, line, column?, text}]}`。
+- `presence_glob`：`format:"json"` => `[{path, sizeBytes, mtimeISO, mtimeMs}]`。
+- `presence_import`：`format:"json"` => `{remotePath, localPath, sizeBytes, sha256, mode}`，sha256 完整。
+- `presence_terminal`：open 新增 `cwd`/`command`（默认 bash），返回 `{terminalId, host, cwd, shell}`；write 默认返回本次输出，`ackOnly:true` 只回 ack、输出留给 read；五个动作都支持 `format:"json"`。
+- `presence_jobs`：`wait` 新增 `timedOut`；运行中任务的 `status.exitSummary` 为 `null`；`stop` 新增 `port`，停止后轮询该远端端口并给出 `portReleased`（jobId 与 pgid 两条路径都支持）；`wait` 也支持 `format:"json"`。
+- `presence_trash`：`action:'trash'` 新增 `paths[]`（1–50，逐项返回，单项失败不影响其余；只传 `path` 时返回形状不变）；`list` 的 JSON 每条只保留 `movedAtISO` 一个时间字段。
+- `presence_edit`：`dryRun` 的 JSON 新增 `actualSizeBytes`（磁盘现值）与 `projectedSizeBytes`（编辑后大小），`sizeBytes` 在 dryRun 时等于现值、写入后等于落盘值；文本在 dryRun 时给 `dry run: X B → Y B projected`。
+- `presence_write`：新增 `ifMatchSha256` 乐观锁（先读当前哈希，不匹配或读不到就报错并同时给出期望值/当前值，一个字节都不写）；文本改为打印完整 sha256。
+- `presence_exec` + `src/destructive.js`：危险命令 dry-run 在 `format:"json"` 下返回 `{dryRun:true, requiresConfirm:true, targets, command, report}`；`guardDestructive` 在原有 `{kind, report, resolved}` 之外返回 `targets`（签名兼容）；修掉两条消息里的坏字节（`nothing was executed yet` / `the command would touch nothing`，现为纯 ASCII，无 U+FFFD），README 示例同步为 `): nothing was executed yet`。
+- 版本：`package.json` → 0.17.5。
+
+**验证**（server，2026-10-26）：
+
+- `node --check src/tools.js`、`node --check src/destructive.js` 通过；`src/destructive.js` 已无任何非 ASCII 字节。
+- 新增并提交 `scripts/tool-probe.mjs`：用 loader hook 把 `@deepseek-ai/dsh-tools` 映射为 stub `defineTool`，在普通 Node 下直接调用真实工具实现（参数、文本与 JSON 形状全走真实代码）→ **32/32**：
+  - stat：存在/缺失/目录/符号链接、mode/sha256 与本机 `createHash` 一致、文本汇总；
+  - port_probe：`expect:"closed"`、等后台 `python3 -m http.server` 起来（含 pid/process）、stop 后确认 `refused`；
+  - http_probe：两个 path + `expectBody` 全中、`pass:true`、`portReleased:true`、转发列表已空；错误期望值得到 `pass:false` 但仍清理；
+  - JSON：hosts / connect / search / glob / import / trash list / terminal 五动作 / write `ifMatchSha256` / edit dryRun / exec 危险命令 dry-run。
+- 既有探针（串行）：regression **7/7**、safety **24/24**、feature **14/14**、job **6/6**、import **3/3**、tunnel-crash **5/5**，合计 **59/59**。
+- `scripts/package.ps1 -Version 0.17.5` → `dist/presence-plugin-0.17.5.zip`，1.17 MB（含 node_modules 与重建后的 client.js；zip 内 `package.json` 为 0.17.5，且含 `scripts/tool-probe.mjs`）。
+
+**与 MCP 0.2.0 的差异**：插件的 `presence_exec` 从来没有 `script` 模式（那是 MCP 独有的入参），因此第 14 项只覆盖 `command` 模式；`targets` 对命令模式是真实解析结果（MCP 的脚本模式返回 `[]`）。
+
 ## 一、最初提出的问题 → 现在的结果
 
 | # | 原始要求 | 结果 | 证据 |

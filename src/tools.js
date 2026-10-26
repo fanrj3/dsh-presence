@@ -10,6 +10,7 @@ import { guardDestructive } from './destructive.js';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
+import { connect as connectTcp } from 'node:net';
 import { exportDirectory, join as joinPath, dirname as dirnamePath, resolve as resolvePath, sep, pruneExports } from './localpaths.js';
 
 const OUTPUT_CAP = 32 * 1024;
@@ -18,6 +19,9 @@ const READ_CAP = 32 * 1024 * 1024;
 const EXPORT_CAP = 64 * 1024 * 1024;
 const WAIT_PORT_TIMEOUT_MS = 15_000;
 const READ_MANY_MAX_FILES = 50;
+const STAT_MAX_PATHS = 100;
+const PROBE_MAX_PORTS = 20;
+const TRASH_MAX_PATHS = 50;
 const DIFF_LINE_CAP = 100;
 const DIFF_BYTE_CAP = 8 * 1024;
 
@@ -210,6 +214,278 @@ function toISO(milliseconds) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+/** One text block of JSON, clipped so a huge array cannot blow the output cap. */
+function jsonText(value, cap = OUTPUT_CAP) {
+  return clip(JSON.stringify(value, null, 2), cap);
+}
+
+/** A job's exit as one phrase; null when the job has not exited. */
+function exitSummaryOf(job) {
+  const exitCode = job?.exitCode ?? null;
+  const exitSignal = job?.exitSignal ?? null;
+  if (exitCode === null && exitSignal === null) return job?.state === 'running' ? null : 'unknown';
+  if (exitCode === null) return `signal ${exitSignal}`;
+  return `exit ${exitCode}${exitSignal ? ` signal ${exitSignal}` : ''}`;
+}
+
+// ------------------------------------------------------------- remote probes
+
+/** `ss -ltnp` output -> `{ port: { pid, process } }` for the ports we asked about. */
+function parseSsListeners(stdout, wanted) {
+  const listeners = new Map();
+  const wantedSet = new Set(wanted);
+  for (const raw of String(stdout ?? '').split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('State') || line.startsWith('__')) continue;
+    const columns = line.split(/\s+/);
+    if (columns.length < 5) continue;
+    const address = columns[3];
+    const port = Number.parseInt(address.slice(address.lastIndexOf(':') + 1), 10);
+    if (!Number.isInteger(port) || !wantedSet.has(port)) continue;
+    const pid = /pid=(\d+)/.exec(line)?.[1];
+    const process = /users:\(\("([^"]+)"/.exec(line)?.[1] ?? null;
+    const previous = listeners.get(port);
+    if (!previous || (previous.pid === null && pid)) {
+      listeners.set(port, { pid: pid ? Number(pid) : null, process });
+    }
+  }
+  return listeners;
+}
+
+/**
+ * One remote exec answers both port questions for a whole round: which ports
+ * are listening (ss -ltnp, with pid/process) and which accept a TCP connect
+ * (bash /dev/tcp, python3 fallback). Ports are validated integers, so they are
+ * safe to splice into the script.
+ */
+async function inspectRemotePorts(connection, ports, { probe = true, timeoutMs = 20_000 } = {}) {
+  const wanted = [...new Set(ports.map((port) => Number(port)))].filter(
+    (port) => Number.isInteger(port) && port > 0 && port <= 65535,
+  );
+  const listeners = new Map();
+  const probes = new Map();
+  if (wanted.length === 0) return { listeners, probes, ssAvailable: false };
+  const list = wanted.join(' ');
+  const lines = [
+    'if command -v ss >/dev/null 2>&1; then echo __SS_OK__; ss -ltnp 2>/dev/null; else echo __SS_MISSING__; fi',
+  ];
+  if (probe) {
+    lines.push(
+      'if command -v bash >/dev/null 2>&1; then',
+      `  for p in ${list}; do`,
+      '    if command -v timeout >/dev/null 2>&1; then',
+      '      timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$p" >/dev/null 2>&1',
+      '      rc=$?',
+      '    else',
+      '      bash -c "exec 3<>/dev/tcp/127.0.0.1/$p" >/dev/null 2>&1',
+      '      rc=$?',
+      '    fi',
+      '    if [ "$rc" -eq 0 ]; then echo "PB accepted $p"; elif [ "$rc" -eq 124 ]; then echo "PB timeout $p"; else echo "PB refused $p"; fi',
+      '  done',
+      '  echo __PB_DONE__',
+      'else echo __PB_NOBASH__; fi',
+    );
+  }
+  const result = await connection.exec(`sh -c ${shq(lines.join('\n'))}`, {
+    timeoutMs,
+    maxOutputBytes: 256 * 1024,
+  });
+  const stdout = String(result.stdout ?? '');
+  const ssAvailable = stdout.includes('__SS_OK__');
+  for (const [port, state] of parseSsListeners(stdout, wanted)) listeners.set(port, state);
+  const collect = (value) => {
+    for (const match of String(value ?? '').matchAll(/^PB (accepted|timeout|refused) (\d+)$/gm)) {
+      probes.set(Number(match[2]), match[1]);
+    }
+  };
+  collect(stdout);
+  if (probe && !stdout.includes('__PB_DONE__')) {
+    // No bash, or a bash built without /dev/tcp: python3 can still answer.
+    const remaining = wanted.filter((port) => !probes.has(port));
+    if (remaining.length > 0) {
+      const python = [
+        'if command -v python3 >/dev/null 2>&1; then',
+        `python3 - ${remaining.join(' ')} <<'PY'`,
+        'import socket',
+        'import sys',
+        '',
+        'for raw in sys.argv[1:]:',
+        '    port = int(raw)',
+        '    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)',
+        '    sock.settimeout(1.0)',
+        '    try:',
+        '        sock.connect(("127.0.0.1", port))',
+        '        print(f"PB accepted {port}")',
+        '    except socket.timeout:',
+        '        print(f"PB timeout {port}")',
+        '    except OSError:',
+        '        print(f"PB refused {port}")',
+        '    finally:',
+        '        sock.close()',
+        'PY',
+        'fi',
+      ].join('\n');
+      const fallback = await connection
+        .exec(`sh -c ${shq(python)}`, { timeoutMs, maxOutputBytes: 256 * 1024 })
+        .catch(() => null);
+      if (fallback) collect(fallback.stdout);
+    }
+  }
+  return { listeners, probes, ssAvailable };
+}
+
+/**
+ * One report row: `listening` comes from ss (or from an accepted connect when
+ * ss is unavailable), `probe` from the TCP connect, and `ok` compares that
+ * state with the caller's expectation ("open" when no expect was given).
+ */
+function portProbeRow(port, snapshot, { expect = null, probe = true } = {}) {
+  const listener = snapshot.listeners.get(port) ?? null;
+  const connect = probe ? snapshot.probes.get(port) ?? 'skipped' : 'skipped';
+  const listening = snapshot.ssAvailable ? listener !== null : connect === 'accepted';
+  const open = listening || connect === 'accepted';
+  const wantOpen = expect === null ? true : expect === 'open';
+  return {
+    port,
+    listening,
+    pid: listener?.pid ?? null,
+    process: listener?.process ?? null,
+    probe: connect,
+    ok: open === wantOpen,
+  };
+}
+
+/** Poll until a remote port stops accepting connections; true/false/null. */
+async function waitRemotePortClosed(connection, port, { timeoutMs = 3_000, intervalMs = 250 } = {}) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  for (;;) {
+    const snapshot = await inspectRemotePorts(connection, [port], { probe: true });
+    const row = portProbeRow(port, snapshot, { probe: true });
+    const open = row.listening || row.probe === 'accepted';
+    const known = snapshot.ssAvailable || row.probe !== 'skipped';
+    if (!open) return known ? true : null;
+    if (Date.now() >= deadline) return false;
+    await sleep(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
+  }
+}
+
+/** Is anything still listening on this local port? */
+function probeLocalPort(port, { timeoutMs = 500 } = {}) {
+  const numeric = Number(port);
+  if (!Number.isInteger(numeric) || numeric <= 0 || numeric > 65535) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let settled = false;
+    const socket = connectTcp({ host: '127.0.0.1', port: numeric });
+    const finish = (connected) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(connected);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
+}
+
+/** A tunnel close can return before the listening socket is gone: probe twice. */
+async function localPortReleased(port) {
+  let connected = await probeLocalPort(port);
+  if (connected) {
+    await sleep(120);
+    connected = await probeLocalPort(port);
+  }
+  return connected === false;
+}
+
+/**
+ * Metadata for many paths in one exec. `stat -c` describes a symlink itself
+ * unless followSymlinks is set; sha256sum runs only for regular files (and,
+ * without followSymlinks, never through a link). Missing paths come back as
+ * `exists: false` instead of failing the batch.
+ */
+async function statRemotePaths(connection, paths, { hash = false, followSymlinks = false } = {}) {
+  const quoted = paths.map((path) => shq(path)).join(' ');
+  const statFlag = followSymlinks ? '-L ' : '';
+  const hashable = followSymlinks ? '[ -f "$p" ]' : '[ -f "$p" ] && [ ! -L "$p" ]';
+  const script = [
+    `for p in ${quoted}; do`,
+    '  if [ -e "$p" ] || [ -L "$p" ]; then',
+    `    stat ${statFlag}-c 'META|%F|%s|%a|%Y|%n' -- "$p" 2>/dev/null || echo "META|unknown|0||0|$p"`,
+    ...(hash ? [`    if ${hashable}; then sha256sum -- "$p" 2>/dev/null; fi`] : []),
+    '  else',
+    '    echo "MISSING|$p"',
+    '  fi',
+    'done',
+  ].join('\n');
+  const result = await connection.exec(`sh -c ${shq(script)}`, { timeoutMs: 60_000, maxOutputBytes: 256 * 1024 });
+  const meta = new Map();
+  const missing = new Set();
+  const digests = new Map();
+  for (const raw of String(result.stdout ?? '').split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    if (line.startsWith('MISSING|')) {
+      missing.add(line.slice('MISSING|'.length));
+      continue;
+    }
+    if (line.startsWith('META|')) {
+      const [type, size, mode, mtime, ...rest] = line.split('|').slice(1);
+      meta.set(rest.join('|'), {
+        type,
+        sizeBytes: Number.parseInt(size, 10),
+        mode,
+        mtimeSeconds: Number.parseInt(mtime, 10),
+      });
+      continue;
+    }
+    const digest = /^\\?([0-9a-f]{64})\s+\*?(.+)$/.exec(line);
+    if (digest) digests.set(digest[2], digest[1]);
+  }
+  return paths.map((path) => {
+    const info = meta.get(path);
+    if (missing.has(path) || !info) {
+      return {
+        path,
+        exists: false,
+        type: 'missing',
+        sizeBytes: null,
+        mode: null,
+        mtimeISO: null,
+        mtimeMs: null,
+        ...(hash ? { sha256: null } : {}),
+      };
+    }
+    const type =
+      info.type === 'regular file'
+        ? 'file'
+        : info.type === 'directory'
+          ? 'dir'
+          : info.type === 'symbolic link'
+            ? 'link'
+            : 'other';
+    const mtimeMs = Number.isFinite(info.mtimeSeconds) && info.mtimeSeconds > 0 ? info.mtimeSeconds * 1000 : null;
+    return {
+      path,
+      exists: true,
+      type,
+      sizeBytes: Number.isFinite(info.sizeBytes) ? info.sizeBytes : null,
+      mode: modeLabel(Number.parseInt(info.mode, 8)) ?? null,
+      mtimeISO: toISO(mtimeMs),
+      mtimeMs,
+      ...(hash ? { sha256: digests.get(path) ?? null } : {}),
+    };
+  });
+}
+
+/** The current sha256 of one remote file, or null when it cannot be read. */
+async function remoteFileSha256(connection, target) {
+  const result = await connection.exec(`sha256sum -- ${shq(target)} 2>/dev/null`, { timeoutMs: 60_000 });
+  if (result.code !== 0) return null;
+  const match = /^\\?([0-9a-f]{64})\s/.exec(String(result.stdout ?? ''));
+  return match ? match[1] : null;
+}
+
 // Common-prefix/common-suffix diff with +/- context lines. No LCS: this is
 // meant to let an agent verify one exact replacement, not to merge files.
 function diffLines(before, after, { context = 2, maxLines = DIFF_LINE_CAP, maxBytes = DIFF_BYTE_CAP } = {}) {
@@ -366,14 +642,14 @@ async function waitForJobFallback(pool, id, { timeoutMs, tailLines }) {
   return { ...job, logTail, logSize };
 }
 
-function formatWaitReport(job, { timeoutMs, tailLines }) {
+function formatWaitReport(job, { timeoutMs, tailLines, timedOut = false }) {
   const state = job.state ?? 'unknown';
   const stillRunning = state === 'running' || state === 'unknown';
   const exit =
     job.exitCode === undefined || job.exitCode === null ? (stillRunning ? 'still running' : 'unknown') : String(job.exitCode);
   const size = job.logSize === undefined || job.logSize === null ? 'unknown' : formatBytes(job.logSize);
   const parts = [
-    `job ${job.id} on ${job.host ?? '?'}: state=${state}  exit=${exit}`,
+    `job ${job.id} on ${job.host ?? '?'}: state=${state}  exit=${exit}  timedOut=${timedOut ? 'yes' : 'no'}`,
     `pid: ${job.pid ?? '?'}  log: ${job.logPath ?? '?'}  size: ${size}`,
   ];
   if (stillRunning) {
@@ -412,6 +688,18 @@ async function verifyPidAlive(pool, host, pid) {
     return { alive: String(probe.stdout ?? '').trim() !== '', verified: true };
   } catch {
     return { alive: null, verified: false };
+  }
+}
+
+/** Optional proof that a stopped job really released the port it was serving. */
+async function portReleasedAfterStop(pool, host, port, timeoutMs = 3_000) {
+  const numeric = Number(port);
+  if (!Number.isInteger(numeric) || numeric <= 0 || numeric > 65535) return null;
+  try {
+    const connection = await pool.connection(host);
+    return await waitRemotePortClosed(connection, numeric, { timeoutMs });
+  } catch {
+    return null;
   }
 }
 
@@ -548,15 +836,38 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_hosts',
       description:
-        'List the machines Presence can reach, taken from the user\'s ~/.ssh/config, with whether each one is connected right now. Call this before targeting a host for the first time.',
-      parameters: {},
-      async execute() {
+        'List the machines Presence can reach, taken from the user\'s ~/.ssh/config, with whether each one is connected right now. Call this before targeting a host for the first time. The default host (the active workspace\'s machine) is marked with "*". format:\'json\' returns one object per host: {alias, address, user, hostname, port, source, state, connected, default}.',
+      parameters: {
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: an array of host objects. Defaults to text.',
+        },
+      },
+      async execute(args) {
         const hosts = pool.hosts();
+        const defaultHost = settings.defaultHost ?? activeWorkspace()?.host ?? null;
+        if (args.format === 'json') {
+          return jsonText(
+            hosts.map((host) => ({
+              alias: host.alias,
+              address: `${host.user ?? '?'}@${host.hostname}:${host.port}`,
+              user: host.user ?? null,
+              hostname: host.hostname,
+              port: host.port,
+              source: host.source ?? 'config',
+              state: host.connected ? 'connected' : 'idle',
+              connected: host.connected === true,
+              default: host.alias === defaultHost,
+            })),
+          );
+        }
         if (hosts.length === 0) return 'No hosts with an explicit HostName were found in ~/.ssh/config.';
         const lines = hosts.map((host) => {
           const state = host.connected ? `connected${host.terminals ? `, ${host.terminals} terminal(s)` : ''}` : 'not connected';
           const key = host.identityFile ? `key ${host.identityFile}` : 'default keys';
-          return `${host.alias}  ${host.user ?? '?'}@${host.hostname}:${host.port}  ${state}  (${key})`;
+          const marker = host.alias === defaultHost ? '*' : '';
+          return `${marker}${host.alias}  ${host.user ?? '?'}@${host.hostname}:${host.port}  ${state}  (${key})`;
         });
         return `${hosts.length} host(s):\n${lines.join('\n')}`;
       },
@@ -565,22 +876,54 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_connect',
       description:
-        'Open the persistent connection to one machine and report what it is. Later calls on this host reuse it. Call this when a host reports "not connected" and you want the identity up front, or to surface an authentication problem early.',
+        'Open the persistent connection to one machine and report what it is. Later calls on this host reuse it. Call this when a host reports "not connected" and you want the identity up front, or to surface an authentication problem early. format:\'json\' returns {host, user, hostname, kernel, arch, platform, connectedAtMs}.',
       parameters: {
         host: { type: 'string', required: true, description: 'Exact ssh alias, as listed by presence_hosts.' },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON with the parsed remote identity. Defaults to text.',
+        },
       },
-      async execute(args, exec) {
+      async execute(args) {
         const started = Date.now();
         const connection = await pool.connection(args.host);
         const who = await connection.exec('printf "%s@%s %s" "$(id -un)" "$(hostname)" "$(uname -srm)"');
-        return `connected to ${args.host} in ${Date.now() - started}ms\nremote: ${who.stdout.trim()}`;
+        const raw = who.stdout.trim();
+        if (args.format === 'json') {
+          // `user@hostname Sysname Release Machine`
+          const match = /^([^@\s]+)@(\S+)\s+(\S+)\s+(\S+)\s+(\S+)/.exec(raw);
+          return jsonText(
+            match
+              ? {
+                  host: args.host,
+                  user: match[1],
+                  hostname: match[2],
+                  kernel: match[4],
+                  arch: match[5],
+                  platform: match[3],
+                  connectedAtMs: connection.connectedAt ?? null,
+                }
+              : {
+                  host: args.host,
+                  user: null,
+                  hostname: null,
+                  kernel: null,
+                  arch: null,
+                  platform: null,
+                  connectedAtMs: connection.connectedAt ?? null,
+                  raw,
+                },
+          );
+        }
+        return `connected to ${args.host} in ${Date.now() - started}ms\nremote: ${raw}`;
       },
     }),
 
     tool({
       name: 'presence_exec',
       description:
-        'Run a shell command on a remote machine and return its exit code, stdout and stderr. Inside a workspace the machine and working directory come from the session itself, so no host is needed. The connection persists between calls. Commands run with `set -o pipefail` by default, so `cmd | tail` reports cmd\'s real failure; pass pipefail:false to disable. For servers or long jobs use background:true instead of `&`: it returns a job id, takes an optional label, and can wait until a port is listening with waitForPort. format:\'json\' returns one text block of JSON ({cwd, command, exitCode, signal, durationMs, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated}) with stdout/stderr clipped to 16 KiB each; saveStdout writes a successful foreground command\'s stdout to a remote file.\n\nDESTRUCTIVE COMMANDS (`rm -r/-f`, `git clean -fdx`, `find -delete`, `shred`, `truncate`, `dd of=`) are dry-run first: the tool shows every resolved target and refuses workspace roots, ancestors, home, `/` and `.git` metadata. Re-run with confirm:true to execute; prefer presence_trash for recoverable deletes. Output is ANSI-stripped and middle-truncated by default.',
+        'Run a shell command on a remote machine and return its exit code, stdout and stderr. Inside a workspace the machine and working directory come from the session itself, so no host is needed. The connection persists between calls. Commands run with `set -o pipefail` by default, so `cmd | tail` reports cmd\'s real failure; pass pipefail:false to disable. For servers or long jobs use background:true instead of `&`: it returns a job id, takes an optional label, and can wait until a port is listening with waitForPort. format:\'json\' returns one text block of JSON ({cwd, command, exitCode, signal, durationMs, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated}) with stdout/stderr clipped to 16 KiB each; saveStdout writes a successful foreground command\'s stdout to a remote file.\n\nDESTRUCTIVE COMMANDS (`rm -r/-f`, `git clean -fdx`, `find -delete`, `shred`, `truncate`, `dd of=`) are dry-run first: the tool shows every resolved target and refuses workspace roots, ancestors, home, `/` and `.git` metadata. Re-run with confirm:true to execute; format:\'json\' returns that dry run as {dryRun:true, requiresConfirm:true, targets, command, report}. Prefer presence_trash for recoverable deletes. Output is ANSI-stripped and middle-truncated by default.',
       parameters: {
         host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
         command: { type: 'string', required: true, description: 'Command line, interpreted by the remote shell.' },
@@ -601,7 +944,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         format: {
           type: 'string',
           enum: ['text', 'json'],
-          description: 'Return one text block containing JSON: {cwd, command, exitCode, signal, durationMs, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated}. Streams are clipped to 16 KiB each. Defaults to text.',
+          description: 'Return one text block containing JSON: {cwd, command, exitCode, signal, durationMs, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated}. Streams are clipped to 16 KiB each. For a destructive command without confirm:true the JSON is {dryRun:true, requiresConfirm:true, targets, command, report}. Defaults to text.',
         },
         saveStdout: {
           type: 'string',
@@ -630,7 +973,20 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
             host,
             confirm: false,
           });
-          if (guard) return guard.report;
+          if (guard) {
+            // JSON callers get the guard report as data instead of having to
+            // parse the text report; `targets` mirrors the report's target block.
+            if (args.format === 'json') {
+              return jsonText({
+                dryRun: true,
+                requiresConfirm: true,
+                targets: guard.targets ?? [],
+                command: args.command,
+                report: guard.report,
+              });
+            }
+            return guard.report;
+          }
         } else {
           await guardDestructive({
             connection,
@@ -891,7 +1247,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_write',
       description:
-        'Create or fully replace a file on a remote machine. Missing parent directories are created. Inside a workspace, relative paths resolve against the workspace root. The write is atomic (temp file + rename), so a reader never sees a half-written file. An existing file keeps its mode (e.g. 0755 stays executable); pass `mode` to set one explicitly. After writing, the remote file is stat-ed and the result reports its actual size, octal mode and sha256.',
+        'Create or fully replace a file on a remote machine. Missing parent directories are created. Inside a workspace, relative paths resolve against the workspace root. The write is atomic (temp file + rename), so a reader never sees a half-written file. An existing file keeps its mode (e.g. 0755 stays executable); pass `mode` to set one explicitly. After writing, the remote file is stat-ed and the result reports its actual size, octal mode and full sha256. Pass `ifMatchSha256` (the hash the file must currently have) to refuse the overwrite when the remote content changed since you read it.',
       parameters: {
         host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
         path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
@@ -899,6 +1255,10 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         mode: {
           type: 'string',
           description: 'Octal file mode to set, e.g. "755" or "644". Defaults to the existing file\'s mode, or 644 for a new file.',
+        },
+        ifMatchSha256: {
+          type: 'string',
+          description: 'Optimistic lock: only write when the file currently has this sha256. A mismatch (or a missing/unreadable file) is an error that reports both hashes, and nothing is written.',
         },
         format: {
           type: 'string',
@@ -911,6 +1271,22 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         const { host, workspace } = await pickScope(args, exec);
         const connection = await pool.connection(host);
         const target = await remotePath(connection, workspace, args.path);
+        const expected = typeof args.ifMatchSha256 === 'string' ? args.ifMatchSha256.trim().toLowerCase() : '';
+        if (expected) {
+          const current = await remoteFileSha256(connection, target);
+          if (!current) {
+            throw new Error(
+              `ifMatchSha256: could not read the current sha256 of ${target} on ${host} ` +
+                '(the file is missing, or the host has no sha256sum); nothing was written',
+            );
+          }
+          if (current !== expected) {
+            throw new Error(
+              `ifMatchSha256 mismatch for ${target} on ${host}: expected ${expected}, current ${current}; ` +
+                'nothing was written (read the file again and retry with its current hash)',
+            );
+          }
+        }
         const parent = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : '';
         if (parent) {
           const made = await connection.exec(`mkdir -p ${shq(parent)}`, { timeoutMs: 30_000 });
@@ -925,9 +1301,9 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         const octal = modeLabel(mode);
         await markObserved(exec, args.path);
         if (args.format === 'json') {
-          return JSON.stringify({ path: target, sizeBytes, mode: octal, sha256: digest }, null, 2);
+          return jsonText({ path: target, sizeBytes, mode: octal, sha256: digest });
         }
-        return `wrote ${sizeBytes} bytes to ${target} on ${host} mode ${octal ?? 'unknown'} sha256 ${digest.slice(0, 16)}`;
+        return `wrote ${sizeBytes} bytes to ${target} on ${host} mode ${octal ?? 'unknown'} sha256 ${digest}`;
       },
     }),
 
@@ -983,7 +1359,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_import',
       description:
-        'Upload a LOCAL file to the remote machine 鈥?the missing local鈫抮emote direction of presence_export, and the only way to create binary files remotely (images, PDFs, build artifacts, attachments under ~/.dsh/attachments). Writes atomically, creates parent directories, can set a mode, and returns the sha256 so both sides can be checked. Limit: 64 MiB; for larger files use presence_exec with scp/rsync.',
+        'Upload a LOCAL file to the remote machine 鈥?the missing local鈫抮emote direction of presence_export, and the only way to create binary files remotely (images, PDFs, build artifacts, attachments under ~/.dsh/attachments). Writes atomically, creates parent directories, can set a mode, and returns the sha256 so both sides can be checked. format:\'json\' returns {remotePath, localPath, sizeBytes, sha256, mode} with the full digest. Limit: 64 MiB; for larger files use presence_exec with scp/rsync.',
       parameters: {
         source: {
           type: 'string',
@@ -998,6 +1374,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
         mode: { type: 'string', description: 'Octal mode for the destination, e.g. "755". Defaults to 644 for a new file, or the existing file\'s mode.' },
         overwrite: { type: 'boolean', description: 'Allow replacing an existing remote file. Defaults to true; pass false to fail instead.' },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: {remotePath, localPath, sizeBytes, sha256, mode}. The digest is complete, not abbreviated. Defaults to text.',
+        },
       },
       async execute(args, exec) {
         ensureWritable();
@@ -1033,9 +1414,19 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         }
         const mode = parseMode(args.mode) ?? (existing.exists ? undefined : 0o644);
         const result = await connection.writeText(target, buffer, { mode });
-        const modeText = typeof result.mode === 'number' ? ` mode ${result.mode.toString(8).padStart(3, '0')}` : '';
+        const after = await connection.stat(target);
+        const modeText = modeLabel(after.exists ? after.mode : result.mode);
+        if (args.format === 'json') {
+          return jsonText({
+            remotePath: target,
+            localPath: localSource,
+            sizeBytes: result.bytes ?? buffer.length,
+            sha256: digest,
+            mode: modeText,
+          });
+        }
         return (
-          `imported ${buffer.length} bytes to ${target} on ${host}${modeText}\n` +
+          `imported ${buffer.length} bytes to ${target} on ${host}${modeText ? ` mode ${modeText}` : ''}\n` +
           `sha256: ${digest}\n` +
           `local source: ${localSource}`
         );
@@ -1045,46 +1436,105 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_trash',
       description:
-        'Delete a remote path RECOVERABLY: it is moved into `~/.dsh/presence-trash/<timestamp>/` on the same machine (no install, no extra service) and the restore path is returned. Prefer this over `rm -rf` for anything inside a workspace. Actions: trash (move a path), list (recent trash containers), restore (move one back).',
+        'Delete a remote path RECOVERABLY: it is moved into `~/.dsh/presence-trash/<timestamp>/` on the same machine (no install, no extra service) and the restore path is returned. Prefer this over `rm -rf` for anything inside a workspace. Actions: trash (one path, or up to 50 paths in one call), list (recent trash containers, newest first; a single movedAtISO per entry), restore (move one back).',
       parameters: {
         action: { type: 'string', required: true, enum: ['trash', 'list', 'restore'], description: 'What to do.' },
         host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
         path: { type: 'string', description: 'For trash: the remote path to move into the trash. For list: substring filter on trashPath/name.' },
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'For trash: several remote paths in one call (1-50, mutually exclusive with path). Each item is reported on its own, so one failure does not hide the others.',
+        },
         trashPath: { type: 'string', description: 'For restore: the path returned by trash (the container), not the original location.' },
         to: { type: 'string', description: 'For restore: where to put it back, e.g. the original path.' },
         format: {
           type: 'string',
           enum: ['text', 'json'],
-          description: 'Return one text block containing JSON. trash => {trashPath, sizeBytes, sourceRemoved, strategy, restoreHint}; list => array of {trashPath, name, movedAt, movedAtMs, movedAtISO}; restore => {restored, from, to}. Defaults to text.',
+          description:
+            'Return one text block containing JSON. trash => {trashPath, sizeBytes, sourceRemoved, strategy, restoreHint} for one path, or {results:[{path, trashPath, sizeBytes, sourceRemoved, strategy, restoreHint} | {path, error}], trashed, failed} for paths; list => array of {trashPath, name, movedAtISO}; restore => {restored, from, to}. Defaults to text.',
         },
       },
       async execute(args, exec) {
         const { host, workspace } = await pickScope(args, exec);
         const connection = await pool.connection(host);
         if (args.action === 'trash') {
-          if (!args.path) throw new Error('trash requires a path');
+          if (args.path !== undefined && args.paths !== undefined) {
+            throw new Error('pass either path or paths, not both');
+          }
+          const inputs = Array.isArray(args.paths) && args.paths.length > 0 ? args.paths : args.path ? [args.path] : [];
+          if (inputs.length === 0) throw new Error('trash requires a path (or paths)');
+          if (inputs.length > TRASH_MAX_PATHS) {
+            throw new Error(`trash moves at most ${TRASH_MAX_PATHS} paths per call, got ${inputs.length}`);
+          }
           if (typeof connection.trash !== 'function') throw new Error('this Presence build has no trash support; update the plugin');
-          const target = await remotePath(connection, workspace, args.path);
-          const result = await connection.trash(target);
-          const after = await connection.stat(target).catch(() => null);
-          const sourceRemoved = after ? after.exists !== true : false;
-          const sizeBytes = result.size ?? null;
-          const restoreHint = `presence_trash {action:'restore', trashPath:${JSON.stringify(result.trashPath)}, to:${JSON.stringify(target)}}`;
-          if (args.format === 'json') {
-            return JSON.stringify(
-              { trashPath: result.trashPath, sizeBytes, sourceRemoved, strategy: result.strategy, restoreHint },
-              null,
-              2,
+          const results = [];
+          for (const input of inputs) {
+            let target = String(input);
+            try {
+              target = await remotePath(connection, workspace, input);
+              const result = await connection.trash(target);
+              const after = await connection.stat(target).catch(() => null);
+              results.push({
+                path: target,
+                trashPath: result.trashPath,
+                sizeBytes: result.size ?? null,
+                entries: result.entries ?? null,
+                sourceRemoved: after ? after.exists !== true : false,
+                strategy: result.strategy,
+                restoreHint: `presence_trash {action:'restore', trashPath:${JSON.stringify(result.trashPath)}, to:${JSON.stringify(target)}}`,
+              });
+            } catch (error) {
+              results.push({ path: target, error: error?.message ?? String(error) });
+            }
+          }
+          // A single `path` keeps the shape callers already parse.
+          if (args.paths === undefined) {
+            const single = results[0];
+            if (single.error) throw new Error(single.error);
+            if (args.format === 'json') {
+              return jsonText({
+                trashPath: single.trashPath,
+                sizeBytes: single.sizeBytes,
+                sourceRemoved: single.sourceRemoved,
+                strategy: single.strategy,
+                restoreHint: single.restoreHint,
+              });
+            }
+            return (
+              `moved to trash on ${host}\n` +
+              `original: ${single.path}\n` +
+              `trash: ${single.trashPath}\n` +
+              `${single.entries ?? '?'} files, ${single.sizeBytes === null ? 'size unknown' : formatBytes(single.sizeBytes)}\n` +
+              `source removed: ${single.sourceRemoved ? 'yes' : 'no'}\n` +
+              `restore with ${single.restoreHint}`
             );
           }
-          return (
-            `moved to trash on ${host}\n` +
-            `original: ${target}\n` +
-            `trash: ${result.trashPath}\n` +
-            `${result.entries ?? '?'} files, ${sizeBytes === null ? 'size unknown' : formatBytes(sizeBytes)}\n` +
-            `source removed: ${sourceRemoved ? 'yes' : 'no'}\n` +
-            `restore with ${restoreHint}`
+          const failed = results.filter((row) => row.error).length;
+          if (args.format === 'json') {
+            return jsonText({
+              results: results.map((row) =>
+                row.error
+                  ? { path: row.path, error: row.error }
+                  : {
+                      path: row.path,
+                      trashPath: row.trashPath,
+                      sizeBytes: row.sizeBytes,
+                      sourceRemoved: row.sourceRemoved,
+                      strategy: row.strategy,
+                      restoreHint: row.restoreHint,
+                    },
+              ),
+              trashed: results.length - failed,
+              failed,
+            });
+          }
+          const lines = results.map((row) =>
+            row.error
+              ? `${row.path}  error: ${row.error}`
+              : `${row.path} -> ${row.trashPath} (${row.sizeBytes === null ? 'size unknown' : formatBytes(row.sizeBytes)}, source removed: ${row.sourceRemoved ? 'yes' : 'no'})`,
           );
+          return clip([`moved ${results.length - failed}/${results.length} path(s) to trash on ${host}`, ...lines].join('\n'));
         }
         if (args.action === 'list') {
           if (typeof connection.listTrash !== 'function') throw new Error('this Presence build has no trash support; update the plugin');
@@ -1095,16 +1545,15 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
             .filter((entry) => !needle || entry.trashPath.includes(needle) || String(entry.name ?? '').includes(needle))
             .map((entry) => {
               const movedAtMs = toMtimeMs(entry.movedAt);
-              return {
-                trashPath: entry.trashPath,
-                name: entry.name,
-                movedAt: entry.movedAt ?? null,
-                movedAtMs,
-                movedAtISO: toISO(movedAtMs),
-              };
+              return { trashPath: entry.trashPath, name: entry.name, movedAtMs };
             })
             .sort((a, b) => (b.movedAtMs ?? 0) - (a.movedAtMs ?? 0));
-          if (args.format === 'json') return JSON.stringify(rows, null, 2);
+          if (args.format === 'json') {
+            // One time field only: the container's own mtime is the move time.
+            return jsonText(
+              rows.map((row) => ({ trashPath: row.trashPath, name: row.name, movedAtISO: toISO(row.movedAtMs) })),
+            );
+          }
           if (rows.length === 0) return `trash is empty on ${host}${needle ? ` for "${needle}"` : ''}`;
           return clip(rows.map((row) => `${formatMtime(row.movedAtMs ?? Number.NaN)}  ${row.trashPath}`).join('\n'));
         }
@@ -1139,7 +1588,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         format: {
           type: 'string',
           enum: ['text', 'json'],
-          description: 'Return one text block containing JSON: {path, replaced, dryRun, bytesBefore, bytesAfter, diff}. Defaults to text.',
+          description: 'Return one text block containing JSON: {path, replaced, dryRun, bytesBefore, bytesAfter, sizeBytes, actualSizeBytes, projectedSizeBytes, diff}. `sizeBytes` is the size the file really has (on-disk for a dry run, written size otherwise). Defaults to text.',
         },
       },
       async execute(args, exec) {
@@ -1165,20 +1614,36 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         let replaced = replaceAll ? occurrences : 1;
         let after = replaceAll ? before.split(oldText).join(newText) : before.replace(oldText, newText);
         const bytesBefore = Buffer.byteLength(before, 'utf8');
-        let bytesAfter = Buffer.byteLength(after, 'utf8');
+        // The size the edited content would produce, computed before any write.
+        const projectedSizeBytes = Buffer.byteLength(after, 'utf8');
+        let bytesAfter = projectedSizeBytes;
+        let actualSizeBytes = bytesBefore;
         if (!dryRun) {
           const result = await connection.editText(target, oldText, newText, { replaceAll });
           replaced = result.replaced;
           after = (await connection.readText(target, { length: Number.MAX_SAFE_INTEGER })).content;
           bytesAfter = result.bytes;
+          actualSizeBytes = result.bytes;
         }
         const diff = diffLines(before, after);
         await markObserved(exec, args.path);
         if (args.format === 'json') {
-          return JSON.stringify({ path: target, replaced, dryRun, bytesBefore, bytesAfter, diff }, null, 2);
+          return jsonText({
+            path: target,
+            replaced,
+            dryRun,
+            bytesBefore,
+            bytesAfter,
+            // sizeBytes is what the file really has: the on-disk size for a dry
+            // run, the written size otherwise. `projectedSizeBytes` is the edit.
+            sizeBytes: actualSizeBytes,
+            actualSizeBytes,
+            projectedSizeBytes,
+            diff,
+          });
         }
         const verb = dryRun ? 'would edit' : 'edited';
-        const note = dryRun ? ' (dry run; nothing written)' : '';
+        const note = dryRun ? ` (dry run: ${bytesBefore} B → ${projectedSizeBytes} B projected; nothing written)` : '';
         return `${verb} ${target} on ${host}: ${replaced} occurrence(s), ${bytesBefore} -> ${bytesAfter} bytes${note}\n${diff}`;
       },
     }),
@@ -1194,6 +1659,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         include: { type: 'string', description: 'Only files matching this glob. Accepts *.ts, *.{js,jsx}, or a comma-separated list such as *.txt,*.dat (spaces are trimmed).' },
         limit: { type: 'number', description: 'Maximum matches to return. Defaults to 200.' },
         countOnly: { type: 'boolean', description: 'Return only the exact count of matching lines, not the matches themselves. Defaults to false.' },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: {pattern, root, countOnly, matchCount, truncated, matches:[{file, line, column?, text}]}. countOnly keeps matches empty. Defaults to text.',
+        },
       },
       async execute(args, exec) {
         const { host, workspace } = await pickScope(args, exec);
@@ -1217,6 +1687,24 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         });
         const warn = warning ? `\n(warning: some paths were not searchable 鈥?${warning.slice(0, 300)})` : '';
 
+        if (args.format === 'json') {
+          const matchCount = total ?? matches.length;
+          return jsonText({
+            pattern: args.pattern,
+            root: target,
+            countOnly: Boolean(args.countOnly),
+            matchCount,
+            truncated: truncated === true,
+            matches: args.countOnly
+              ? []
+              : matches.map((match) => ({
+                  file: match.path,
+                  line: match.lineNumber,
+                  ...(match.column === undefined ? {} : { column: match.column }),
+                  text: match.line,
+                })),
+          });
+        }
         if (args.countOnly) {
           return `${total} matching line(s) for ${args.pattern} under ${target} on ${host}${warn}`;
         }
@@ -1245,6 +1733,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
         path: { type: 'string', description: 'Directory to search from. Ignored by an absolute pattern; defaults to the workspace root.' },
         limit: { type: 'number', description: 'Maximum files to return, applied after the newest-first sort. Defaults to 200.' },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: an array of {path, sizeBytes, mtimeISO, mtimeMs}, newest first. Defaults to text.',
+        },
       },
       async execute(args, exec) {
         const { host, workspace } = await pickScope(args, exec);
@@ -1263,10 +1756,20 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         if (!info.isDir) throw new Error(`${base} on ${host} is not a directory`);
 
         const detailed = await remoteGlobDetailed(connection, { root: base, pattern, limit, stats: true });
+        const prefix = base.replace(/\/+$/, '');
+        if (args.format === 'json') {
+          return jsonText(
+            detailed.entries.map((entry) => ({
+              path: `${prefix}/${entry.path}`,
+              sizeBytes: entry.size ?? null,
+              mtimeISO: toISO(entry.mtime),
+              mtimeMs: entry.mtime ?? null,
+            })),
+          );
+        }
         if (detailed.files.length === 0) {
           return `no files match ${rawPattern} under ${base} on ${host} (limit ${limit}, not truncated)`;
         }
-        const prefix = base.replace(/\/+$/, '');
         const lines = detailed.entries.map((entry) => {
           const path = `${prefix}/${entry.path}`;
           if (!detailed.stats || entry.mtime === null) return path;
@@ -1297,6 +1800,63 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     }),
 
     tool({
+      name: 'presence_stat',
+      description:
+        'Report metadata for 1-100 remote paths in one call: type, size, octal mode, mtime and optionally sha256. Missing paths come back with exists:false instead of failing the whole call, so it doubles as an existence check. A symlink is described as a link and never followed unless followSymlinks is set; sha256 is computed only for regular files. format:\'json\' returns [{path, exists, type, sizeBytes, mode, mtimeISO, mtimeMs, sha256?}].',
+      parameters: {
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          required: true,
+          description: 'Remote paths (absolute, ~/..., presence://host/path, or workspace-relative). 1-100 entries.',
+        },
+        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        hash: {
+          type: 'boolean',
+          description: 'Also compute sha256 for existing regular files. Defaults to false.',
+        },
+        followSymlinks: {
+          type: 'boolean',
+          description: 'Stat and hash through symlinks instead of describing the link itself. Defaults to false.',
+        },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: one object per path. Defaults to text.',
+        },
+      },
+      async execute(args, exec) {
+        const inputs = Array.isArray(args.paths) ? args.paths : [];
+        if (inputs.length === 0) throw new Error('paths is required: pass 1-100 remote paths');
+        if (inputs.length > STAT_MAX_PATHS) {
+          throw new Error(`presence_stat reports at most ${STAT_MAX_PATHS} paths per call, got ${inputs.length}`);
+        }
+        const { host, workspace } = await pickScope(args, exec);
+        const connection = await pool.connection(host);
+        const targets = [];
+        for (const input of inputs) targets.push(await remotePath(connection, workspace, input));
+        const rows = await statRemotePaths(connection, targets, {
+          hash: args.hash === true,
+          followSymlinks: args.followSymlinks === true,
+        });
+        if (args.format === 'json') return jsonText(rows);
+        const header = ['path', 'type', 'size', 'mode', 'mtime', ...(args.hash === true ? ['sha256'] : [])].join('\t');
+        const lines = rows.map((row) => {
+          const size = row.type === 'dir' || row.sizeBytes === null ? '-' : formatBytes(row.sizeBytes);
+          const cells = [row.path, row.type, size, row.mode ?? '-', row.mtimeISO ?? '-'];
+          if (args.hash === true) cells.push(row.sha256 ?? '-');
+          return cells.join('\t');
+        });
+        const found = rows.filter((row) => row.exists).length;
+        const hashed = rows.filter((row) => row.sha256).length;
+        const summary =
+          `${rows.length} path(s): ${found} found, ${rows.length - found} missing` +
+          (args.hash === true ? `, ${hashed} hashed` : '');
+        return clip([header, ...lines, '', summary].join('\n'));
+      },
+    }),
+
+    tool({
       name: 'presence_jobs',
       description:
         'List, inspect, wait for, or stop background commands started with presence_exec {background:true}. Jobs are detached process groups on the remote machine, so they survive the SSH connection. list is scoped to this session by default (all:true shows every session); status shows one job\'s state, exit code, pid, label, start time and log; wait follows a job until it exits or the timeout, returning its state, exit code, log size and log tail; stop takes a jobId, or a raw pgid + host when the job id was lost, then verifies whether the pid is still alive and reports the exit summary. format:\'json\' returns structured data for list/status/stop.',
@@ -1313,10 +1873,14 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         all: { type: 'boolean', description: 'For list: include jobs from every session, not just this one. Defaults to false.' },
         pgid: { type: 'number', description: 'For stop: a process group id to signal directly, as an alternative to jobId. Requires host.' },
         host: { type: 'string', description: 'For stop with pgid: the ssh alias of the machine that owns the process group.' },
+        port: {
+          type: 'number',
+          description: 'For stop: after stopping, wait up to 3s for this remote TCP port to be released and report `portReleased` (true/false/null). Use it to prove a stopped server really freed its port.',
+        },
         format: {
           type: 'string',
           enum: ['text', 'json'],
-          description: 'For list/status/stop: return one text block containing JSON instead of human-readable text. Defaults to text.',
+          description: 'For list/status/wait/stop: return one text block containing JSON instead of human-readable text. wait adds `timedOut`; a running job\'s `exitSummary` is null; stop adds `port`/`portReleased` when a port is given. Defaults to text.',
         },
       },
       async execute(args, exec) {
@@ -1363,7 +1927,10 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           const job = jobs.find((entry) => entry.id === args.jobId);
           if (!job) throw new Error(`no background job "${args.jobId}"`);
           const body = jobRecord(job);
-          if (args.format === 'json') return JSON.stringify(body, null, 2);
+          // A running job has no exit yet: null says exactly that, where
+          // "unknown" reads like a failed probe.
+          const exitSummary = body.state === 'running' ? null : exitSummaryOf(body);
+          if (args.format === 'json') return jsonText({ ...body, exitSummary });
           const lines = [
             `job ${body.id} on ${body.host}: ${body.state}`,
             `pid: ${body.pid ?? '-'}  started: ${body.startedAt ? formatMtime(body.startedAt) : '-'}`,
@@ -1386,35 +1953,62 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
             typeof pool.waitJob === 'function'
               ? await pool.waitJob(args.jobId, { timeoutMs, tailLines })
               : await waitForJobFallback(pool, args.jobId, { timeoutMs, tailLines });
-          return formatWaitReport(job, { timeoutMs, tailLines });
+          // waitJob returns when the deadline passes; `running`/`unknown` is
+          // the only state that means "the wait ended before the job did".
+          const state = job.state ?? 'unknown';
+          const timedOut = state === 'running' || state === 'unknown';
+          if (args.format === 'json') {
+            return jsonText({
+              id: job.id,
+              host: job.host ?? null,
+              state,
+              timedOut,
+              exitCode: job.exitCode ?? null,
+              exitSignal: job.exitSignal ?? null,
+              exitSummary: timedOut ? null : exitSummaryOf(job),
+              logSize: job.logSize ?? null,
+              logTail: job.logTail ?? null,
+            });
+          }
+          return formatWaitReport(job, { timeoutMs, tailLines, timedOut });
         }
 
         if (action === 'stop') {
           if (args.jobId) {
             const result = await pool.stopJob(args.jobId);
             const check = await verifyPidAlive(pool, result.host, result.pid);
+            const portReleased = await portReleasedAfterStop(pool, result.host, args.port);
             if (args.format === 'json') {
-              return JSON.stringify(
-                {
-                  id: result.id,
-                  host: result.host,
-                  pid: result.pid,
-                  stopped: result.stopped,
-                  wasAlive: result.wasAlive ?? null,
-                  reason: result.reason ?? null,
-                  survivors: result.survivors ?? null,
-                  exitCode: result.exitCode ?? null,
-                  exitSignal: result.exitSignal ?? null,
-                  verified: check.verified,
-                  alive: check.alive,
-                },
-                null,
-                2,
-              );
+              return jsonText({
+                id: result.id,
+                host: result.host,
+                pid: result.pid,
+                stopped: result.stopped,
+                wasAlive: result.wasAlive ?? null,
+                reason: result.reason ?? null,
+                survivors: result.survivors ?? null,
+                exitCode: result.exitCode ?? null,
+                exitSignal: result.exitSignal ?? null,
+                exitSummary: exitSummaryOf({ ...result, state: 'exited' }),
+                verified: check.verified,
+                alive: check.alive,
+                port: args.port ?? null,
+                portReleased,
+              });
             }
-            if (result.stopped) return `stopped ${result.id} (pid ${result.pid}) on ${result.host}\n${stopSummary(result, check)}`;
+            const portLine =
+              args.port === undefined || args.port === null
+                ? null
+                : `port ${args.port} released: ${portReleased === null ? 'unknown' : portReleased ? 'yes' : 'no'}`;
+            if (result.stopped) {
+              const lines = [`stopped ${result.id} (pid ${result.pid}) on ${result.host}`, stopSummary(result, check)];
+              if (portLine) lines.push(portLine);
+              return lines.join('\n');
+            }
             const reason = result.reason ?? `survivors ${(result.survivors ?? []).join(', ') || 'unknown'}`;
-            return `nothing to stop for ${result.id}: ${reason}\n${stopSummary(result, check)}`;
+            const lines = [`nothing to stop for ${result.id}: ${reason}`, stopSummary(result, check)];
+            if (portLine) lines.push(portLine);
+            return lines.join('\n');
           }
           if (args.pgid === undefined || args.pgid === null) {
             throw new Error('stop requires a jobId, or pgid plus host');
@@ -1435,28 +2029,32 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           const survivors = Array.isArray(result?.survivors) ? result.survivors : [];
           const stopped = result?.stopped !== false && survivors.length === 0;
           const check = await verifyPidAlive(pool, args.host, pgid);
+          const portReleased = await portReleasedAfterStop(pool, args.host, args.port);
           if (args.format === 'json') {
-            return JSON.stringify(
-              {
-                id: result?.id ?? null,
-                host: args.host,
-                pid: pgid,
-                stopped,
-                wasAlive: result?.wasAlive ?? null,
-                reason: result?.reason ?? null,
-                survivors,
-                exitCode: result?.exitCode ?? null,
-                exitSignal: result?.exitSignal ?? null,
-                verified: check.verified,
-                alive: check.alive,
-              },
-              null,
-              2,
-            );
+            return jsonText({
+              id: result?.id ?? null,
+              host: args.host,
+              pid: pgid,
+              stopped,
+              wasAlive: result?.wasAlive ?? null,
+              reason: result?.reason ?? null,
+              survivors,
+              exitCode: result?.exitCode ?? null,
+              exitSignal: result?.exitSignal ?? null,
+              exitSummary: exitSummaryOf({ ...result, state: 'exited' }),
+              verified: check.verified,
+              alive: check.alive,
+              port: args.port ?? null,
+              portReleased,
+            });
           }
+          const portLine =
+            args.port === undefined || args.port === null
+              ? ''
+              : `\nport ${args.port} released: ${portReleased === null ? 'unknown' : portReleased ? 'yes' : 'no'}`;
           return stopped
-            ? `stopped process group ${pgid} on ${args.host}\n${stopSummary({ ...result, pid: pgid }, check)}`
-            : `could not stop process group ${pgid} on ${args.host}: survivors ${survivors.join(', ') || 'unknown'}\n${stopSummary({ ...result, pid: pgid }, check)}`;
+            ? `stopped process group ${pgid} on ${args.host}\n${stopSummary({ ...result, pid: pgid }, check)}${portLine}`
+            : `could not stop process group ${pgid} on ${args.host}: survivors ${survivors.join(', ') || 'unknown'}\n${stopSummary({ ...result, pid: pgid }, check)}${portLine}`;
         }
 
         throw new Error(`unknown action ${action}`);
@@ -1546,6 +2144,223 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     }),
 
     tool({
+      name: 'presence_port_probe',
+      description:
+        'Check 1-20 TCP ports on one remote machine in a single call: whether anything listens (ss -ltnp, with pid/process) and whether a TCP connect is accepted (bash /dev/tcp, python3 fallback). expect:\'open\' or \'closed\' makes ok report whether the actual state matches; waitMs polls every 250 ms until every port matches (or, without expect, until every port is open), then reports the last state. Use it to prove a server started, or that a stopped job or closed forward really released its port. format:\'json\' returns [{port, listening, pid, process, probe, ok}].',
+      parameters: {
+        ports: {
+          type: 'array',
+          items: { type: 'number' },
+          required: true,
+          description: 'TCP ports to check (1-20 entries).',
+        },
+        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        expect: {
+          type: 'string',
+          enum: ['open', 'closed'],
+          description: 'Expected state; `ok` compares the actual state with it. Without it, `ok` means "open".',
+        },
+        waitMs: {
+          type: 'number',
+          description: 'Poll every 250 ms until the expectation holds, up to this many milliseconds. Defaults to 0 (one shot).',
+        },
+        probe: {
+          type: 'boolean',
+          description: 'Also do a TCP connect check (bash /dev/tcp, python3 fallback). Defaults to true; false only reads the ss table.',
+        },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: one object per port. Defaults to text.',
+        },
+      },
+      async execute(args, exec) {
+        const inputs = Array.isArray(args.ports) ? args.ports : [];
+        if (inputs.length === 0) throw new Error('ports is required: pass 1-20 TCP ports');
+        if (inputs.length > PROBE_MAX_PORTS) {
+          throw new Error(`presence_port_probe checks at most ${PROBE_MAX_PORTS} ports per call, got ${inputs.length}`);
+        }
+        const ports = [...new Set(inputs.map((value) => Number(value)))];
+        for (const port of ports) {
+          if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`invalid TCP port ${port}`);
+        }
+        const { host } = await pickScope(args, exec);
+        const connection = await pool.connection(host);
+        const probe = args.probe !== false;
+        const expect = args.expect === 'open' || args.expect === 'closed' ? args.expect : null;
+        const waitMs = Math.max(0, Math.min(120_000, Number(args.waitMs) || 0));
+        const deadline = Date.now() + waitMs;
+        let snapshot;
+        let rows;
+        for (;;) {
+          snapshot = await inspectRemotePorts(connection, ports, { probe });
+          rows = ports.map((port) => portProbeRow(port, snapshot, { expect, probe }));
+          const satisfied =
+            expect === null ? rows.every((row) => row.listening || row.probe === 'accepted') : rows.every((row) => row.ok);
+          if (satisfied || waitMs <= 0 || Date.now() >= deadline) break;
+          await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
+        }
+        if (args.format === 'json') return jsonText(rows);
+        const header = 'port\tlistening\tpid\tprocess\tprobe\tok';
+        const lines = rows.map(
+          (row) =>
+            `${row.port}\t${row.listening ? 'yes' : 'no'}\t${row.pid ?? '-'}\t${row.process ?? '-'}\t${row.probe}\t${row.ok ? 'yes' : 'no'}`,
+        );
+        const openCount = rows.filter((row) => row.listening || row.probe === 'accepted').length;
+        const footer = [
+          `${rows.length} port(s): ${openCount} open`,
+          expect === null ? null : `expect: ${expect} · pass: ${rows.every((row) => row.ok) ? 'yes' : 'no'}`,
+          snapshot.ssAvailable ? null : 'ss is unavailable: listening falls back to the TCP connect probe',
+          probe && rows.some((row) => row.probe === 'skipped')
+            ? 'TCP connect probe unavailable (no bash with /dev/tcp and no python3)'
+            : null,
+        ].filter(Boolean);
+        return clip([header, ...lines, '', ...footer].join('\n'));
+      },
+    }),
+
+    tool({
+      name: 'presence_http_probe',
+      description:
+        'Probe a remote HTTP service through a temporary tunnel: wait for the remote port (by default), forward it to this machine, GET one or more paths, assert status codes and body substrings, then ALWAYS close the tunnel in a finally block and verify the local port was released. paths defaults to ["/"], expectStatus to [200]; expectBody is a list of substrings that must all appear somewhere in the concatenated bodies. pass is true when every status is expected and every substring was found. format:\'json\' returns {forwardId, localPort, remotePort, results, pass, portReleased}. This replaces the exec + forward + fetch + forward close + port check chain with one call.',
+      parameters: {
+        remotePort: { type: 'number', required: true, description: 'Remote TCP port serving HTTP.' },
+        localPort: { type: 'number', description: 'Local port for the tunnel. Defaults to the remote port, falling back to an OS-assigned one.' },
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Request paths, 1-20. A path without a leading "/" gets one. Defaults to ["/"].',
+        },
+        expectStatus: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'Accepted HTTP status codes. Defaults to [200].',
+        },
+        expectBody: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Substrings that must all appear somewhere in the concatenated response bodies.',
+        },
+        timeoutMs: { type: 'number', description: 'Per-request timeout. Defaults to 15000.' },
+        waitForPort: {
+          type: 'boolean',
+          description: 'Wait up to timeoutMs for the remote port to accept TCP before forwarding. Defaults to true.',
+        },
+        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: {forwardId, localPort, remotePort, results, pass, portReleased}. Defaults to text.',
+        },
+      },
+      async execute(args, exec) {
+        const remotePort = Number(args.remotePort);
+        if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) {
+          throw new Error(`remotePort must be a TCP port number, got ${args.remotePort}`);
+        }
+        const timeoutMs = Math.max(100, Math.min(120_000, Number(args.timeoutMs) || 15_000));
+        const paths = (Array.isArray(args.paths) && args.paths.length > 0 ? args.paths : ['/']).map((value) => {
+          const path = String(value);
+          return path.startsWith('/') ? path : `/${path}`;
+        });
+        const expectStatus = (Array.isArray(args.expectStatus) && args.expectStatus.length > 0
+          ? args.expectStatus
+          : [200]
+        ).map((value) => Number(value));
+        const expectBody = (Array.isArray(args.expectBody) ? args.expectBody : []).map(String);
+        const { host } = await pickScope(args, exec);
+        const connection = await pool.connection(host);
+        if (args.waitForPort !== false) {
+          const waited = await waitForRemotePort(connection, remotePort, timeoutMs);
+          if (!waited.ready) {
+            throw new Error(
+              `nothing is listening on 127.0.0.1:${remotePort} on ${host} after ${waited.waitedMs}ms`,
+            );
+          }
+        }
+        const tunnel = await pool.openForward(host, {
+          localPort: args.localPort,
+          remoteHost: '127.0.0.1',
+          remotePort,
+        });
+        const base = `http://127.0.0.1:${tunnel.localPort}`;
+        const results = [];
+        const bodies = [];
+        let portReleased = null;
+        try {
+          for (const path of paths) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+              const response = await fetch(base + path, { signal: controller.signal });
+              const body = await response.text();
+              bodies.push(body);
+              results.push({
+                path,
+                status: response.status,
+                bytes: Buffer.byteLength(body, 'utf8'),
+                contentType: response.headers.get('content-type') ?? null,
+                body,
+              });
+            } catch (error) {
+              results.push({
+                path,
+                status: null,
+                bytes: 0,
+                contentType: null,
+                body: '',
+                error: String(error?.message ?? error),
+              });
+            } finally {
+              clearTimeout(timer);
+            }
+          }
+        } finally {
+          // Never leave a tunnel behind, whatever the probes did.
+          await pool.closeTunnel(tunnel.id).catch(() => {});
+          portReleased = await localPortReleased(tunnel.localPort);
+        }
+        const missingBody = expectBody.filter((needle) => !bodies.join('\n').includes(needle));
+        const rows = results.map((row) => ({
+          path: row.path,
+          status: row.status,
+          bytes: row.bytes,
+          contentType: row.contentType,
+          bodyMatched: expectBody.length === 0 ? null : expectBody.every((needle) => row.body.includes(needle)),
+          ...(row.error ? { error: row.error } : {}),
+        }));
+        const pass =
+          results.every((row) => row.status !== null && expectStatus.includes(row.status)) && missingBody.length === 0;
+        if (args.format === 'json') {
+          return jsonText({
+            forwardId: tunnel.id,
+            localPort: tunnel.localPort,
+            remotePort: tunnel.remotePort,
+            results: rows,
+            pass,
+            portReleased,
+          });
+        }
+        const table = results.map(
+          (row) =>
+            `${row.path}\t${row.status ?? 'ERR'}\t${row.bytes}\t${row.contentType ?? '-'}\t` +
+            `${expectBody.length === 0 ? '-' : expectBody.every((needle) => row.body.includes(needle)) ? 'yes' : 'no'}` +
+            `${row.error ? `\t${row.error}` : ''}`,
+        );
+        const notes = [
+          `forward ${tunnel.id}: ${base} -> ${host}:127.0.0.1:${tunnel.remotePort} (closed after the probe)`,
+          `expect: status ${expectStatus.join('/')}${
+            expectBody.length ? ` · body ${expectBody.map((needle) => JSON.stringify(needle)).join(', ')}` : ''
+          }`,
+          missingBody.length ? `missing body: ${missingBody.map((needle) => JSON.stringify(needle)).join(', ')}` : null,
+          `pass: ${pass ? 'yes' : 'no'} · local port ${tunnel.localPort} released: ` +
+            `${portReleased === null ? 'unknown' : portReleased ? 'yes' : 'no'}`,
+        ].filter(Boolean);
+        return clip(['path\tstatus\tbytes\tcontent-type\tbody', ...table, '', ...notes].join('\n'));
+      },
+    }),
+
+    tool({
       name: 'presence_terminal',
       description:
         'Drive a persistent interactive terminal on a remote machine. open starts a shell that survives between tool calls; pass `session` to run it inside a named tmux session on the target, so it also survives an SSH drop or an app restart 鈥?reopen with the same name to reattach. write sends keystrokes, read returns new output since the last read, close ends it. Use this for REPLs, ssh sessions, long-running interactive programs and pagers 鈥?not for one-shot commands, which presence_exec handles.',
@@ -1564,6 +2379,15 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         },
         terminalId: { type: 'string', description: 'The id returned by open; required for write, read and close.' },
         data: { type: 'string', description: 'For write: the exact characters to send, including newlines.' },
+        cwd: {
+          type: 'string',
+          description: 'For open: directory the shell starts in, absolute or workspace-relative. Defaults to the workspace root when there is one.',
+        },
+        command: { type: 'string', description: 'For open: program the shell runs, default "bash".' },
+        ackOnly: {
+          type: 'boolean',
+          description: 'For write: return only an ack and leave the output for the next read, instead of waiting for and returning it. Defaults to false.',
+        },
         waitMs: { type: 'number', description: 'For read: wait up to this long for new output. Defaults to 0.' },
         cols: { type: 'number', description: 'For open: terminal width. Defaults to 120.' },
         rows: { type: 'number', description: 'For open: terminal height. Defaults to 32.' },
@@ -1571,21 +2395,53 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           type: 'boolean',
           description: 'For close: also kill the named tmux session instead of leaving it running. Defaults to false.',
         },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description:
+            'Return one text block containing JSON. open => {terminalId, host, cwd, shell}; write => {terminalId, writtenBytes, output} (output is null with ackOnly); read => {terminalId, output, closed}; list => array of {terminalId, host, session, closed, pending}; close => {terminalId, closed, session, killedSession, host}. Defaults to text.',
+        },
       },
       async execute(args, exec) {
         if (args.action === 'open') {
-          const { host } = await pickScope(args, exec);
+          const { host, workspace } = await pickScope(args, exec);
+          const connection = await pool.connection(host);
+          const cwd = args.cwd ? await remotePath(connection, workspace, args.cwd) : workspace?.path ?? null;
+          const shell = String(args.command ?? 'bash').trim() || 'bash';
           const { id, host: opened, session } = await pool.openTerminal(host, {
             cols: args.cols ?? 120,
             rows: args.rows ?? 32,
             session: args.session,
           });
+          if (!session || args.cwd !== undefined || args.command !== undefined) {
+            // A plain terminal always gets a deterministic shell and directory;
+            // an attached tmux session is only steered when asked explicitly.
+            const startup = `${cwd ? `cd ${shq(cwd)} && ` : ''}exec ${shell}`;
+            pool.writeTerminal(id, `${startup}\n`);
+            await sleep(200);
+            // Drop the startup echo/prompt so the caller's first read is theirs.
+            await pool.readTerminal(id, { waitMs: 400 }).catch(() => {});
+          }
+          if (args.format === 'json') {
+            return jsonText({ terminalId: id, host: opened, cwd, shell });
+          }
           const first = await pool.readTerminal(id, { waitMs: 600 });
           const where = session ? `${opened} (tmux session "${session}")` : opened;
           return `terminal ${id} opened on ${where}${first.data ? `\n${clip(first.data)}` : ''}`;
         }
         if (args.action === 'list') {
           const terminals = pool.listTerminals();
+          if (args.format === 'json') {
+            return jsonText(
+              terminals.map((terminal) => ({
+                terminalId: terminal.id,
+                host: terminal.host,
+                session: terminal.session ?? null,
+                closed: terminal.closed === true,
+                pending: terminal.pending,
+              })),
+            );
+          }
           if (terminals.length === 0) return 'no open terminals';
           return terminals
             .map((terminal) => `${terminal.id}  ${terminal.host}  ${terminal.closed ? 'closed' : 'open'}  ${terminal.pending} byte(s) unread`)
@@ -1593,12 +2449,29 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         }
         if (!args.terminalId) throw new Error(`${args.action} requires a terminalId`);
         if (args.action === 'write') {
-          pool.writeTerminal(args.terminalId, args.data ?? '');
-          return `sent ${(args.data ?? '').length} characters to ${args.terminalId}`;
+          const data = args.data ?? '';
+          const writtenBytes = Buffer.byteLength(data, 'utf8');
+          pool.writeTerminal(args.terminalId, data);
+          if (args.ackOnly) {
+            if (args.format === 'json') {
+              return jsonText({ terminalId: args.terminalId, writtenBytes, output: null });
+            }
+            return `sent ${writtenBytes} bytes to ${args.terminalId}; read the output with presence_terminal {action:'read'}`;
+          }
+          await sleep(150);
+          const read = await pool.readTerminal(args.terminalId, { waitMs: 400 });
+          const output = read.data ?? '';
+          if (args.format === 'json') {
+            return jsonText({ terminalId: args.terminalId, writtenBytes, output });
+          }
+          return clip(output || '(no output yet)');
         }
         if (args.action === 'read') {
           const result = await pool.readTerminal(args.terminalId, { waitMs: args.waitMs ?? 0 });
           const data = result.data ?? '';
+          if (args.format === 'json') {
+            return jsonText({ terminalId: args.terminalId, output: data, closed: result.closed === true });
+          }
           const body = data || '(no new output)';
           const bytes = Buffer.byteLength(data, 'utf8');
           // A full-screen replay is recognizable by its size; clip() only
@@ -1616,12 +2489,16 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           } catch {
             /* already gone */
           }
-          if (args.killSession && session && host) {
+          const killedSession = Boolean(args.killSession && session && host);
+          if (killedSession) {
             const connection = await pool.connection(host);
             await connection.exec(`tmux kill-session -t ${shq(session)}`).catch(() => {});
           }
           pool.closeTerminal(args.terminalId);
-          if (args.killSession && session) return `closed ${args.terminalId} and killed tmux session "${session}"`;
+          if (args.format === 'json') {
+            return jsonText({ terminalId: args.terminalId, closed: true, session, killedSession, host });
+          }
+          if (killedSession) return `closed ${args.terminalId} and killed tmux session "${session}"`;
           if (session) return `closed ${args.terminalId}; tmux session "${session}" keeps running 鈥?reopen with session:"${session}" to reattach`;
           return `closed ${args.terminalId}`;
         }

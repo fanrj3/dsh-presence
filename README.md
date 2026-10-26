@@ -7,7 +7,7 @@
 
 [![dsh-plugin](https://img.shields.io/badge/dsh--plugin-listing-2f6bff)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f6bff)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.17.2-2f6bff)](docs/RELEASE.md)
+[![version](https://img.shields.io/badge/version-0.17.5-2f6bff)](docs/RELEASE.md)
 
 > 也提供独立 **MCP server**（`mcp/`），让 Codex CLI / Claude Code / OpenCode 等不支持 DSH 插件的 agent
 > 用上同一套远程能力：[`mcp/README.md`](mcp/README.md)。
@@ -83,21 +83,24 @@ plugin_manager { action: "install_bundle", target: "D:\\04_Dev\\Presence" }
 
 | 工具 | 作用 |
 | --- | --- |
-| `presence_hosts` | 列出 ssh config 里的机器与当前连接状态 |
-| `presence_connect` | 建立常驻连接并报告远端身份 |
-| `presence_exec` | 在远端执行命令；默认 `pipefail`，支持 `background:true`、`waitForPort`、`timeoutMs`（超时会真杀进程树）；输出默认去 ANSI、首尾截断 16KiB（`maxOutput`/`raw` 可调），全量落盘并给路径；`format:"json"` 返回结构化 `{cwd, command, exitCode, signal, durationMs, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated}`（stdout/stderr 各截 16KiB，仍是合法 JSON）；`saveStdout` 在 exit 0 后把 stdout 原子写到远端文件并报告字节数；**危险命令先 dry-run，需 `confirm:true`** |
-| `presence_trash` | **可恢复删除**：把路径移入远端 `~/.dsh/presence-trash/<时间戳>/`，返回恢复路径；`action:'trash'` 会回查源是否已消失（`sourceRemoved`）并给 `restoreHint`/`sizeBytes`；`list` 时间正确格式化、最新在前、可用 `path` 过滤，支持 `format:"json"`；`restore` 也支持 `format:"json"` |
-| `presence_jobs` | `list`（默认只看本会话）/ `status`（单任务：state/exit/pid/startedAt/logPath/logSize/command/cwd）/ `wait`（返回退出码 + 末尾日志，替代 sleep+tail）/ `stop`（按 jobId 或 pgid；停止后用远端 `ps -p` 验证 `alive`/`verified` 并给 exitCode/exitSignal）；`list`/`status`/`stop` 支持 `format:"json"` |
+| `presence_hosts` | 列出 ssh config 里的机器与当前连接状态；默认主机（当前工作区所在机器）标 `*`；`format:"json"` => `[{alias,address,user,hostname,port,source,state,connected,default}]` |
+| `presence_connect` | 建立常驻连接并报告远端身份；`format:"json"` => `{host,user,hostname,kernel,arch,platform,connectedAtMs}` |
+| `presence_exec` | 在远端执行命令；默认 `pipefail`，支持 `background:true`、`waitForPort`、`timeoutMs`（超时会真杀进程树）；输出默认去 ANSI、首尾截断 16KiB（`maxOutput`/`raw` 可调），全量落盘并给路径；`format:"json"` 返回结构化 `{cwd, command, exitCode, signal, durationMs, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated}`（stdout/stderr 各截 16KiB，仍是合法 JSON）；`saveStdout` 在 exit 0 后把 stdout 原子写到远端文件并报告字节数；**危险命令先 dry-run，需 `confirm:true`**；dry-run 在 `format:"json"` 下返回 `{dryRun,requiresConfirm,targets,command,report}` |
+| `presence_trash` | **可恢复删除**：把路径移入远端 `~/.dsh/presence-trash/<时间戳>/`，返回恢复路径；`action:'trash'` 会回查源是否已消失（`sourceRemoved`）并给 `restoreHint`/`sizeBytes`，可用 `paths[]` 一次移 1–50 个（单项失败不拖累其余，单个 `path` 的返回形状不变）；`list` 时间正确格式化、最新在前、可用 `path` 过滤，JSON 每条只给一个 `movedAtISO`；`restore` 支持 `format:"json"` |
+| `presence_jobs` | `list`（默认只看本会话）/ `status`（单任务：state/exit/pid/startedAt/logPath/logSize/command/cwd；运行中 `exitSummary` 为 `null`）/ `wait`（返回退出码 + 末尾日志，替代 sleep+tail；新增 `timedOut`）/ `stop`（按 jobId 或 pgid；停止后用远端 `ps -p` 验证 `alive`/`verified` 并给 exitCode/exitSignal，可再带 `port` 探测端口是否真的释放为 `portReleased`）；`list`/`status`/`wait`/`stop` 支持 `format:"json"` |
 | `presence_read` | 读远端文件，带行号与 offset/limit；大文件走远端窗口读取（行数真实）；二进制明确拒绝；`raw:true` 返回逐字节原样内容（无路径头/行号/footer），`numbered:false` 去行号与 footer 但保留路径头；读完会给 harness 记账，内置 `edit` 可直接用 |
 | `presence_read_many` | 一次读 1-50 个远端文件，按 `=== <path> ===` 分段；默认带行号、`raw:true` 原样，每文件最多 `limit` 行（默认 2000）；某个文件读不了只在该段报 `error: ...`，不会拖垮整次调用；总输出按 32KiB 截断 |
-| `presence_write` | 原子整体写入，自动创建父目录；**保留原文件 mode**，可用 `mode:"755"` 显式指定；写后 `stat` 回读，报告真实字节数、八进制 mode（如 `0644`，未显式设置也绝不会显示 `0`）和 sha256 前 16 位；`format:"json"` => `{path, sizeBytes, mode, sha256}` |
-| `presence_edit` | 精确文本替换（`old`/`new` 与 `replace_all` 别名都认），锚点不唯一就报错，保留 mode；返回上下文 ±2 行、最多 100 行/8KiB 的紧凑 diff；`dryRun:true` 只校验锚点并出 diff、不写文件；`format:"json"` => `{path, replaced, dryRun, bytesBefore, bytesAfter, diff}` |
-| `presence_search` | 远端 rg 搜索；`countOnly` 只返回数量，超限返回 `truncated`/总数，路径不存在或正则非法直接报错 |
-| `presence_glob` | 远端按 glob 找文件（支持绝对 pattern，返回 size/mtime，按新→旧排序） |
+| `presence_write` | 原子整体写入，自动创建父目录；**保留原文件 mode**，可用 `mode:"755"` 显式指定；写后 `stat` 回读，报告真实字节数、八进制 mode（如 `0644`，未显式设置也绝不会显示 `0`）和**完整** sha256；`ifMatchSha256` 是乐观锁：文件当前哈希不匹配（或读不到）就报错并同时给出期望值/当前值，一个字节都不写；`format:"json"` => `{path, sizeBytes, mode, sha256}` |
+| `presence_edit` | 精确文本替换（`old`/`new` 与 `replace_all` 别名都认），锚点不唯一就报错，保留 mode；返回上下文 ±2 行、最多 100 行/8KiB 的紧凑 diff；`dryRun:true` 只校验锚点并出 diff、不写文件，文本给出 `dry run: X B → Y B projected`；`format:"json"` => `{path, replaced, dryRun, bytesBefore, bytesAfter, sizeBytes, actualSizeBytes, projectedSizeBytes, diff}`（dryRun 时 `sizeBytes` 为磁盘现值，写入后为落盘大小） |
+| `presence_search` | 远端 rg 搜索；`countOnly` 只返回数量，超限返回 `truncated`/总数，路径不存在或正则非法直接报错；`format:"json"` => `{pattern, root, countOnly, matchCount, matches:[{file, line, column?, text}]}` |
+| `presence_glob` | 远端按 glob 找文件（支持绝对 pattern，返回 size/mtime，按新→旧排序）；`format:"json"` => `[{path, sizeBytes, mtimeISO, mtimeMs}]` |
+| `presence_stat` | 一次远端 `stat -c` 批量报告 1–100 个路径：类型 / 大小 / 八进制 mode / mtime，`hash:true` 时对普通文件追加 sha256；**缺失路径返回 `exists:false`（`type:"missing"`）而不是整次失败**，所以它同时是存在性检查；符号链接默认只描述链接本身，`followSymlinks:true` 才穿透；`format:"json"` => `[{path, exists, type, sizeBytes, mode, mtimeISO, mtimeMs, sha256?}]` |
+| `presence_port_probe` | 一次 exec 同时取回 `ss -ltnp` 的监听表（含 pid/process）和每个端口的 TCP 连接结果（`bash /dev/tcp`，无 bash 回退 python3 socket）：`ports` 1–20、`expect:"open"\|"closed"` 让 `ok` 直接表示「是否符合预期」、`waitMs` 每 250ms 轮询到满足或超时；用来证明服务真的起来了，或 stop/close 之后端口真的释放了；`format:"json"` => `[{port, listening, pid, process, probe, ok}]` |
+| `presence_http_probe` | 一条调用完成「等远端端口 → 开转发 → 本地 fetch 多个 path → 断言状态码与响应体 → **finally 必关转发** → 验证本地端口已释放」：`paths` 默认 `["/"]`、`expectStatus` 默认 `[200]`、`expectBody` 为必须全部出现在（拼接后）响应体里的子串；`pass` = 状态码全中且子串全中；`format:"json"` => `{forwardId, localPort, remotePort, results, pass, portReleased}` |
 | `presence_export` | 远端 → 本地真实文件（内容寻址去重、自动清理、返回 sha256），供 `present` / Explorer / Office 使用 |
-| `presence_import` | **本地 → 远端**（截图、附件、构建产物等），二进制安全、可设 mode、返回 sha256；上限 64 MiB |
+| `presence_import` | **本地 → 远端**（截图、附件、构建产物等），二进制安全、可设 mode、返回 sha256；`format:"json"` => `{remotePath, localPath, sizeBytes, sha256, mode}`（完整哈希）；上限 64 MiB |
 | `presence_forward` | 本地端口转发到远端端口（建立前预检端口）；`http://127.0.0.1:<port>` 访问远端服务；open/list/close 支持 `format:"json"` |
-| `presence_terminal` | open / write / read / close 持久终端；带 `session` 时用 tmux，断线可重连；`close {killSession}` 彻底结束 |
+| `presence_terminal` | open / write / read / close 持久终端；open 可给 `cwd` 与 `command`（默认 bash）并返回 `{terminalId,host,cwd,shell}`；write 默认返回本次输出，`ackOnly:true` 只回 ack、输出留给 read；带 `session` 时用 tmux，断线可重连；`close {killSession}` 彻底结束；五个动作都支持 `format:"json"` |
 
 > 远程会话里内置 `grep`/`glob` 由插件**接管并转发到远端**（路径、大小写、截断规则与 `presence_search` 一致），不再出现"扫本地盘、静默空"的情况。
 
@@ -116,7 +119,7 @@ plugin_manager { action: "install_bundle", target: "D:\\04_Dev\\Presence" }
 
 ```
 presence_exec {command: "rm -rf .tmesh/$J"}
-→ destructive command needs confirmation (rm) — nothing was executed yet
+→ destructive command needs confirmation (rm): nothing was executed yet
   resolved targets:
     dir  /srv/app/TensorMesh/.tmesh  128 files  42.1 MB
   Pass confirm:true to execute it. Prefer presence_trash ...
@@ -125,6 +128,8 @@ presence_exec {command: "rm -rf .tmesh/$J"}
 工作区里要删东西，优先 `presence_trash {action:'trash', path:'build'}`：它是"移动到回收站 + 返回恢复路径"，零安装（就是远端 `mv`），后悔了 `action:'restore'` 放回去。
 
 **长任务推荐姿势**：`presence_exec {command, background:true}` → 拿到 jobId → `presence_jobs {action:'wait', jobId}` 等它结束（返回退出码和末尾日志）→ 需要时 `presence_jobs {action:'stop'}`。
+
+**「它真的起来了吗」一条调用验完**：`presence_port_probe {ports:[8010], expect:'open', waitMs:8000}` 同时给出监听表（pid/process）和 TCP 探测结果；`presence_http_probe {remotePort:8010, paths:['/','/src/main.js'], expectBody:['id="game"']}` 自己完成「等端口 → 开转发 → 本地 fetch → 断言 → 关转发 → 验证本地端口已释放」，不会留下悬挂隧道。`presence_stat` 则把 `stat`/`sha256sum`/`test -e` 这类兜底查询合并成一次远端调用（缺失路径返回 `exists:false`）。
 
 配置项（写在 `cordis.patch.yml` 的 `config` 里，会被你的补丁层覆盖）：
 
@@ -311,7 +316,7 @@ presence_forward { "action": "open", "remotePort": 8000 }
 - [x] exec：独立通道、超时、取消、退出码、stdout/stderr 分离
 - [x] 通道池（受 sshd `MaxSessions` 约束）
 - [x] PTY 终端，随连接存活
-- [x] DSH Bundle：15 个工具，已装进 profile 并实测
+- [x] DSH Bundle：18 个工具，已装进 profile 并实测
 - [x] 密码认证（进程内存 / 环境变量），已接入连接层
 - [x] 设置页面板：服务器选择 → 远程目录浏览 → 创建远程工作区
 - [x] 工作区作用域：设为当前后，工具不需要 host，相对路径相对工作区根，上下文自动切换
