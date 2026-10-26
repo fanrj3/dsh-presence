@@ -221,7 +221,7 @@ C:\Users\<你>\.dsh\presence\mounts\<主机>\<远端绝对路径>
 
 - **密钥**：ssh-agent → `IdentityFile` → 默认密钥（`id_ed25519`、`id_rsa`），按顺序尝试，失败原因归一化成人话。
 - **密码**：默认**只存在进程内存**，不落盘、不进会话日志。面板就绪前，可以用环境变量
-  `PRESENCE_PASSWORD_<ALIAS>`（别名大写、非字母数字换成下划线）提供，例如 `PRESENCE_PASSWORD_SERVER_V6`。
+  `PRESENCE_PASSWORD_<ALIAS>`（别名大写、非字母数字换成下划线）提供，例如 `PRESENCE_PASSWORD_MY_SERVER`。
 - **「记住这台」**：面板里的开关，默认关闭；打开后密码交给 DSH 的凭据服务保管（落盘方式由该服务决定），重启免输。
 
 ### 面板终端 = 远程 shell
