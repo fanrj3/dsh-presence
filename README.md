@@ -56,7 +56,7 @@
 | 执行命令、搜索（rg/grep）、git | exec channel | 目标机已有的命令 |
 | 交互式终端 | shell channel + PTY | 目标机的登录 shell |
 
-## 实测（server，Ubuntu 20.04，IPv6 校园网）
+## 实测（server，Ubuntu 20.04，IPv6）
 
 | 操作 | 耗时 |
 | --- | --- |
