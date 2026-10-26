@@ -53,10 +53,10 @@
     "rollup": "^4.65.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-fs": ">=0.0.1-rc.1 <0.2.0 || >=0.2.1-rc.1 <0.3.0-0",
-    "@deepseek-ai/dsh-fs-sandbox": ">=0.0.1-rc.1 <0.2.0 || >=0.2.1-rc.1 <0.3.0-0",
-    "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1 <0.2.0 || >=0.2.1-rc.1 <0.3.0-0",
-    "@deepseek-ai/schemastery": ">=0.0.1-rc.1 <0.2.0 || >=0.2.1-rc.1 <0.3.0-0"
+    "@deepseek-ai/dsh-fs": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0 || >=0.2.1-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-fs-sandbox": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0 || >=0.2.1-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0 || >=0.2.1-rc.1 <0.3.0-0",
+    "@deepseek-ai/schemastery": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0 || >=0.2.1-rc.1 <0.3.0-0"
   },
   "license": "MIT",
   "author": "fanrj3",
