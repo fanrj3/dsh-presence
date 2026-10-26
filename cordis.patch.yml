@@ -10,10 +10,10 @@
 
 - insert:
     - id: presence-fs
-      name: dsh-presence/fs
+      name: "@rjfan/dsh-presence/fs"
       config: {}
     - id: presence
-      name: dsh-presence
+      name: "@rjfan/dsh-presence"
       config:
         maxChannels: 8
         connectTimeoutMs: 25000

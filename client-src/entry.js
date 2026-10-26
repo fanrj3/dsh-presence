@@ -4,7 +4,7 @@
 import { createApp } from './app.js';
 
 window.__ModuleLoader__.load({
-  id: 'dsh-presence',
+  id: '@rjfan/dsh-presence',
   factory(require) {
     const React = require('react');
     const { createRoot } = require('react-dom/client');
