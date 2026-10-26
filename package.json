@@ -6,6 +6,7 @@
   "icon": "icon.svg",
   "exports": {
     ".": "./index.js",
+    "./package.json": "./package.json",
     "./client": "./client.js",
     "./fs": "./src/fs-provider.js",
     "./selfcheck": "./src/fs-selfcheck.js",
