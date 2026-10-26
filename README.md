@@ -7,7 +7,7 @@
 
 [![dsh-plugin](https://img.shields.io/badge/dsh--plugin-listing-2f6bff)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f6bff)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.17.5-2f6bff)](docs/RELEASE.md)
+[![version](https://img.shields.io/badge/version-0.17.6-2f6bff)](docs/RELEASE.md)
 
 > 也提供独立 **MCP server**（`mcp/`），让 Codex CLI / Claude Code / OpenCode 等不支持 DSH 插件的 agent
 > 用上同一套远程能力：[`mcp/README.md`](mcp/README.md)。
