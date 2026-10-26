@@ -9,7 +9,7 @@
 所以安装后不需要仓库里的插件目录。`scripts/sync-kernel.mjs` 只用于仓库内同步
 （`--check` 会挡住 vendored 副本漂移），`prepack` 会自动跑它。
 
-当前版本 **0.2.2**，**20 个工具**（0.2.2 新增 `presence_stat`、`presence_port_probe`、
+当前版本 **0.2.3**，**20 个工具**（0.2.3 新增 `presence_stat`、`presence_port_probe`、
 `presence_http_probe`，并给既有工具补齐 `format:"json"`；压力测试复盘见
 [TOOLTEST-REPORT.md](TOOLTEST-REPORT.md)）。
 
@@ -20,7 +20,7 @@
 ```bash
 npm i -g presence-mcp          # 全局安装，得到 presence-mcp 命令
 npx -y presence-mcp --check    # 免安装试跑：打印主机/环境/工具数摘要
-presence-mcp --version         # 0.2.2
+presence-mcp --version         # 0.2.3
 ```
 
 包是**自包含**的：内核副本在包内 `src/`，安装后不需要插件仓库。
@@ -290,12 +290,12 @@ powershell -File mcp/test/opencode-e2e.ps1   # OpenCode 问答实测（普通 Po
 ```bash
 cd mcp
 node scripts/sync-kernel.mjs --check   # 随包内核与插件 src/ 无漂移
-npm pack                               # 生成 presence-mcp-0.2.2.tgz
+npm pack                               # 生成 presence-mcp-0.2.3.tgz
 npm publish --dry-run --access public  # 只校验，不真发
 ```
 
 当前结果：smoke **9/9**（`tools/list` = 20），integration **103/103**（exec/读写/编辑/ls/搜索/glob/
-上传下载/回收站/后台任务/端口转发经隧道取 HTTP 200/终端往返；0.2.2 新增 `presence_stat`、
+上传下载/回收站/后台任务/端口转发经隧道取 HTTP 200/终端往返；0.2.3 新增 `presence_stat`、
 `presence_port_probe`、`presence_http_probe` 与 list_hosts/connect/search/glob/import/terminal
 的 JSON、jobs `timedOut`/`stop port`、trash 批量、edit actual/projected、write `ifMatchSha256`、
 exec 危险命令 JSON；本轮补 read_many `hash`、forward `createdAt`、status `node`/`uptimeMs`

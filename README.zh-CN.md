@@ -51,7 +51,7 @@ Presence 让 agent 留在本机，**通过每台机器一条常驻 SSH 连接把
 ### 1. 安装 DSH 插件
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.17.7
+dsh plugin add @rjfan/dsh-presence@0.17.8
 ```
 
 从源码安装：
@@ -201,8 +201,8 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.17.7
-# → dist/presence-plugin-0.17.7.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.17.8
+# → dist/presence-plugin-0.17.8.zip
 ```
 
 验证脚本需要一台可 SSH 的主机：
