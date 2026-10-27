@@ -28,6 +28,7 @@ export class PresencePool {
   #lastUsed = new Map();
   #lastPruneAt = 0;
   #secrets = new Map();
+  #connectionHandlers = new Set();
   #hostsCache;
   #reaper;
   #counter = 0;
@@ -98,12 +99,42 @@ export class PresencePool {
       .then((connection) => {
         this.#connections.set(host, connection);
         this.#lastUsed.set(host, Date.now());
+        this.#notifyConnectionEstablished(host, connection);
         return connection;
       })
       .finally(() => this.#connecting.delete(host));
 
     this.#connecting.set(host, pending);
     return pending;
+  }
+
+  /**
+   * Run a handler after a *new* connection has been established (first connect,
+   * a reconnect after a drop, or a manual reconnect through the panel). Handlers
+   * are fire-and-forget: a slow or failing listener must never delay or break
+   * `connection()`, which every tool call depends on.
+   *
+   * @param handler - `(host, connection) => unknown`; a returned promise is
+   *   observed and its rejection swallowed.
+   * @returns a disposer that unregisters the handler.
+   */
+  onConnectionEstablished(handler) {
+    if (typeof handler !== 'function') throw new Error('a connection-established handler must be a function');
+    this.#connectionHandlers.add(handler);
+    return () => {
+      this.#connectionHandlers.delete(handler);
+    };
+  }
+
+  #notifyConnectionEstablished(host, connection) {
+    for (const handler of [...this.#connectionHandlers]) {
+      try {
+        const result = handler(host, connection);
+        if (result && typeof result.then === 'function') result.then(undefined, () => {});
+      } catch {
+        /* listeners are an optimization; connecting stays the priority */
+      }
+    }
   }
 
   async disconnect(host) {
@@ -774,6 +805,7 @@ export class PresencePool {
 
   dispose() {
     clearInterval(this.#reaper);
+    this.#connectionHandlers.clear();
     for (const terminal of [...this.#terminals.values()]) this.#closeTerminal(terminal.id);
     for (const tunnel of this.#tunnels.values()) tunnel.close().catch(() => {});
     this.#tunnels.clear();

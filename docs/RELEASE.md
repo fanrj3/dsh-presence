@@ -1,5 +1,27 @@
 # Presence 发布说明（Release）
 
+## v0.18.0 — 2026-10-27
+
+功能版：远程文件操作、diff/日志、远端 `@` 补全、端口持久化与发现、任务通知。
+
+### 新增能力
+- **文件操作**：`presence_mkdir` / `presence_move` / `presence_copy` / `presence_chmod`；右侧「远程文件」右键菜单（新建目录、重命名、复制路径、改权限、回收站删除）。
+- **远程 diff**：`presence_diff` 支持远端↔远端、远端↔本地，统一 diff + JSON 统计；面板内 diff 视图。
+- **日志跟随**：`presence_tail`（一次性 tail / 限时 follow）；面板「查看日志」自动刷新。
+- **任务通知**：后台任务结束触发 toast/桌面通知；可选 `notifyCommand` 本地命令（`PRESENCE_JOB_*` 环境变量）。
+- **`@` 远端补全**：远程工作区里 file-reference 补全直接索引目标机（`rg --files`/`find`，约 10 秒缓存），不再停留在空挂载目录。
+- **转发持久化**：保存转发预设，连接重建时自动恢复；面板「自动恢复」开关与预设列表。
+- **端口发现**：端口面板打开时扫描远端监听端口，发现新端口一键转发。
+- 工具数 18 → 24；`/presence/api/state` 增加 jobs，供客户端检测任务完成。
+
+### 兼容性修复（0.17.8 内容，本次一并发版）
+- 包名统一为 `@rjfan/dsh-presence`（scoped）：profile 依赖、`cordis.patch.yml` insert、客户端注册 id 全部对齐；
+- `exports` 导出 `./package.json`，修复 DSH 读取插件元信息（icon）失败导致插件不激活的问题。
+
+### 验证
+- `path-ops-probe` 23/23、`tail-diff-probe` 23/23、`infra-probe` 54/54、`regression` 7/7、`tool-probe` 32/32、`api-probe` 27/27、`job-probe` 6/6、`import-probe` 3/3、`safety-probe` 24/24、`tunnel-crash-probe` 5/5、`feature-probe` 14/14（修正为自建 fixture）。
+- `embed-shell --check` 通过；`package.ps1` 重建 `client.js` 并打包。
+
 ## v0.17.3 — 2026-10-25
 
 修复 host 进程崩溃 + 手动添加主机表单重做。

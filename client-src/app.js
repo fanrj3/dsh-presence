@@ -2,6 +2,16 @@
 // scripts/build-client.mjs - edit here, never in the generated file.
 
 import { mountCodeView } from './editor.js';
+import {
+  detectJobExits,
+  isMissingEndpointError,
+  isSuccessfulExit,
+  joinRemotePath,
+  normalizeOctalMode,
+  parentRemotePath,
+  remoteBaseName,
+  splitDiffLines,
+} from './features.js';
 
 export function createApp({ React, ReactDOM }) {
     const h = React.createElement;
@@ -78,6 +88,28 @@ export function createApp({ React, ReactDOM }) {
         'err.remote.hint': '下面保留了原始报错，可据此继续排查',
         'err.generic.title': '操作失败',
         'err.generic.hint': '请检查连接与参数后重试',
+        'toast.mkdirDone': '已新建文件夹',
+        'toast.renamed': '已重命名',
+        'toast.chmodDone': '权限已修改',
+        'toast.copiedPath': '已复制远程路径',
+        'toast.deleted': '已移到远端回收站',
+        'toast.discovered': '发现 {count} 个新端口',
+        'toast.discovered.hint': '点端口标签上的「转发」即可在本地打开',
+        'toast.jobSuccess': '任务完成',
+        'toast.jobFailed': '任务失败',
+        'toast.jobEnded': '任务已结束',
+        'toast.jobExitCode': '退出码 {code}',
+        'toast.jobSignal': '信号 {signal}',
+        'toast.presetSaved': '已保存自动恢复预设',
+        'toast.presetKept': '已保存转发预设',
+        'toast.presetRemoved': '已删除转发预设',
+        'toast.presetUpdated': '转发预设已更新',
+        'toast.diffNeedTarget': '请填写要对比的另一个文件',
+        'toast.diffNeedTarget.hint': 'B 可以是同一台机器上的另一个路径，也可以是本地文件',
+        'toast.unsupportedFeature': '当前版本不支持这个功能',
+        'toast.unsupportedFeature.hint': '把 Presence 升级到 0.18.0 之后再试',
+        'toast.notifyDenied': '浏览器通知未开启',
+        'toast.notifyDenied.hint': '可以在浏览器地址栏的权限设置里允许通知；站内提示仍会保留',
       },
       en: {
         'toast.copyFailed': 'Copy failed',
@@ -113,6 +145,28 @@ export function createApp({ React, ReactDOM }) {
         'err.remote.hint': 'The original error is kept below',
         'err.generic.title': 'Something went wrong',
         'err.generic.hint': 'Check the connection and inputs, then retry',
+        'toast.mkdirDone': 'Folder created',
+        'toast.renamed': 'Renamed',
+        'toast.chmodDone': 'Permissions updated',
+        'toast.copiedPath': 'Remote path copied',
+        'toast.deleted': 'Moved to the remote trash',
+        'toast.discovered': '{count} new remote port(s) found',
+        'toast.discovered.hint': 'Hit “Forward” on a port chip to open it locally',
+        'toast.jobSuccess': 'Job finished',
+        'toast.jobFailed': 'Job failed',
+        'toast.jobEnded': 'Job ended',
+        'toast.jobExitCode': 'exit {code}',
+        'toast.jobSignal': 'signal {signal}',
+        'toast.presetSaved': 'Auto-restore preset saved',
+        'toast.presetKept': 'Forward preset saved',
+        'toast.presetRemoved': 'Forward preset deleted',
+        'toast.presetUpdated': 'Forward preset updated',
+        'toast.diffNeedTarget': 'Choose the file to compare with',
+        'toast.diffNeedTarget.hint': 'B can be another path on the same machine, or a local file',
+        'toast.unsupportedFeature': 'This Presence version does not support that',
+        'toast.unsupportedFeature.hint': 'Upgrade Presence to 0.18.0 and try again',
+        'toast.notifyDenied': 'Browser notifications are off',
+        'toast.notifyDenied.hint': 'Allow notifications in the address-bar permissions; in-app toasts still work',
       },
     };
 
@@ -190,7 +244,7 @@ export function createApp({ React, ReactDOM }) {
         ? humanizeError(payload)
         : { title: '', hint: '', detail: '', ...humanizeError(payload) };
       if (!info.title) return;
-      const dedupeKey = `${kind}:${info.title}`;
+      const dedupeKey = options.dedupeKey ?? `${kind}:${info.title}`;
       const lastAt = noticeStore.lastByKey.get(dedupeKey) ?? 0;
       const now = Date.now();
       if (now - lastAt < NOTICE_DEDUPE_MS) return;
@@ -210,6 +264,149 @@ export function createApp({ React, ReactDOM }) {
     const notifyWarning = (value) => pushNotice('warning', value);
     const notifySuccess = (title, options) => pushNotice('success', title, options);
     const notifyInfo = (title, options) => pushNotice('info', title, options);
+
+    // --------------------------------------------------- desktop preferences
+    // UI preferences live in localStorage like the rest of the panel; the job
+    // watcher reads them on every event so a toggle takes effect immediately.
+    const DESKTOP_NOTIFY_KEY = 'presence.desktopNotify';
+
+    function readDesktopNotify() {
+      try {
+        const stored = window.localStorage.getItem(DESKTOP_NOTIFY_KEY);
+        return stored === null || stored === undefined ? true : stored === '1';
+      } catch {
+        return true;
+      }
+    }
+
+    function writeDesktopNotify(enabled) {
+      try {
+        window.localStorage.setItem(DESKTOP_NOTIFY_KEY, enabled ? '1' : '0');
+      } catch {
+        /* private mode / storage disabled: the toggle still applies to this page */
+      }
+    }
+
+    function notificationPermission() {
+      try {
+        return typeof Notification === 'undefined' ? 'unsupported' : Notification.permission;
+      } catch {
+        return 'unsupported';
+      }
+    }
+
+    async function requestDesktopPermission() {
+      try {
+        if (typeof Notification === 'undefined' || typeof Notification.requestPermission !== 'function') return 'unsupported';
+        return await Notification.requestPermission();
+      } catch {
+        return 'denied';
+      }
+    }
+
+    /** Best-effort OS notification; a browser restriction never breaks a toast. */
+    function showDesktopNotification(title, body, tag) {
+      try {
+        if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+        const notice = new Notification(title, { body, tag, silent: false });
+        notice.onclick = () => {
+          try {
+            window.focus();
+          } catch {
+            /* focus may be blocked, the notification still closes */
+          }
+          try {
+            notice.close();
+          } catch {
+            /* already closed */
+          }
+        };
+        setTimeout(() => {
+          try {
+            notice.close();
+          } catch {
+            /* already closed */
+          }
+        }, 10_000);
+      } catch (error) {
+        console.error('[presence] desktop notification failed', error);
+      }
+    }
+
+    // ------------------------------------------------- job completion feed
+    // `/state` carries the background-job registry. Poll it while the app is
+    // open, remember the last state per job id, and notify on running -> exited.
+    // The first successful poll only seeds the map, so jobs that finished
+    // before the page opened never pop a toast after every reload.
+    const JOB_POLL_MS = 4000;
+
+    function startJobWatcher() {
+      let previous = null;
+      let timer = null;
+      let disposed = false;
+      let pollsWithoutJobs = 0;
+
+      const describe = (job) => {
+        const label = String(job.label ?? job.id ?? '').trim() || String(job.id ?? '');
+        const host = String(job.host ?? '');
+        const ok = isSuccessfulExit(job);
+        const signal = job.exitSignal ?? job.signal ?? null;
+        let exitText = '';
+        if (typeof job.exitCode === 'number') exitText = t('toast.jobExitCode', { code: job.exitCode });
+        else if (signal) exitText = t('toast.jobSignal', { signal: String(signal) });
+        return { label, host, ok, exitText };
+      };
+
+      const announce = (job) => {
+        const info = describe(job);
+        const state = info.ok ? t('toast.jobSuccess') : t('toast.jobFailed');
+        pushNotice(info.ok ? 'success' : 'error', {
+          title: `${state}：${info.label || info.host}`,
+          hint: [info.host, info.label].filter(Boolean).join(' · '),
+          detail: info.exitText,
+        }, { dedupeKey: `job:${job.id}`, duration: info.ok ? 5200 : 10_000 });
+        if (readDesktopNotify()) {
+          showDesktopNotification(
+            `Presence · ${state}`,
+            [info.label, info.host, info.exitText].filter(Boolean).join(' · '),
+            `presence-job-${job.id}`,
+          );
+        }
+      };
+
+      const tick = async () => {
+        if (disposed) return;
+        try {
+          const state = await request('/state');
+          if (disposed) return;
+          if (!Array.isArray(state?.jobs)) {
+            // Older host without the `jobs` field: stop polling instead of
+            // asking every 4 s for a feature that cannot work here.
+            pollsWithoutJobs += 1;
+            if (pollsWithoutJobs >= 2) {
+              disposed = true;
+              return;
+            }
+          } else {
+            pollsWithoutJobs = 0;
+            const result = detectJobExits(previous, state.jobs);
+            previous = result.next;
+            for (const job of result.exits) announce(job);
+          }
+        } catch {
+          /* transient failures retry on the next tick */
+        } finally {
+          if (!disposed) timer = setTimeout(tick, JOB_POLL_MS);
+        }
+      };
+
+      tick();
+      return () => {
+        disposed = true;
+        if (timer) clearTimeout(timer);
+        timer = null;
+      };
+    }
 
     function toastIcon(kind) {
       if (kind === 'success') return 'check';
@@ -675,7 +872,7 @@ export function createApp({ React, ReactDOM }) {
       .dp-col-name { flex: 1; min-width: 0; }
       .dp-col-size { width: 64px; flex: 0 0 auto; text-align: right; }
       .dp-col-time { width: 76px; flex: 0 0 auto; text-align: right; }
-      .dp-col-actions { width: 52px; flex: 0 0 auto; }
+      .dp-col-actions { width: 78px; flex: 0 0 auto; }
 
       .dp-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 6px 18px; }
       .dp-loading { display: flex; justify-content: center; padding: 32px 0; }
@@ -718,7 +915,7 @@ export function createApp({ React, ReactDOM }) {
       .dp-entry .dp-col-size, .dp-entry .dp-col-time { line-height: 20px; }
 
       .dp-factions {
-        display: flex; gap: 2px; width: 52px; flex: 0 0 auto; justify-content: flex-end;
+        display: flex; gap: 2px; width: 78px; flex: 0 0 auto; justify-content: flex-end;
         opacity: 0; transition: opacity var(--dp-fast) var(--dp-ease);
       }
       .dp-entry:hover .dp-factions, .dp-entry:focus-within .dp-factions, .dp-entry.is-selected .dp-factions { opacity: 1; }
@@ -974,6 +1171,160 @@ export function createApp({ React, ReactDOM }) {
       .dp-auth-hint { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
       .dp-auth-row { display: flex; align-items: center; gap: 6px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
       .dp-auth-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+      /* ------------------------------------------------ file context menu */
+      @keyframes dp-fade { from { opacity: 0; } to { opacity: 1; } }
+      /* Diff / tail viewers cover the whole window instead of just the right
+         sidebar; the pane is far too narrow for a unified diff. */
+      .dp-overlay--fixed {
+        position: fixed; inset: 0; z-index: 2147481500;
+      }
+      .dp-overlay--fixed .dp-modal--wide { width: min(94vw, 1080px); }
+      .dp-menu {
+        position: fixed; z-index: 2147482000; min-width: 178px; max-height: 70vh;
+        overflow: auto; padding: 4px;
+        border: 1px solid var(--dsw-alias-border-l2);
+        border-radius: var(--dsw-radius-md, 10px);
+        background: var(--dsw-alias-bg-layer-1);
+        box-shadow: 0 14px 36px rgba(0, 0, 0, .2), 0 1px 2px rgba(0, 0, 0, .08);
+        animation: dp-fade var(--dp-fast, .1s) var(--dp-ease) both;
+      }
+      .dp-menu-head {
+        padding: 5px 9px 4px; font-size: 10.5px; color: var(--dsw-alias-label-tertiary);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
+      }
+      .dp-menu-item {
+        display: flex; align-items: center; gap: 8px; width: 100%;
+        padding: 6px 9px; border: 0; border-radius: 6px;
+        background: transparent; color: var(--dsw-alias-label-primary);
+        font: inherit; font-size: 12.5px; line-height: 18px; text-align: left;
+        cursor: pointer; white-space: nowrap;
+        transition: background-color var(--dp-fast, .1s) var(--dp-ease, ease);
+      }
+      .dp-menu-item:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+      .dp-menu-item:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: -2px; }
+      .dp-menu-item:disabled { opacity: .45; cursor: default; }
+      .dp-menu-item--danger { color: var(--dsw-alias-state-error-primary); }
+      .dp-menu-item-icon { display: inline-flex; width: 15px; justify-content: center; color: var(--dsw-alias-label-tertiary); }
+      .dp-menu-item--danger .dp-menu-item-icon { color: var(--dsw-alias-state-error-primary); }
+      .dp-menu-sep { height: 1px; margin: 4px 6px; background: var(--dsw-alias-border-l2); }
+
+      /* ----------------------------------------------------- prompt dialog */
+      .dp-dialog {
+        display: flex; flex-direction: column; gap: 10px;
+        width: min(92%, 400px); padding: 16px;
+        border: 1px solid var(--dsw-alias-border-l2);
+        border-radius: var(--dsw-radius-md, 12px);
+        background: var(--dsw-alias-bg-layer-1);
+        box-shadow: 0 16px 40px rgba(0, 0, 0, .18);
+        animation: dp-modal-in var(--ds-transition-duration-slow, .3s) var(--dp-ease) both;
+      }
+      .dp-dialog-title { font-size: 13px; font-weight: 600; }
+      .dp-dialog-hint { font-size: 11.5px; line-height: 17px; color: var(--dsw-alias-label-secondary); }
+      .dp-dialog-path {
+        font-family: var(--ds-font-family-code, ui-monospace, monospace); font-size: 11px;
+        color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .dp-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+      .dp-pane .dp-dialog .dp-input { width: 100%; height: 30px; }
+
+      /* -------------------------------------------------------- diff viewer */
+      .dp-modal--wide { width: min(96%, 1040px); }
+      .dp-diff-form {
+        display: flex; flex-direction: column; gap: 8px;
+        padding: 10px 12px; border-bottom: 1px solid var(--dsw-alias-border-l2);
+        flex: 0 0 auto;
+      }
+      .dp-diff-row { display: flex; gap: 8px; align-items: flex-end; }
+      .dp-diff-row .dp-field { flex: 1 1 0; min-width: 0; }
+      .dp-diff-row .dp-field--mode { flex: 0 0 auto; }
+      .dp-diff-form .dp-input { width: 100%; height: 30px; }
+      .dp-diff-form .dp-select { max-width: none; width: 100%; }
+      .dp-diff-stats {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        padding: 8px 12px 0; font-size: 11.5px; color: var(--dsw-alias-label-secondary); flex: 0 0 auto;
+      }
+      .dp-diff-stat-add { color: var(--dsw-alias-state-success-primary); font-weight: 600; }
+      .dp-diff-stat-rem { color: var(--dsw-alias-state-error-primary); font-weight: 600; }
+      .dp-diff-pre {
+        margin: 0; padding: 6px 0 10px; overflow: auto; max-height: 56vh;
+        font-family: var(--ds-font-family-code, "Cascadia Code", Consolas, ui-monospace, monospace);
+        font-size: 11.5px; line-height: 1.6;
+      }
+      .dp-diff-line { display: block; padding: 0 12px; white-space: pre; min-height: 1.6em; }
+      .dp-diff-add { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 13%, transparent); color: var(--dsw-alias-state-success-primary); }
+      .dp-diff-del { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); color: var(--dsw-alias-state-error-primary); }
+      .dp-diff-hunk { color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-bg-module-platform); }
+      .dp-diff-meta { color: var(--dsw-alias-label-tertiary); font-weight: 600; }
+      .dp-diff-context { color: var(--dsw-alias-label-primary); }
+      .dp-diff-empty { padding: 26px 12px; text-align: center; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+      .dp-diff-hint { padding: 0 12px 8px; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+
+      /* ----------------------------------------------------------- log tail */
+      .dp-tail-pre {
+        margin: 0; padding: 10px 12px; overflow: auto; max-height: 58vh;
+        font-family: var(--ds-font-family-code, "Cascadia Code", Consolas, ui-monospace, monospace);
+        font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+        -webkit-user-select: text; user-select: text;
+      }
+      .dp-tail-stats { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--dsw-alias-label-tertiary); flex: 0 0 auto; }
+      .dp-tail-live { color: var(--dsw-alias-state-success-primary); display: inline-flex; align-items: center; gap: 4px; }
+      .dp-check { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dsw-alias-label-secondary); cursor: pointer; user-select: none; white-space: nowrap; }
+      .dp-check input { margin: 0; }
+
+      /* ------------------------------------------ discovered ports / presets */
+      .dp-discover {
+        display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+        padding: 7px 8px; border-bottom: 1px solid var(--dsw-alias-border-l2);
+        flex: 0 0 auto;
+      }
+      .dp-discover-label { font-size: 10.5px; color: var(--dsw-alias-label-tertiary); }
+      .dp-port-chip {
+        display: inline-flex; align-items: center; gap: 5px;
+        padding: 2px 2px 2px 9px; border-radius: 999px;
+        border: 1px solid var(--dsw-alias-border-l2);
+        background: var(--dsw-alias-bg-module-platform);
+        font-size: 11px; color: var(--dsw-alias-label-primary); cursor: default;
+      }
+      .dp-port-chip .dp-port-num { font-family: var(--ds-font-family-code, ui-monospace, monospace); font-weight: 600; }
+      .dp-port-chip .dp-port-proc {
+        color: var(--dsw-alias-label-tertiary); max-width: 88px;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .dp-port-chip .dp-port-btn {
+        border: 0; border-radius: 999px; padding: 1px 7px; cursor: pointer;
+        background: transparent; color: var(--dsw-alias-state-business-primary);
+        font: inherit; font-size: 10.5px;
+        transition: background-color var(--dp-fast) var(--dp-ease);
+      }
+      .dp-port-chip .dp-port-btn:hover { background: var(--dsw-alias-interactive-bg-hover); }
+      .dp-port-chip .dp-port-dismiss {
+        border: 0; border-radius: 999px; width: 16px; height: 16px; padding: 0;
+        display: grid; place-items: center; cursor: pointer;
+        background: transparent; color: var(--dsw-alias-label-tertiary);
+      }
+      .dp-port-chip .dp-port-dismiss:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+      .dp-presets {
+        padding: 6px 8px 2px; border-bottom: 1px solid var(--dsw-alias-border-l2);
+        flex: 0 0 auto; max-height: 138px; overflow: auto;
+      }
+      .dp-preset-row { display: flex; align-items: center; gap: 8px; padding: 4px 2px; font-size: 12px; }
+      .dp-preset-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .dp-preset-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+      .dp-preset-route {
+        font-size: 10.5px; color: var(--dsw-alias-label-tertiary);
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .dp-preset-open { font-size: 10.5px; color: var(--dsw-alias-state-success-primary); flex: 0 0 auto; }
+
+      /* --------------------------------------------------- settings toggle */
+      .dp-setting-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--dsw-radius-sm, 8px); }
+      .dp-setting-row + .dp-setting-row { border-top: 1px solid var(--dsw-alias-border-l2); }
+      .dp-setting-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+      .dp-setting-title { font-size: 12.5px; font-weight: 500; }
+      .dp-setting-hint { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
 `;
     function ensureStyles() {
       if (typeof document === 'undefined' || document.getElementById(STYLE_ID)) return;
@@ -1246,6 +1597,7 @@ export function createApp({ React, ReactDOM }) {
       copy: ['M9 9h11v11H9z', 'M5 15V4h11'],
       power: ['M12 3v9', 'M6.4 6.4a8 8 0 1 0 11.2 0'],
       music: ['M9 17V5l10-2v12', 'M9 17a3 3 0 1 1-6 0a3 3 0 0 1 6 0z', 'M19 15a3 3 0 1 1-6 0a3 3 0 0 1 6 0z'],
+      more: ['M5 12h.01', 'M12 12h.01', 'M19 12h.01'],
     };
 
     function Icon({ name, size = 16, style }) {
@@ -1348,6 +1700,444 @@ export function createApp({ React, ReactDOM }) {
       return failed
         ? h('pre', { className: 'dp-plain' }, content)
         : h('div', { ref: host, className: 'dp-cm' });
+    }
+
+    // ------------------------------------------------------- 0.18 UI kit
+    // Shared chrome for the new modal flows: one overlay, one header and an
+    // optional footer. Escape is routed by the owning panel so only the
+    // top-most layer reacts (menu > dialog > diff/tail > preview > auth).
+    function ModalShell({ icon, title, chip, onClose, children, footer, wide, fixed }) {
+      return h('div', {
+        className: fixed ? 'dp-overlay dp-overlay--fixed' : 'dp-overlay',
+        onMouseDown: () => onClose?.(),
+      }, h('div', {
+        className: wide ? 'dp-modal dp-modal--wide' : 'dp-modal',
+        onMouseDown: (event) => event.stopPropagation(),
+        role: 'dialog',
+        'aria-modal': 'true',
+      }, [
+        h('div', { key: 'head', className: 'dp-modal-head' }, [
+          h('span', { key: 'icon', className: 'dp-modal-icon' }, h(Icon, { name: icon ?? 'file', size: 16 })),
+          h('span', {
+            key: 'title',
+            className: 'dp-modal-title',
+            style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+          }, title),
+          chip ? h('span', { key: 'chip', className: 'dp-chip' }, chip) : null,
+          h('button', {
+            key: 'close',
+            type: 'button',
+            className: 'dp-iconbtn',
+            title: '关闭 (Esc)',
+            onClick: onClose,
+          }, h(Icon, { name: 'x', size: 16 })),
+        ]),
+        children,
+        footer ? h('div', { key: 'foot', className: 'dp-modal-foot' }, footer) : null,
+      ]));
+    }
+
+    /**
+     * Fixed-position row menu. `items` entries are
+     * {key,label,icon,danger,disabled,onClick}; a null entry renders a divider.
+     */
+    function ContextMenu({ x, y, title, items, onClose }) {
+      const closeRef = useRef(onClose);
+      closeRef.current = onClose;
+      const menuRef = useRef(null);
+      useEffect(() => {
+        const close = () => closeRef.current?.();
+        const onKeyDown = (event) => {
+          if (event.key !== 'Escape') return;
+          event.stopPropagation();
+          close();
+        };
+        // A mousedown inside the menu must reach the item's click handler; only
+        // an outside press dismisses it.
+        const onMouseDown = (event) => {
+          const node = menuRef.current;
+          if (node && event.target instanceof Node && node.contains(event.target)) return;
+          close();
+        };
+        // Defer: the contextmenu/mousedown that opened the menu must not close
+        // it on the same gesture.
+        const timer = setTimeout(() => {
+          document.addEventListener('mousedown', onMouseDown, true);
+          window.addEventListener('resize', close);
+          window.addEventListener('scroll', close, true);
+        }, 0);
+        window.addEventListener('keydown', onKeyDown, true);
+        return () => {
+          clearTimeout(timer);
+          document.removeEventListener('mousedown', onMouseDown, true);
+          window.removeEventListener('resize', close);
+          window.removeEventListener('scroll', close, true);
+          window.removeEventListener('keydown', onKeyDown, true);
+        };
+      }, []);
+
+      const width = 200;
+      const left = Math.max(8, Math.min(Number(x) || 8, (window.innerWidth || 1280) - width - 8));
+      const top = Math.max(8, Math.min(Number(y) || 8, (window.innerHeight || 800) - 300));
+      return h('div', {
+        ref: menuRef,
+        className: 'dp-menu',
+        style: { left, top, width },
+        role: 'menu',
+        onContextMenu: (event) => event.preventDefault(),
+      }, [
+        title ? h('div', { key: 'head', className: 'dp-menu-head', title }, title) : null,
+        ...items.filter(Boolean).map((item) => (item.separator
+          ? h('div', { key: item.key, className: 'dp-menu-sep' })
+          : h('button', {
+              key: item.key,
+              type: 'button',
+              role: 'menuitem',
+              disabled: item.disabled,
+              className: item.danger ? 'dp-menu-item dp-menu-item--danger' : 'dp-menu-item',
+              onClick: () => {
+                closeRef.current?.();
+                item.onClick?.();
+              },
+            }, [
+              h('span', { key: 'icon', className: 'dp-menu-item-icon' }, item.icon ? h(Icon, { name: item.icon, size: 14 }) : null),
+              h('span', { key: 'label' }, item.label),
+            ]))),
+      ]);
+    }
+
+    /** Small single-input dialog used by mkdir / rename / chmod. */
+    function PromptDialog({ title, path, hint, value, placeholder, error, busy, inputMode, onChange, onSubmit, onCancel }) {
+      return h('div', {
+        className: 'dp-overlay',
+        onMouseDown: onCancel,
+      }, h('div', {
+        className: 'dp-dialog',
+        role: 'dialog',
+        'aria-modal': 'true',
+        onMouseDown: (event) => event.stopPropagation(),
+      }, [
+        h('div', { key: 'title', className: 'dp-dialog-title' }, title),
+        path ? h('div', { key: 'path', className: 'dp-dialog-path' }, path) : null,
+        hint ? h('div', { key: 'hint', className: 'dp-dialog-hint' }, hint) : null,
+        h('input', {
+          key: 'input',
+          className: 'dp-input',
+          autoFocus: true,
+          value,
+          placeholder,
+          inputMode,
+          spellCheck: false,
+          onChange: (event) => onChange(event.target.value),
+          onKeyDown: (event) => {
+            if (event.key === 'Enter') onSubmit();
+            if (event.key === 'Escape') onCancel();
+          },
+        }),
+        error ? h('div', { key: 'error', className: 'dp-dialog-hint', style: { color: C.error } }, error) : null,
+        h('div', { key: 'actions', className: 'dp-dialog-actions' }, [
+          h('button', { key: 'cancel', type: 'button', className: 'dp-tool', onClick: onCancel }, '取消'),
+          h('button', {
+            key: 'ok',
+            type: 'button',
+            className: 'dp-tool dp-tool--primary',
+            disabled: busy,
+            onClick: onSubmit,
+          }, busy ? '处理中…' : '确定'),
+        ]),
+      ]));
+    }
+
+    /**
+     * Remote-vs-remote / remote-vs-local diff viewer. A is prefilled with the
+     * row's path; B is either another remote path on the same host or a path on
+     * the machine running the host process. GET /diff returns the frozen
+     * { ok, diff, stats:{added,removed}, truncated } shape.
+     */
+    function DiffModal({ host, path: initialPath, onClose }) {
+      const [a, setA] = useState(initialPath ?? '');
+      const [b, setB] = useState('');
+      const [mode, setMode] = useState('remote');
+      const [localPath, setLocalPath] = useState('');
+      const [context, setContext] = useState('3');
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState('');
+      const [result, setResult] = useState(null);
+
+      const run = useCallback(async () => {
+        const left = a.trim();
+        const right = (mode === 'remote' ? b : localPath).trim();
+        if (!left) {
+          setError('A 不能为空：填这台机器上的远程路径');
+          return;
+        }
+        if (!right) {
+          notifyError({ title: t('toast.diffNeedTarget'), hint: t('toast.diffNeedTarget.hint') });
+          return;
+        }
+        setLoading(true);
+        setError('');
+        try {
+          const query = new URLSearchParams({ host, a: left });
+          if (mode === 'remote') query.set('b', right);
+          else query.set('localPath', right);
+          const wanted = Number(context);
+          if (Number.isInteger(wanted) && wanted >= 0 && wanted <= 20) query.set('context', String(wanted));
+          const data = await request(`/diff?${query.toString()}`);
+          setResult({
+            diff: String(data.diff ?? ''),
+            stats: data.stats ?? {},
+            truncated: Boolean(data.truncated),
+          });
+        } catch (err) {
+          setResult(null);
+          setError(isMissingEndpointError(err.message)
+            ? `${t('toast.unsupportedFeature')}：${t('toast.unsupportedFeature.hint')}`
+            : err.message);
+        } finally {
+          setLoading(false);
+        }
+      }, [a, b, mode, localPath, context, host]);
+
+      const lines = result ? splitDiffLines(result.diff) : [];
+      const body = result
+        ? (lines.length === 0
+            ? h('div', { key: 'empty', className: 'dp-diff-empty' }, '没有差异')
+            : h('pre', { key: 'diff', className: 'dp-diff-pre' }, lines.map((line, index) => h('span', {
+                key: index,
+                className: `dp-diff-line dp-diff-${line.kind}`,
+              }, line.text || ' '))))
+        : null;
+
+      return h(ModalShell, {
+        icon: 'text',
+        title: '文件对比',
+        chip: host,
+        wide: true,
+        fixed: true,
+        onClose,
+        footer: [
+          h('span', { key: 'path', className: 'dp-modal-path' }, mode === 'remote' ? `${a}  ↔  ${b}` : `${a}  ↔  ${localPath}`),
+          h('button', { key: 'close', type: 'button', className: 'dp-tool', onClick: onClose }, '关闭'),
+        ],
+      }, [
+        h('div', { key: 'form', className: 'dp-diff-form' }, [
+          h('div', { key: 'rowA', className: 'dp-diff-row' }, [
+            h('div', { key: 'a', className: 'dp-field' }, [
+              h('label', { key: 'label', className: 'dp-field-label' }, `远程文件 A（${host}）`),
+              h('input', {
+                key: 'input',
+                className: 'dp-input dp-mono',
+                value: a,
+                spellCheck: false,
+                placeholder: '/path/on/remote',
+                onChange: (event) => setA(event.target.value),
+                onKeyDown: (event) => { if (event.key === 'Enter') run(); },
+              }),
+            ]),
+          ]),
+          h('div', { key: 'rowB', className: 'dp-diff-row' }, [
+            h('div', { key: 'mode', className: 'dp-field dp-field--mode' }, [
+              h('label', { key: 'label', className: 'dp-field-label' }, 'B 是'),
+              h('select', {
+                key: 'select',
+                className: 'dp-select',
+                value: mode,
+                onChange: (event) => setMode(event.target.value),
+              }, [
+                h('option', { key: 'remote', value: 'remote' }, '远程文件'),
+                h('option', { key: 'local', value: 'local' }, '本地文件'),
+              ]),
+            ]),
+            h('div', { key: 'b', className: 'dp-field' }, [
+              h('label', { key: 'label', className: 'dp-field-label' },
+                mode === 'remote' ? `远程文件 B（${host}）` : '本地文件路径（host 所在机器）'),
+              h('input', {
+                key: 'input',
+                className: 'dp-input dp-mono',
+                value: mode === 'remote' ? b : localPath,
+                spellCheck: false,
+                placeholder: mode === 'remote' ? '/path/on/remote' : './relative/to/repo or C:\\path\\file',
+                onChange: (event) => (mode === 'remote' ? setB(event.target.value) : setLocalPath(event.target.value)),
+                onKeyDown: (event) => { if (event.key === 'Enter') run(); },
+              }),
+            ]),
+            h('div', { key: 'ctx', className: 'dp-field dp-field--mode', style: { flex: '0 0 64px' } }, [
+              h('label', { key: 'label', className: 'dp-field-label' }, '上下文'),
+              h('input', {
+                key: 'input',
+                className: 'dp-input dp-mono',
+                value: context,
+                inputMode: 'numeric',
+                title: '上下文行数（0-20）',
+                onChange: (event) => setContext(event.target.value.replace(/[^\d]/gu, '')),
+              }),
+            ]),
+            h('button', {
+              key: 'run',
+              type: 'button',
+              className: 'dp-tool dp-tool--primary',
+              disabled: loading,
+              onClick: run,
+            }, loading ? '对比中…' : '比较'),
+          ]),
+        ]),
+        error || loading || result
+          ? h('div', { key: 'stats', className: 'dp-diff-stats' }, [
+              error ? h('span', { key: 'err', style: { color: C.error } }, error) : null,
+              loading ? h(Spinner, { key: 'spin', label: '正在对比…' }) : null,
+              result
+                ? [
+                    h('span', { key: 'label', style: { color: C.muted } }, '统计'),
+                    h('span', { key: 'add', className: 'dp-diff-stat-add' }, `+${Number(result.stats.added) || 0}`),
+                    h('span', { key: 'rem', className: 'dp-diff-stat-rem' }, `−${Number(result.stats.removed) || 0}`),
+                  ]
+                : null,
+              result?.truncated
+                ? h('span', { key: 'trunc', style: { color: C.muted } }, '差异较长，已截断')
+                : null,
+            ])
+          : h('div', { key: 'hint', className: 'dp-diff-hint' },
+              'A 默认是刚才选中的文件；B 填同一台机器上的另一个路径，或者切换到「本地文件」填本机路径。'),
+        body ? h('div', { key: 'body', className: 'dp-modal-body' }, body) : null,
+      ]);
+    }
+
+    /**
+     * Live log tail. While open (and not paused) it asks the host for the last
+     * 200 lines with follow=1 and a 3 s budget, then repeats every ~2 s and
+     * scrolls to the bottom. Pause stops the polling loop; close unmounts it.
+     */
+    function TailModal({ host, path, name, onClose }) {
+      const [state, setState] = useState({
+        text: '',
+        lines: 0,
+        bytes: 0,
+        truncated: false,
+        followedMs: 0,
+        passes: 0,
+        paused: false,
+        loading: true,
+        error: '',
+      });
+      const preRef = useRef(null);
+      const paused = state.paused;
+
+      useEffect(() => {
+        if (paused) return undefined;
+        let cancelled = false;
+        let timer = null;
+        const loop = async () => {
+          if (cancelled) return;
+          try {
+            const query = new URLSearchParams({
+              host,
+              path,
+              lines: '200',
+              follow: '1',
+              timeoutMs: '3000',
+            });
+            const data = await request(`/tail?${query.toString()}`);
+            if (cancelled) return;
+            setState((current) => ({
+              ...current,
+              loading: false,
+              error: '',
+              text: String(data.text ?? ''),
+              lines: Number(data.lines) || 0,
+              bytes: Number(data.bytes) || 0,
+              truncated: Boolean(data.truncated),
+              followedMs: Number(data.followedMs) || 0,
+              passes: current.passes + 1,
+            }));
+          } catch (err) {
+            if (cancelled) return;
+            setState((current) => ({
+              ...current,
+              loading: false,
+              paused: true,
+              error: isMissingEndpointError(err.message)
+                ? `${t('toast.unsupportedFeature')}：${t('toast.unsupportedFeature.hint')}`
+                : err.message,
+            }));
+            return;
+          }
+          if (!cancelled) timer = setTimeout(loop, 2000);
+        };
+        loop();
+        return () => {
+          cancelled = true;
+          if (timer) clearTimeout(timer);
+          timer = null;
+        };
+      }, [host, path, paused]);
+
+      // Follow the log like `tail -f` unless the user paused to read history.
+      useEffect(() => {
+        const node = preRef.current;
+        if (!node || paused) return;
+        node.scrollTop = node.scrollHeight;
+      }, [state.text, paused]);
+
+      const togglePause = () => setState((current) => ({
+        ...current,
+        paused: !current.paused,
+        loading: current.paused ? true : current.loading,
+        error: '',
+      }));
+
+      const copyAll = async () => {
+        try {
+          await navigator.clipboard.writeText(state.text ?? '');
+          notifySuccess(t('toast.copied'));
+        } catch (err) {
+          notifyError({ title: t('toast.copyFailed'), hint: t('toast.copyFailed.hint'), detail: err.message });
+        }
+      };
+
+      return h(ModalShell, {
+        icon: 'code',
+        title: `日志 · ${name || remoteBaseName(path)}`,
+        chip: host,
+        wide: true,
+        fixed: true,
+        onClose,
+        footer: [
+          h('span', { key: 'stats', className: 'dp-tail-stats' },
+            `${state.lines} 行 · ${humanSize(state.bytes)}`),
+          h('span', { key: 'path', className: 'dp-modal-path' }, path),
+          h('button', {
+            key: 'copy',
+            type: 'button',
+            className: 'dp-tool',
+            disabled: !state.text,
+            onClick: copyAll,
+          }, [h(Icon, { key: 'i', name: 'copy', size: 14 }), h('span', { key: 't' }, '复制')]),
+          h('button', {
+            key: 'pause',
+            type: 'button',
+            className: 'dp-tool',
+            onClick: togglePause,
+          }, state.paused ? '继续' : '暂停'),
+          h('button', { key: 'close', type: 'button', className: 'dp-tool dp-tool--primary', onClick: onClose }, '关闭'),
+        ],
+      }, [
+        h('div', { key: 'stats', className: 'dp-diff-stats' }, [
+          state.paused
+            ? h('span', { key: 'state', style: { color: C.muted } }, '已暂停（停止轮询）')
+            : h('span', { key: 'state', className: 'dp-tail-live' }, [
+                h('span', { key: 'dot', className: 'dp-dot dp-dot--on' }),
+                '跟随中',
+              ]),
+          state.loading ? h(Spinner, { key: 'spin', label: '读取中…' }) : null,
+          state.followedMs ? h('span', { key: 'followed', style: { color: C.muted } }, `本次 ${state.followedMs} ms`) : null,
+          state.passes > 0 ? h('span', { key: 'passes', style: { color: C.muted } }, `刷新 ${state.passes} 次`) : null,
+          state.truncated ? h('span', { key: 'trunc', style: { color: C.muted } }, '已截断') : null,
+        ]),
+        state.error ? h('div', { key: 'err', className: 'dp-banner', style: { margin: '0 12px 8px' } }, state.error) : null,
+        h('div', { key: 'body', className: 'dp-modal-body', style: { overflow: 'hidden' } },
+          h('pre', { key: 'pre', ref: preRef, className: 'dp-tail-pre' }, state.text || (state.loading ? '' : '（还没有输出）'))),
+      ]);
     }
 
     /** Does this API error mean the host could not authenticate? */
@@ -1590,6 +2380,11 @@ export function createApp({ React, ReactDOM }) {
       const [creatingFolder, setCreatingFolder] = useState(null);
       const [auth, setAuth] = useState(null);
       const [copied, setCopied] = useState(false);
+      // 0.18 file context menu / prompt dialog / diff and tail viewers.
+      const [menu, setMenu] = useState(null);
+      const [dialog, setDialog] = useState(null);
+      const [diffEntry, setDiffEntry] = useState(null);
+      const [tailEntry, setTailEntry] = useState(null);
       const fileInput = useRef(null);
       const folderInput = useRef(null);
       const rootRef = useRef(null);
@@ -1756,16 +2551,21 @@ export function createApp({ React, ReactDOM }) {
         };
       }, []);
 
-      // Escape closes the preview or the password prompt.
+      // Escape closes the top-most layer: menu, prompt, diff, tail, then the
+      // preview or the password prompt.
       useEffect(() => {
         const onKeyDown = (event) => {
           if (event.key !== 'Escape') return;
-          if (preview) setPreview(null);
+          if (menu) setMenu(null);
+          else if (dialog) setDialog(null);
+          else if (diffEntry) setDiffEntry(null);
+          else if (tailEntry) setTailEntry(null);
+          else if (preview) setPreview(null);
           else if (auth) setAuth(null);
         };
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
-      }, [preview, auth]);
+      }, [preview, auth, menu, dialog, diffEntry, tailEntry]);
 
       const openEntry = async (entry) => {
         if (entry.kind === 'dir') {
@@ -1854,9 +2654,96 @@ export function createApp({ React, ReactDOM }) {
         try {
           await request(`/remove?host=${encodeURIComponent(host)}&path=${encodeURIComponent(entry.path)}`, {});
           await load(host, path);
+          notifySuccess(t('toast.deleted'));
         } catch (err) {
           notifyError(err.message);
         }
+      };
+
+      // ------------------------------------------------ B2 file operations
+      // All mutations go through the frozen POST /path-op shape:
+      // { host, op, path, to?, mode?, recursive?, overwrite? }.
+      const copyEntryPath = async (entry) => {
+        try {
+          await navigator.clipboard.writeText(entry.path);
+          notifySuccess(t('toast.copiedPath'));
+        } catch (err) {
+          notifyError({ title: t('toast.copyFailed'), hint: t('toast.copyFailed.hint'), detail: err.message });
+        }
+      };
+
+      const openPrompt = (kind, entry) => {
+        if (kind === 'mkdir') {
+          setDialog({ kind, entry, hint: `在 ${entry.path} 下创建`, placeholder: '文件夹名称', value: '', error: '', busy: false });
+        } else if (kind === 'rename') {
+          setDialog({ kind, entry, hint: entry.kind === 'dir' ? '重命名这个目录' : '重命名这个文件', placeholder: '新名称', value: remoteBaseName(entry.path), error: '', busy: false });
+        } else {
+          setDialog({ kind, entry, hint: '输入八进制权限，例如 755（目录）/ 644（文件）', placeholder: '755', value: entry.kind === 'dir' ? '755' : '644', error: '', busy: false });
+        }
+      };
+
+      const submitPrompt = async () => {
+        if (!dialog || dialog.busy) return;
+        const entry = dialog.entry;
+        const kind = dialog.kind;
+        const value = String(dialog.value ?? '').trim();
+        if (kind !== 'chmod' && !value) {
+          setDialog({ ...dialog, error: '不能为空' });
+          return;
+        }
+        if (kind === 'chmod' && normalizeOctalMode(value) === null) {
+          setDialog({ ...dialog, error: '权限需要是八进制数字，例如 755 或 0644' });
+          return;
+        }
+        setDialog({ ...dialog, busy: true, error: '' });
+        let body;
+        if (kind === 'mkdir') {
+          body = { host, op: 'mkdir', path: joinRemotePath(entry.path, value) };
+        } else if (kind === 'rename') {
+          body = { host, op: 'rename', path: entry.path, to: joinRemotePath(parentRemotePath(entry.path), value) };
+        } else {
+          body = { host, op: 'chmod', path: entry.path, mode: normalizeOctalMode(value) };
+        }
+        try {
+          await request('/path-op', body);
+          setDialog(null);
+          setMenu(null);
+          await load(host, path);
+          notifySuccess(kind === 'mkdir' ? t('toast.mkdirDone') : kind === 'rename' ? t('toast.renamed') : t('toast.chmodDone'));
+        } catch (err) {
+          const message = isMissingEndpointError(err.message)
+            ? `${t('toast.unsupportedFeature')}：${t('toast.unsupportedFeature.hint')}`
+            : err.message;
+          setDialog((current) => (current ? { ...current, busy: false, error: message } : current));
+        }
+      };
+
+      const isTailable = (entry) => {
+        if (!entry || entry.kind === 'dir') return false;
+        const kind = previewKindOf(entry.name);
+        return kind === 'code' || kind === null;
+      };
+
+      const openMenu = (event, entry) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setMenu({ x: event.clientX, y: event.clientY, entry });
+      };
+
+      const menuItemsFor = (entry) => {
+        if (!entry) return [];
+        const isDir = entry.kind === 'dir';
+        return [
+          isDir ? { key: 'mkdir', label: '新建文件夹', icon: 'folder-plus', onClick: () => openPrompt('mkdir', entry) } : null,
+          { key: 'rename', label: '重命名', icon: 'text', onClick: () => openPrompt('rename', entry) },
+          { key: 'copy', label: '复制路径', icon: 'copy', onClick: () => copyEntryPath(entry) },
+          { key: 'chmod', label: '修改权限…', icon: 'lock', onClick: () => openPrompt('chmod', entry) },
+          { key: 'sep1', separator: true },
+          isDir ? null : { key: 'diff', label: '对比差异…', icon: 'text', onClick: () => setDiffEntry(entry) },
+          isTailable(entry) ? { key: 'tail', label: '查看日志…', icon: 'code', onClick: () => setTailEntry(entry) } : null,
+          { key: 'sep2', separator: true },
+          { key: 'delete', label: '移到回收站', icon: 'trash', danger: true, onClick: () => removeEntry(entry) },
+        ].filter(Boolean);
       };
 
       const rowActions = (entry) => h('span', { key: 'actions', className: 'dp-factions' }, [
@@ -1880,6 +2767,16 @@ export function createApp({ React, ReactDOM }) {
             removeEntry(entry);
           },
         }, h(Icon, { name: 'trash', size: 15 })),
+        h('button', {
+          key: 'menu',
+          type: 'button',
+          className: 'dp-iconbtn',
+          title: '更多操作（也可以右键这一行）',
+          onClick: (event) => {
+            event.stopPropagation();
+            setMenu({ x: event.clientX, y: event.clientY, entry });
+          },
+        }, h(Icon, { name: 'more', size: 15 })),
       ]);
 
       return h('div', {
@@ -2016,7 +2913,8 @@ export function createApp({ React, ReactDOM }) {
                   className: `dp-entry${selected === entry.path ? ' is-selected' : ''}`,
                   role: 'button',
                   tabIndex: 0,
-                  title: entry.kind === 'dir' ? `${entry.path}（双击进入，↓ 下载文件夹）` : entry.path,
+                  title: entry.kind === 'dir' ? `${entry.path}（双击进入，↓ 下载文件夹，右键更多操作）` : `${entry.path}（双击预览，右键更多操作）`,
+                  onContextMenu: (event) => openMenu(event, entry),
                   draggable: entry.kind !== 'dir',
                   onDragStart: (event) => {
                     if (entry.kind === 'dir') return;
@@ -2231,7 +3129,78 @@ export function createApp({ React, ReactDOM }) {
               ]),
             ]))
           : null,
+        // ------------------------------------------------- 0.18 layers
+        menu
+          ? h(ContextMenu, {
+              key: 'menu',
+              x: menu.x,
+              y: menu.y,
+              title: menu.entry.path,
+              items: menuItemsFor(menu.entry),
+              onClose: () => setMenu(null),
+            })
+          : null,
+        dialog
+          ? h(PromptDialog, {
+              key: 'prompt',
+              title: dialog.kind === 'mkdir' ? '新建文件夹' : dialog.kind === 'rename' ? '重命名' : '修改权限',
+              path: dialog.kind === 'mkdir' ? joinRemotePath(dialog.entry.path, '…') : dialog.entry.path,
+              hint: dialog.hint,
+              value: dialog.value,
+              placeholder: dialog.placeholder,
+              error: dialog.error,
+              busy: dialog.busy,
+              inputMode: dialog.kind === 'chmod' ? 'numeric' : undefined,
+              onChange: (value) => setDialog((current) => (current ? { ...current, value, error: '' } : current)),
+              onSubmit: submitPrompt,
+              onCancel: () => setDialog(null),
+            })
+          : null,
+        diffEntry
+          ? h(DiffModal, {
+              key: 'diff',
+              host,
+              path: diffEntry.path,
+              onClose: () => setDiffEntry(null),
+            })
+          : null,
+        tailEntry
+          ? h(TailModal, {
+              key: 'tail',
+              host,
+              path: tailEntry.path,
+              name: tailEntry.name,
+              onClose: () => setTailEntry(null),
+            })
+          : null,
       ]);
+    }
+
+    // ------------------------------------------------- D2 port discovery
+    // Ignored ports are a UI preference (not server state), so they live in
+    // localStorage per host. `discoveryAnnounced` dedupes the "new port" toast
+    // across panel re-mounts; the host also reports `new`, but its cache is
+    // short-lived so a reopen could otherwise re-announce the same port.
+    const DISMISSED_PORTS_KEY = 'presence.dismissedPorts';
+    const discoveryAnnounced = new Set();
+
+    function readDismissedPorts() {
+      try {
+        const raw = window.localStorage.getItem(DISMISSED_PORTS_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+      } catch {
+        return {};
+      }
+    }
+
+    function writeDismissedPorts(value) {
+      try {
+        window.localStorage.setItem(DISMISSED_PORTS_KEY, JSON.stringify(value));
+      } catch {
+        /* storage disabled: dismissal only lasts for this page */
+      }
     }
 
     /**
@@ -2250,6 +3219,16 @@ export function createApp({ React, ReactDOM }) {
       const [loading, setLoading] = useState(true);
       const [busy, setBusy] = useState(false);
       const [copied, setCopied] = useState(null);
+      // D1: saved forwards + "auto restore after reconnect" for this open.
+      const [presets, setPresets] = useState([]);
+      const [presetsSupported, setPresetsSupported] = useState(false);
+      const [autoRestore, setAutoRestore] = useState(false);
+      const [presetLabel, setPresetLabel] = useState('');
+      // D2: discovered-but-unforwarded ports for the selected host.
+      const [discovered, setDiscovered] = useState(null);
+      const [discoverySupported, setDiscoverySupported] = useState(true);
+      const [portBusy, setPortBusy] = useState(null);
+      const [dismissedPorts, setDismissedPorts] = useState(() => readDismissedPorts());
 
       const load = useCallback(async () => {
         try {
@@ -2257,6 +3236,11 @@ export function createApp({ React, ReactDOM }) {
           const list = state.hosts ?? [];
           setHosts(list);
           setTunnels(listing.tunnels ?? []);
+          // Older hosts answer { ok, tunnels } without the presets field: hide
+          // the auto-restore UI instead of showing an empty broken section.
+          const hasPresets = Array.isArray(listing.presets);
+          setPresetsSupported(hasPresets);
+          if (hasPresets) setPresets(listing.presets);
           notifyError(null);
           setHost((current) => current || list.find((item) => item.connected)?.alias || list[0]?.alias || '');
         } catch (err) {
@@ -2291,6 +3275,59 @@ export function createApp({ React, ReactDOM }) {
         return () => clearInterval(timer);
       }, [load]);
 
+      // D2: while this panel is open, ask the host for listening ports every
+      // 8 s. The host caches the scan (<=5 s), so refresh=1 is cheap; a missing
+      // or failing endpoint silently disables the section instead of nagging.
+      useEffect(() => {
+        if (!discoverySupported) return undefined;
+        const wantedHost = String(host ?? '').trim();
+        if (!wantedHost) return undefined;
+        let disposed = false;
+        let timer = null;
+        const tick = async () => {
+          if (disposed) return;
+          try {
+            const data = await request(`/discover?host=${encodeURIComponent(wantedHost)}&refresh=1`);
+            if (disposed) return;
+            const ports = Array.isArray(data.ports) ? data.ports : [];
+            setDiscovered({ host: wantedHost, ports, at: Date.now() });
+            const dismissed = new Set((readDismissedPorts()[wantedHost] ?? []).map(Number));
+            const forwarded = new Set(
+              ports.filter((item) => item?.forwarded).map((item) => Number(item?.port)),
+            );
+            const fresh = [];
+            for (const raw of Array.isArray(data.new) ? data.new : []) {
+              const port = Number(raw && typeof raw === 'object' ? raw.port : raw);
+              if (!Number.isInteger(port)) continue;
+              const key = `${wantedHost}:${port}`;
+              if (dismissed.has(port) || forwarded.has(port) || discoveryAnnounced.has(key)) continue;
+              discoveryAnnounced.add(key);
+              fresh.push(port);
+            }
+            if (fresh.length > 0) {
+              const label = fresh.slice(0, 4).map((port) => `:${port}`).join(' ');
+              notifyInfo({
+                title: t('toast.discovered', { count: fresh.length }),
+                hint: `${label} · ${t('toast.discovered.hint')}`,
+              }, { dedupeKey: `discover:${wantedHost}:${fresh.join(',')}` });
+            }
+          } catch (err) {
+            // Only a host without the route disables the section; a transient
+            // failure (host disconnected, password prompt pending) just retries
+            // on the next 8 s tick.
+            if (!disposed && isMissingEndpointError(err.message)) setDiscoverySupported(false);
+          } finally {
+            if (!disposed) timer = setTimeout(tick, 8000);
+          }
+        };
+        tick();
+        return () => {
+          disposed = true;
+          if (timer) clearTimeout(timer);
+          timer = null;
+        };
+      }, [host, discoverySupported]);
+
       const startTunnel = async () => {
         if (busy) return;
         if (!host) {
@@ -2311,17 +3348,31 @@ export function createApp({ React, ReactDOM }) {
         setBusy(true);
         notifyError(null);
         try {
-          const created = await request('/tunnels', {
+          // D1: keep:true asks the host to remember the forward, autoRestore
+          // reopens it after the next reconnect. Older hosts ignore the extra
+          // fields (and we hide the UI when they do not advertise presets).
+          const wantsPreset = presetsSupported && (autoRestore || presetLabel.trim().length > 0);
+          const payload = {
             host,
             remotePort: split.port,
             remoteHost: split.host,
             localPort: wantedLocal,
-          });
+          };
+          if (wantsPreset) {
+            payload.keep = true;
+            payload.autoRestore = autoRestore;
+            const label = presetLabel.trim();
+            if (label) payload.label = label;
+          }
+          const created = await request('/tunnels', payload);
           setRemotePort('');
           setLocalPort('');
-          await load();
+          if (wantsPreset) setPresetLabel('');
           const tunnel = created.tunnel ?? {};
-          if (tunnel.localPortFallback) {
+          await load();
+          if (wantsPreset) {
+            notifySuccess(autoRestore ? t('toast.presetSaved') : t('toast.presetKept'));
+          } else if (tunnel.localPortFallback) {
             notifyWarning(`本地 ${tunnel.requestedLocalPort} 已被占用，已改用 ${tunnel.localPort}；可在「本地端口」里手动指定`);
           } else {
             notifySuccess(`端口转发已建立：${tunnel.url ?? ''}`);
@@ -2351,6 +3402,135 @@ export function createApp({ React, ReactDOM }) {
           notifySuccess('已复制到剪贴板');
         } catch (err) {
           notifyError({ title: '复制失败', hint: '浏览器拒绝了剪贴板操作，可以手动选中 URL 复制', detail: err.message });
+        }
+      };
+
+      // -------------------------------------------------- D1 presets (MUT)
+      const unsupportedError = () => ({
+        title: t('toast.unsupportedFeature'),
+        hint: t('toast.unsupportedFeature.hint'),
+      });
+
+      const updatePreset = async (preset, patch) => {
+        const nextAutoRestore = patch.autoRestore ?? Boolean(preset.autoRestore);
+        // Optimistic: a controlled checkbox that waits for the PUT would snap
+        // back for a frame. Revert (and resync) if the request fails.
+        setPresets((current) => current.map((item) => (
+          String(item.id) === String(preset.id) ? { ...item, autoRestore: nextAutoRestore } : item
+        )));
+        try {
+          const data = await request('/tunnels/preset', {
+            host: preset.host,
+            remoteHost: preset.remoteHost ?? '127.0.0.1',
+            remotePort: preset.remotePort,
+            localPort: preset.localPort ?? preset.remotePort,
+            label: preset.label ?? undefined,
+            autoRestore: nextAutoRestore,
+          }, 'PUT');
+          if (data.preset) {
+            setPresets((current) => current.map((item) => (
+              String(item.id) === String(preset.id) ? data.preset : item
+            )));
+          }
+          notifySuccess(t('toast.presetUpdated'));
+        } catch (err) {
+          setPresets((current) => current.map((item) => (
+            String(item.id) === String(preset.id) ? { ...item, autoRestore: Boolean(preset.autoRestore) } : item
+          )));
+          notifyError(isMissingEndpointError(err.message) ? unsupportedError() : tunnelErrorInfo(err.message));
+        }
+      };
+
+      const deletePreset = async (preset) => {
+        try {
+          const query = new URLSearchParams({
+            host: String(preset.host ?? ''),
+            remoteHost: String(preset.remoteHost ?? '127.0.0.1'),
+            remotePort: String(preset.remotePort ?? ''),
+          });
+          await request(`/tunnels/preset?${query.toString()}`, undefined, 'DELETE');
+          await load();
+          notifySuccess(t('toast.presetRemoved'));
+        } catch (err) {
+          notifyError(isMissingEndpointError(err.message) ? unsupportedError() : tunnelErrorInfo(err.message));
+        }
+      };
+
+      const openPreset = async (preset) => {
+        setBusy(true);
+        try {
+          await request('/tunnels', {
+            host: preset.host,
+            remotePort: preset.remotePort,
+            remoteHost: preset.remoteHost ?? '127.0.0.1',
+            localPort: preset.localPort ?? undefined,
+          });
+          await load();
+          notifySuccess('端口转发已建立');
+        } catch (err) {
+          notifyError(tunnelErrorInfo(err.message));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      const isPresetOpen = (preset) => tunnels.some((tunnel) => (
+        tunnel.host === preset.host
+        && Number(tunnel.remotePort) === Number(preset.remotePort)
+        && (tunnel.remoteHost ?? '127.0.0.1') === (preset.remoteHost ?? '127.0.0.1')
+      ));
+
+      // ------------------------------------------- D2 discovery actions (MUT)
+      const dismissedForHost = new Set((dismissedPorts[host] ?? []).map(Number));
+      // `ss` can list the same port once per bind address (0.0.0.0 + [::]);
+      // show one chip per port number.
+      const discoveredVisible = [];
+      const seenDiscovered = new Set();
+      for (const item of (discovered && discovered.host === host ? discovered.ports : [])) {
+        const numeric = Number(item?.port);
+        if (!Number.isInteger(numeric) || seenDiscovered.has(numeric)) continue;
+        seenDiscovered.add(numeric);
+        if (item.forwarded || dismissedForHost.has(numeric)) continue;
+        discoveredVisible.push(item);
+        if (discoveredVisible.length >= 10) break;
+      }
+
+      const dismissPort = (port) => {
+        const numeric = Number(port);
+        const current = readDismissedPorts();
+        const list = new Set((current[host] ?? []).map(Number));
+        list.add(numeric);
+        current[host] = [...list];
+        writeDismissedPorts(current);
+        setDismissedPorts(current);
+      };
+
+      const forwardDiscovered = async (item) => {
+        const numeric = Number(item?.port);
+        if (!Number.isInteger(numeric)) return;
+        const address = String(item?.address ?? '').trim();
+        const target = !address || address === '0.0.0.0' || address === '::' || address === '[::]'
+          ? '127.0.0.1'
+          : address;
+        setPortBusy(numeric);
+        try {
+          await request('/tunnels', { host, remotePort: numeric, remoteHost: target });
+          // Reflect the forward immediately instead of waiting for the next
+          // 8 s discovery scan (and avoid opening the same port twice).
+          setDiscovered((current) => (current && current.host === host
+            ? {
+                ...current,
+                ports: current.ports.map((entry) => (
+                  Number(entry?.port) === numeric ? { ...entry, forwarded: true } : entry
+                )),
+              }
+            : current));
+          await load();
+          notifySuccess(`端口转发已建立：127.0.0.1:${numeric}`);
+        } catch (err) {
+          notifyError(tunnelErrorInfo(err.message));
+        } finally {
+          setPortBusy(null);
         }
       };
 
@@ -2488,9 +3668,118 @@ export function createApp({ React, ReactDOM }) {
               ? [h('span', { key: 'spin', className: 'dp-spin-wrap dp-spinning' }, h(Icon, { name: 'refresh', size: 14 })), h('span', { key: 't' }, '转发中…')]
               : '开始转发'),
           ]),
+          presetsSupported
+            ? h('div', { key: 'restore', className: 'dp-form-row' }, [
+                h('label', {
+                  key: 'check',
+                  className: 'dp-check',
+                  style: { flex: '0 0 auto' },
+                  title: '勾选后把这次转发保存成预设，机器重连后自动打开',
+                }, [
+                  h('input', {
+                    key: 'cb',
+                    type: 'checkbox',
+                    checked: autoRestore,
+                    onChange: (event) => setAutoRestore(event.target.checked),
+                  }),
+                  h('span', { key: 't' }, '自动恢复'),
+                ]),
+                h('input', {
+                  key: 'label',
+                  className: 'dp-input dp-mono',
+                  style: { flex: '1 1 120px' },
+                  value: presetLabel,
+                  maxLength: 80,
+                  placeholder: '备注（可选，重连后自动打开）',
+                  onChange: (event) => setPresetLabel(event.target.value),
+                  onKeyDown: (event) => {
+                    if (event.key === 'Enter') startTunnel();
+                  },
+                }),
+              ])
+            : null,
           h('div', { key: 'hint', className: 'dp-form-hint' },
             `将 ${host || '远程机器'} 上的 ${remoteHost || '127.0.0.1'}:${remotePort || '端口'} 映射到本地 ${localPort || remotePort || '同号端口'}（留空默认同号，被占用会自动换一个）；成功后点行尾 ↗ 打开。`),
         ]),
+        discoverySupported && discoveredVisible.length > 0
+          ? h('div', { key: 'discover', className: 'dp-discover' }, [
+              h('span', { key: 'label', className: 'dp-discover-label' }, `发现新端口 · ${host}`),
+              ...discoveredVisible.map((item) => h('span', {
+                key: `port-${item.port}`,
+                className: 'dp-port-chip',
+                title: `${item.address ?? ''}:${item.port}${item.process ? ` · ${item.process}` : ''}${item.pid ? ` · pid ${item.pid}` : ''}`,
+              }, [
+                h('span', { key: 'num', className: 'dp-port-num' }, `:${item.port}`),
+                item.process ? h('span', { key: 'proc', className: 'dp-port-proc' }, item.process) : null,
+                h('button', {
+                  key: 'forward',
+                  type: 'button',
+                  className: 'dp-port-btn',
+                  disabled: portBusy === Number(item.port),
+                  title: '转发到本地',
+                  onClick: () => forwardDiscovered(item),
+                }, portBusy === Number(item.port) ? '…' : '转发'),
+                h('button', {
+                  key: 'dismiss',
+                  type: 'button',
+                  className: 'dp-port-dismiss',
+                  title: '忽略这个端口',
+                  onClick: () => dismissPort(item.port),
+                }, h(Icon, { name: 'x', size: 11 })),
+              ])),
+            ])
+          : null,
+        presetsSupported && presets.length > 0
+          ? h('div', { key: 'presets', className: 'dp-presets' }, [
+              h('div', { key: 'head', className: 'dp-group-head', style: { padding: '2px 2px 4px' } }, [
+                h('span', { key: 'title', className: 'dp-group-name' }, '保存的转发'),
+                h('span', { key: 'count', className: 'dp-group-chip' }, `${presets.length} 个`),
+                h('div', { key: 'spacer', style: { flex: 1 } }),
+                h('span', { key: 'hint', style: { fontSize: 10.5, color: C.muted } }, '勾选 = 重连后自动恢复'),
+              ]),
+              ...presets.map((preset) => h('div', {
+                key: preset.id ?? `${preset.host}:${preset.remotePort}`,
+                className: 'dp-preset-row',
+              }, [
+                h('span', { key: 'dot', className: isPresetOpen(preset) ? 'dp-dot dp-dot--on' : 'dp-dot' }),
+                h('div', { key: 'text', className: 'dp-preset-text' }, [
+                  h('span', { key: 'label', className: 'dp-preset-label' },
+                    preset.label || `${preset.remoteHost ?? '127.0.0.1'}:${preset.remotePort}`),
+                  h('span', { key: 'route', className: 'dp-preset-route' },
+                    `${preset.host} · ${preset.remoteHost ?? '127.0.0.1'}:${preset.remotePort} → 127.0.0.1:${preset.localPort ?? preset.remotePort}`),
+                ]),
+                isPresetOpen(preset)
+                  ? h('span', { key: 'open', className: 'dp-preset-open' }, '已打开')
+                  : h('button', {
+                      key: 'launch',
+                      type: 'button',
+                      className: 'dp-iconbtn',
+                      title: '立即打开这个转发',
+                      disabled: busy,
+                      onClick: () => openPreset(preset),
+                    }, h(Icon, { name: 'play', size: 14 })),
+                h('label', {
+                  key: 'auto',
+                  className: 'dp-check',
+                  title: preset.autoRestore ? '重连后自动恢复（点击关闭）' : '重连后自动恢复（点击开启）',
+                }, [
+                  h('input', {
+                    key: 'cb',
+                    type: 'checkbox',
+                    checked: Boolean(preset.autoRestore),
+                    onChange: (event) => updatePreset(preset, { autoRestore: event.target.checked }),
+                  }),
+                ]),
+                h('button', {
+                  key: 'del',
+                  type: 'button',
+                  className: 'dp-iconbtn dp-iconbtn--danger',
+                  title: '删除这个预设',
+                  onClick: () => deletePreset(preset),
+                }, h(Icon, { name: 'trash', size: 14 })),
+              ])),
+            ])
+          : null,
         h('div', { key: 'list', className: 'dp-list' },
           loading
             ? h('div', { className: 'dp-loading' }, h(Spinner, { label: '加载中…' }))
@@ -2533,6 +3822,10 @@ export function createApp({ React, ReactDOM }) {
       const [manualNote, setManualNote] = useState('');
       const [manualWarnings, setManualWarnings] = useState([]);
       const [manualBusy, setManualBusy] = useState(false);
+      // C2: desktop-notification preference (localStorage like the other UI
+      // settings) and the browser permission we last observed.
+      const [desktopNotify, setDesktopNotify] = useState(() => readDesktopNotify());
+      const [notifyPermission, setNotifyPermission] = useState(() => notificationPermission());
 
       const loadList = useCallback(async () => {
         try {
@@ -2731,6 +4024,18 @@ export function createApp({ React, ReactDOM }) {
           setBusy(false);
         }
       }, [activeId]);
+
+      const toggleDesktopNotify = useCallback(async (next) => {
+        setDesktopNotify(next);
+        writeDesktopNotify(next);
+        if (!next) return;
+        let permission = notificationPermission();
+        if (permission === 'default') permission = await requestDesktopPermission();
+        setNotifyPermission(permission);
+        if (permission !== 'granted' && permission !== 'unsupported') {
+          notifyWarning({ title: t('toast.notifyDenied'), hint: t('toast.notifyDenied.hint') });
+        }
+      }, []);
 
       const header = h('header', {
         style: { display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 2 },
@@ -3038,6 +4343,41 @@ export function createApp({ React, ReactDOM }) {
               ])),
         ]);
 
+        // C2: background-job completion notifications. The in-app toast is
+        // always on; this toggle only controls the OS/browser notification.
+        const notificationSection = h('div', {
+          key: 'notifications',
+          className: 'dp-card',
+          style: { marginTop: 14, padding: '2px' },
+        }, [
+          h('div', {
+            key: 'head',
+            style: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px 4px' },
+          }, [
+            h('span', { key: 'icon', className: 'dp-icon', style: { width: 22, height: 22 } }, h(Icon, { name: 'info', size: 13 })),
+            h('span', { key: 'title', style: { fontSize: 13, fontWeight: 600 } }, '通知'),
+          ]),
+          h('div', { key: 'desktop', className: 'dp-setting-row' }, [
+            h('div', { key: 'text', className: 'dp-setting-text' }, [
+              h('span', { key: 'title', className: 'dp-setting-title' }, '桌面通知'),
+              h('span', { key: 'hint', className: 'dp-setting-hint' },
+                notifyPermission === 'unsupported'
+                  ? '当前环境不支持浏览器通知；后台任务结束仍会在页面右下角提示。'
+                  : notifyPermission === 'denied'
+                    ? '浏览器已拒绝通知权限；可在地址栏的权限设置里重新允许。后台任务结束仍会弹出站内提示。'
+                    : '后台任务结束（Promise 退出）时额外弹系统通知；站内提示始终保留。'),
+            ]),
+            h('label', { key: 'toggle', className: 'dp-check', title: '桌面通知' }, [
+              h('input', {
+                key: 'cb',
+                type: 'checkbox',
+                checked: desktopNotify,
+                onChange: (event) => toggleDesktopNotify(event.target.checked),
+              }),
+            ]),
+          ]),
+        ]);
+
         body = h('div', { style: { marginTop: 12 } }, [
           workspaces.length === 0
             ? h('div', { key: 'none', style: { padding: '18px 0', color: C.muted, fontSize: 13 } }, [
@@ -3111,6 +4451,7 @@ export function createApp({ React, ReactDOM }) {
                 ]);
               }),
           tunnelSection,
+          notificationSection,
         ]);
       }
 
@@ -3138,7 +4479,21 @@ export function createApp({ React, ReactDOM }) {
     }
 
     return {
-      __test: { humanizeError, pushNotice, t, currentLocale, noticeStore, splitHostPort },
+      __test: {
+        humanizeError,
+        pushNotice,
+        t,
+        currentLocale,
+        noticeStore,
+        splitHostPort,
+        // 0.18 pieces worth exercising without a browser: the pure helpers come
+        // from ./features.js, the viewers are exported so a probe can render them.
+        ModalShell,
+        ContextMenu,
+        PromptDialog,
+        DiffModal,
+        TailModal,
+      },
       inject: ['slots'],
       apply(ctx) {
         ensureStyles();
@@ -3146,6 +4501,13 @@ export function createApp({ React, ReactDOM }) {
           ctx.effect(() => mountToaster(ReactDOM), 'presence.toasts');
         } else {
           mountToaster(ReactDOM);
+        }
+        // C2: one global job watcher per plugin instance. It only polls until
+        // it learns the host has no `jobs` field, and is disposed with the ctx.
+        if (ctx.effect) {
+          ctx.effect(() => startJobWatcher(), 'presence.jobs');
+        } else {
+          startJobWatcher();
         }
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',

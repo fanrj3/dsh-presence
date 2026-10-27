@@ -45,14 +45,19 @@ connection per host**. The remote side is still plain `sshd`: SFTP, exec and a P
 - **Local-like edits** — atomic writes, mode preservation, ambiguity refusal, read-before-write guard, `presence_edit` with dry-run diffs.
 - **Real workspaces** — a remote directory becomes a normal DSH workspace with a file tree and terminals that open **on the remote machine**.
 - **Recoverable deletes** — destructive shell commands dry-run first; `presence_trash` moves paths to a remote trash with restore.
-- **Two shells, one kernel** — the DSH plugin and a standalone MCP server (`presence-mcp`, 20 tools) share the same kernel.
+- **`@` completes remote files** — inside a remote workspace, file-reference completion indexes the machine itself (`rg --files`, `find` fallback), not a local mirror.
+- **File operations, not just reads** — `presence_mkdir` / `move` / `copy` / `chmod` plus a right-click menu in the file tree; deletes go to the recoverable trash.
+- **Diff and live logs** — unified diff between two remote files or a remote file and a local one; follow a log file from the panel without keeping a `tail -f` job around.
+- **Ports that come back** — save forwards with auto-restore on reconnect, and let the Ports panel discover newly listening ports and forward them with one click.
+- **Job notifications** — a toast (and desktop notification) when a background job finishes, plus an optional local `notifyCommand` for daemons and phones.
+- **Two shells, one kernel** — the DSH plugin and a standalone MCP server (`presence-mcp`, 20 core tools) share the same kernel.
 
 ## Quick start
 
 ### 1. Install the DSH plugin
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.17.8
+dsh plugin add @rjfan/dsh-presence@0.18.0
 ```
 
 From a source checkout:
@@ -141,7 +146,7 @@ Measured on a Linux host:
 
 ## Tools
 
-The DSH plugin exposes 18 tools. Relative paths resolve against the active remote
+The DSH plugin exposes 24 tools. Relative paths resolve against the active remote
 workspace; `host` is optional inside a workspace.
 
 <details>
@@ -159,6 +164,12 @@ workspace; `host` is optional inside a workspace.
 | `presence_edit` | Exact-text replacement or line-range replacement, with compact diff, `dryRun`, JSON fields. |
 | `presence_ls` | List a directory; `recursive`, `totalBytes`, JSON output. |
 | `presence_stat` | Batch `stat` for 1–100 paths: type, size, mode, mtime, optional sha256; missing paths return `exists:false`. |
+| `presence_mkdir` | Create a remote directory (recursive by default); idempotent when it already exists. |
+| `presence_move` | Rename or move a path inside the same machine; refuses to replace an existing file unless `overwrite:true`. |
+| `presence_copy` | Copy a remote file (SFTP stream, or `cp -p` for large files) or a directory with `recursive:true`. |
+| `presence_chmod` | Change permissions with an octal mode (`755`, `0644`), optionally recursive. |
+| `presence_diff` | Unified diff of two remote files, or a remote file against a local one; context lines and JSON stats. |
+| `presence_tail` | Read the last N lines of a remote file, or follow it for a bounded time (`follow:true`, `timeoutMs`). |
 | `presence_search` | Remote `rg`/`grep` search, count-only mode, JSON matches. |
 | `presence_glob` | Find remote files by glob with size/mtime. |
 | `presence_import` | Local → remote binary-safe upload with mode and sha256. |
@@ -210,8 +221,8 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.17.8
-# → dist/presence-plugin-0.17.6.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.18.0
+# → dist/presence-plugin-0.18.0.zip
 ```
 
 Tests require one SSH-reachable host:
@@ -233,6 +244,10 @@ node scripts/safety-probe.mjs server   # destructive guard + observation store
 - PTY terminals follow the connection; cross-reconnect shells need `tmux` on the target
   (used automatically by `presence_terminal { session }`).
 - ProxyJump/ProxyCommand are parsed and warned about, but not used for dialing yet.
+- `@` file completion indexes the remote tree lazily (about 10 s per workspace);
+  on a very large tree the first query can take a few seconds.
+- Port auto-restore runs when the connection is re-established; a forward whose
+  saved local port is already taken falls back to another free port.
 
 ## Contributing
 

@@ -11,6 +11,10 @@ import { shared } from './src/shared.js';
 import { mountsRoot, parseMountPath } from './src/mounts.js';
 import { installToolInterceptor } from './src/intercept.js';
 import { lookupObservation, recordObservation } from './src/observed-store.js';
+import { TunnelStore } from './src/tunnel-store.js';
+import { PortDiscovery } from './src/port-discovery.js';
+import { installJobNotifier } from './src/job-notifier.js';
+import { installRemoteFileReferences } from './src/file-references.js';
 
 /** Bundle version, shown in the runtime context so agents notice capability changes. */
 const VERSION = (() => {
@@ -39,6 +43,14 @@ export const Config = z.object({
     .default(900_000)
     .description('Close an idle connection after this long, unless it still owns a terminal.'),
   readOnly: z.boolean().default(false).description('Refuse writes and edits; reading, searching and exec stay available.'),
+  notifyCommand: z
+    .string()
+    .default('')
+    .description('Optional local command run when a background job finishes. PRESENCE_JOB_ID/HOST/LABEL/EXIT are in its environment.'),
+  portDiscovery: z
+    .boolean()
+    .default(true)
+    .description('Scan connected machines for listening ports so the Ports panel can offer one-click forwards.'),
 });
 
 /**
@@ -53,20 +65,36 @@ export function apply(ctx, config = {}) {
     connectTimeoutMs: 25_000,
     idleTimeoutMs: 900_000,
     readOnly: false,
+    notifyCommand: '',
+    portDiscovery: true,
     ...config,
   };
 
   const pool = new PresencePool(settings);
   shared.pool = pool;
   shared.mountsRoot = mountsRoot();
+  // D1/D2: saved forwards and the listening-port scanner share one lifecycle
+  // with the pool; both are handed to the Web API through `late`.
+  const tunnelStore = new TunnelStore();
+  const portDiscovery = new PortDiscovery(pool, { enabled: settings.portDiscovery !== false });
   ctx.effect(() => () => {
+    portDiscovery.clear();
     pool.dispose();
     shared.pool = null;
   });
 
   // Late-bound services. Each is captured by its own inject, so callers never
   // depend on activation order and a one-shot `ctx.get` can't miss them.
-  const late = { credentials: undefined, registry: undefined, workingDirectory: undefined, fs: undefined, agents: undefined };
+  const late = {
+    credentials: undefined,
+    registry: undefined,
+    workingDirectory: undefined,
+    fs: undefined,
+    agents: undefined,
+    // D1/D2 owners, constructed above with the pool.
+    tunnelStore,
+    portDiscovery,
+  };
   ctx.inject(['agents'], (scope) => {
     late.agents = scope.agents;
     scope.effect(() => () => {
@@ -183,6 +211,57 @@ export function apply(ctx, config = {}) {
   // In a remote workspace the built-in grep/glob would scan the host disk:
   // answer those calls against the remote machine instead.
   installToolInterceptor(ctx, { pool, cwdOf });
+
+  // D1: bring saved auto-restore forwards back when a machine reconnects. The
+  // hook is fire-and-forget and dedupes against the live tunnel list, so a
+  // preset restored by hand (or opened moments earlier) is not opened twice.
+  const restoring = new Set();
+  const restorePresets = async (host) => {
+    if (restoring.has(host)) return;
+    restoring.add(host);
+    try {
+      const presets = tunnelStore.list().filter((preset) => preset.autoRestore && preset.host === host);
+      if (presets.length === 0) return;
+      const open = new Set(
+        pool
+          .listTunnels()
+          .filter((tunnel) => tunnel.host === host)
+          .map((tunnel) => `${tunnel.remoteHost}:${tunnel.remotePort}`),
+      );
+      for (const preset of presets) {
+        const target = `${preset.remoteHost}:${preset.remotePort}`;
+        if (open.has(target)) continue;
+        open.add(target);
+        try {
+          const tunnel = await pool.openForward(host, {
+            localPort: preset.localPort ?? undefined,
+            remoteHost: preset.remoteHost,
+            remotePort: preset.remotePort,
+          });
+          portDiscovery.rememberForwarded(host, tunnel);
+        } catch (error) {
+          console.error(
+            `presence: could not restore the port forward ${target} on ${host}: ${error?.message ?? String(error)}`,
+          );
+        }
+      }
+    } catch (error) {
+      console.error(`presence: could not restore port forwards on ${host}: ${error?.message ?? String(error)}`);
+    } finally {
+      restoring.delete(host);
+    }
+  };
+  const disposeConnectionHook = pool.onConnectionEstablished((host) => {
+    restorePresets(host).catch(() => {});
+  });
+  ctx.effect(() => () => disposeConnectionHook());
+
+  // C2: tell clients about finished background jobs; optionally run a local
+  // notification command. The interval is disposed with the plugin scope.
+  installJobNotifier(ctx, pool, { notifyCommand: settings.notifyCommand });
+
+  // B1: answer remote `@` completion from the machine, not the empty mount dir.
+  installRemoteFileReferences(ctx, { pool, mountsRoot: shared.mountsRoot, late });
 
   ctx.inject(['credentials'], (scope) => {
     late.credentials = scope.credentials;

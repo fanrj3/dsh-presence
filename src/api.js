@@ -3,16 +3,27 @@
 // be reachable from another machine.
 
 import { createHash } from 'node:crypto';
+import { readFile, stat as statLocal } from 'node:fs/promises';
+import { resolve as resolveLocalPath } from 'node:path';
 import { activateWorkspace, activeWorkspace, listWorkspaces, removeWorkspace, upsertWorkspace } from './workspaces.js';
 import { ensureMountDir, mountPathFor, normalizeRemotePath, parseMountPath } from './mounts.js';
 import { addCustomHost, loadCustomHosts, removeCustomHost } from './custom-hosts.js';
 import { listHosts, readSshConfigEntries } from './core/ssh-config.mjs';
+import { makeDirectory, movePath, copyPath, chmodPath } from './path-ops.js';
+import { diffLines } from './diff.js';
+import { tailRemote } from './tail.js';
 
 const MAX_BODY = 64 * 1024;
 // One file per request, in memory only for the upload (the body must be hashed
 // before it is written), streamed for the download.
 const MAX_TRANSFER = 64 * 1024 * 1024;
 const RAW_CHUNK = 1024 * 1024;
+// `localPath` in a diff is read on this machine; a huge file would not fit the
+// capped diff anyway, so refuse it instead of buffering it.
+const MAX_LOCAL_DIFF_BYTES = 4 * 1024 * 1024;
+// Each remote diff side is read in full (readText's default 1 MiB would diff a
+// truncated file silently). Same cap as the agent's presence_diff tool.
+const MAX_DIFF_SIDE_BYTES = 32 * 1024 * 1024;
 
 function isLoopback(request) {
   const address = request.socket?.remoteAddress ?? '';
@@ -120,6 +131,38 @@ function parseMode(value) {
   return Number.parseInt(match[1], 8);
 }
 
+/** Bounded integer from a query string or JSON body; `fallback` when absent. */
+function boundedInt(value, { fallback = null, min = Number.MIN_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER } = {}) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(number)));
+}
+
+/** `1` / `true` / `yes` / `on` (query strings and JSON bodies share this). */
+function truthyFlag(value) {
+  if (value === true) return true;
+  if (typeof value === 'string') return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+  return value === 1;
+}
+
+/**
+ * Read one side of a remote diff completely: stat first, refuse directories and
+ * oversized files, and reject binary content instead of rendering a garbled
+ * diff. The explicit `length` is what keeps readText from capping at 1 MiB.
+ */
+async function readDiffSide(connection, path) {
+  const info = await connection.stat(path);
+  if (!info.exists) throw new Error(`${path} does not exist on the host`);
+  if (info.isDir) throw new Error(`${path} is a directory`);
+  if (info.size > MAX_DIFF_SIDE_BYTES) {
+    throw new Error(`${path} is ${info.size} bytes; each diff side is capped at ${MAX_DIFF_SIDE_BYTES} bytes`);
+  }
+  const { content } = await connection.readText(path, { length: Math.max(1, info.size) });
+  if (content.includes('\u0000')) throw new Error(`${path} looks binary; diff needs text files`);
+  return content;
+}
+
 /**
  * Collect a raw request body (an upload), or throw with `status: 413` once it
  * is past the cap. The data listener keeps running after the rejection so the
@@ -216,6 +259,12 @@ async function rememberedPassword(credentials, host) {
 export function presenceRoutes(pool, late = {}) {
   const getCredentials = () => late.credentials;
   const getRegistry = () => late.registry;
+  // D1/D2 owners, constructed by index.js beside the pool. Read per request so
+  // a profile that never wires them still answers (empty) instead of failing.
+  const getTunnelStore = () =>
+    late.tunnelStore && typeof late.tunnelStore.list === 'function' ? late.tunnelStore : null;
+  const getPortDiscovery = () =>
+    late.portDiscovery && typeof late.portDiscovery.scan === 'function' ? late.portDiscovery : null;
   const guarded = (handler) => async (request, response) => {
     if (!isLoopback(request) || !isSameOrigin(request)) {
       send(response, 403, { ok: false, error: 'Presence is reachable from this machine only' });
@@ -245,7 +294,26 @@ export function presenceRoutes(pool, late = {}) {
           host.remembered = Boolean(await rememberedPassword(getCredentials(), host.alias));
           host.passwordHint = host.remembered ? 'remembered' : pool.hasSecret(host.alias) ? 'session' : 'none';
         }
-        send(response, 200, { ok: true, hosts, terminals: pool.listTerminals() });
+        // C2: the client detects running -> exited transitions from this list.
+        // Trimmed to the toast fields: this poll runs every few seconds and the
+        // full pool row carries the command line (session-log sensitive).
+        let jobs = [];
+        try {
+          jobs = (await pool.listJobs({ sessionId: undefined })).map((job) => ({
+            id: job.id,
+            host: job.host,
+            label: job.label ?? null,
+            state: job.state ?? 'unknown',
+            exitCode: job.exitCode ?? null,
+            signal: job.exitSignal ?? null,
+            startedAt: job.startedAt ?? null,
+            logPath: job.logPath ?? null,
+            pid: job.pid ?? null,
+          }));
+        } catch {
+          jobs = [];
+        }
+        send(response, 200, { ok: true, hosts, terminals: pool.listTerminals(), jobs });
       }),
     },
     {
@@ -297,7 +365,8 @@ export function presenceRoutes(pool, late = {}) {
       handler: guarded(async (request, response) => {
         const url = new URL(request.url ?? '/', 'http://localhost');
         if (request.method === 'GET') {
-          send(response, 200, { ok: true, tunnels: pool.listTunnels() });
+          const store = getTunnelStore();
+          send(response, 200, { ok: true, tunnels: pool.listTunnels(), presets: store ? store.list() : [] });
           return;
         }
         if (request.method === 'POST') {
@@ -332,7 +401,37 @@ export function presenceRoutes(pool, late = {}) {
               remoteHost,
               remotePort,
             });
-            send(response, 200, { ok: true, tunnel: { ...tunnel, url: `http://127.0.0.1:${tunnel.localPort}` } });
+            try {
+              getPortDiscovery()?.rememberForwarded?.(host, tunnel);
+            } catch {
+              /* discovery is a display nicety */
+            }
+            // D1: `keep`/`autoRestore` persists the forward as a preset; the
+            // tunnel is already open, so a store failure is a warning, not an
+            // error response.
+            let preset = null;
+            let warning;
+            const store = getTunnelStore();
+            if (store && (body.keep === true || body.autoRestore === true)) {
+              try {
+                preset = store.upsert({
+                  host,
+                  remoteHost,
+                  remotePort,
+                  localPort: tunnel.localPort,
+                  label: typeof body.label === 'string' ? body.label : '',
+                  autoRestore: body.autoRestore === true,
+                });
+              } catch (error) {
+                warning = `the forward is open, but the preset was not saved: ${error?.message ?? String(error)}`;
+              }
+            }
+            send(response, 200, {
+              ok: true,
+              tunnel: { ...tunnel, url: `http://127.0.0.1:${tunnel.localPort}` },
+              preset,
+              ...(warning ? { warning } : {}),
+            });
           } catch (error) {
             send(response, 400, { ok: false, error: error?.message ?? String(error) });
           }
@@ -349,6 +448,228 @@ export function presenceRoutes(pool, late = {}) {
           return;
         }
         send(response, 405, { ok: false, error: 'use GET, POST or DELETE' });
+      }),
+    },
+    {
+      // D1: saved presets (add/update and delete without opening anything).
+      kind: 'exact',
+      path: '/presence/api/tunnels/preset',
+      handler: guarded(async (request, response) => {
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        const store = getTunnelStore();
+        if (!store) {
+          send(response, 503, { ok: false, error: 'the port-forward preset store is not available in this profile' });
+          return;
+        }
+        if (request.method === 'PUT') {
+          const body = await readJson(request);
+          try {
+            const preset = store.upsert({
+              id: body.id,
+              host: body.host,
+              remoteHost: body.remoteHost,
+              remotePort: body.remotePort,
+              localPort: body.localPort,
+              label: body.label,
+              autoRestore: body.autoRestore,
+            });
+            send(response, 200, { ok: true, preset });
+          } catch (error) {
+            send(response, 400, { ok: false, error: error?.message ?? String(error) });
+          }
+          return;
+        }
+        if (request.method === 'DELETE') {
+          try {
+            const removed = store.remove({
+              id: url.searchParams.get('id') ?? undefined,
+              host: url.searchParams.get('host') ?? undefined,
+              remoteHost: url.searchParams.get('remoteHost') ?? undefined,
+              remotePort: url.searchParams.get('remotePort') ?? undefined,
+            });
+            send(response, 200, { ok: true, removed });
+          } catch (error) {
+            send(response, 400, { ok: false, error: error?.message ?? String(error) });
+          }
+          return;
+        }
+        send(response, 405, { ok: false, error: 'use PUT or DELETE' });
+      }),
+    },
+    {
+      // D2: what is listening on the machine right now, for one-click forwards.
+      kind: 'exact',
+      path: '/presence/api/discover',
+      handler: guarded(async (request, response) => {
+        if (request.method !== 'GET') {
+          send(response, 405, { ok: false, error: 'use GET' });
+          return;
+        }
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        const host = String(url.searchParams.get('host') ?? '').trim();
+        if (!host) {
+          send(response, 400, { ok: false, error: 'host is required' });
+          return;
+        }
+        const discovery = getPortDiscovery();
+        if (!discovery) {
+          send(response, 200, { ok: true, host, ports: [], new: [] });
+          return;
+        }
+        const force = truthyFlag(url.searchParams.get('refresh'));
+        const result = await discovery.scan(host, { force });
+        send(response, 200, { ok: true, host, ports: result.ports ?? [], new: result.new ?? [] });
+      }),
+    },
+    {
+      // B2: mkdir / rename / copy / chmod through the frozen path-ops helpers.
+      kind: 'exact',
+      path: '/presence/api/path-op',
+      handler: guarded(async (request, response) => {
+        if (request.method !== 'POST') {
+          send(response, 405, { ok: false, error: 'use POST' });
+          return;
+        }
+        const body = await readJson(request);
+        const host = String(body.host ?? '').trim();
+        const op = String(body.op ?? '').trim().toLowerCase();
+        const path = typeof body.path === 'string' ? body.path.trim() : '';
+        if (!host) {
+          send(response, 400, { ok: false, error: 'host is required' });
+          return;
+        }
+        if (!path) {
+          send(response, 400, { ok: false, error: 'path is required' });
+          return;
+        }
+        const connection = await pool.connection(host);
+        let result;
+        switch (op) {
+          case 'mkdir':
+            result = await makeDirectory(connection, path, { recursive: body.recursive !== false });
+            break;
+          case 'rename': {
+            const to = typeof body.to === 'string' ? body.to.trim() : '';
+            if (!to) {
+              send(response, 400, { ok: false, error: 'to is required for rename' });
+              return;
+            }
+            result = await movePath(connection, path, to, { overwrite: body.overwrite === true });
+            break;
+          }
+          case 'copy': {
+            const to = typeof body.to === 'string' ? body.to.trim() : '';
+            if (!to) {
+              send(response, 400, { ok: false, error: 'to is required for copy' });
+              return;
+            }
+            result = await copyPath(connection, path, to, {
+              recursive: body.recursive === true,
+              overwrite: body.overwrite === true,
+            });
+            break;
+          }
+          case 'chmod':
+            result = await chmodPath(connection, path, body.mode, { recursive: body.recursive === true });
+            break;
+          default:
+            send(response, 400, { ok: false, error: 'op must be mkdir, rename, copy or chmod' });
+            return;
+        }
+        send(response, 200, { ok: true, result });
+      }),
+    },
+    {
+      // B4: unified diff between two remote files, or a remote file and a local one.
+      kind: 'exact',
+      path: '/presence/api/diff',
+      handler: guarded(async (request, response) => {
+        if (request.method !== 'GET') {
+          send(response, 405, { ok: false, error: 'use GET' });
+          return;
+        }
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        const host = String(url.searchParams.get('host') ?? '').trim();
+        const a = String(url.searchParams.get('a') ?? '').trim();
+        const b = String(url.searchParams.get('b') ?? '').trim();
+        const localPath = String(url.searchParams.get('localPath') ?? '').trim();
+        if (!host) {
+          send(response, 400, { ok: false, error: 'host is required' });
+          return;
+        }
+        if (!a) {
+          send(response, 400, { ok: false, error: 'a is required' });
+          return;
+        }
+        if ((b && localPath) || (!b && !localPath)) {
+          send(response, 400, { ok: false, error: 'exactly one of b or localPath is required' });
+          return;
+        }
+        const connection = await pool.connection(host);
+        const before = await readDiffSide(connection, a);
+        let after;
+        if (b) {
+          after = await readDiffSide(connection, b);
+        } else {
+          const target = resolveLocalPath(localPath);
+          const info = await statLocal(target).catch(() => null);
+          if (!info || !info.isFile()) {
+            send(response, 400, { ok: false, error: `${localPath} is not a readable local file` });
+            return;
+          }
+          if (info.size > MAX_LOCAL_DIFF_BYTES) {
+            send(response, 400, {
+              ok: false,
+              error: `${localPath} is ${info.size} bytes; a local diff is capped at ${MAX_LOCAL_DIFF_BYTES} bytes`,
+            });
+            return;
+          }
+          after = await readFile(target, 'utf8');
+          if (after.includes('\u0000')) {
+            send(response, 400, { ok: false, error: `${localPath} looks binary; diff needs text files` });
+            return;
+          }
+        }
+        const context = boundedInt(url.searchParams.get('context'), { fallback: 3, min: 0, max: 200 });
+        const result = diffLines(before, after, { context });
+        send(response, 200, {
+          ok: true,
+          diff: result.diff,
+          stats: { added: result.added, removed: result.removed },
+          truncated: result.truncated,
+        });
+      }),
+    },
+    {
+      // C1: end of a remote log file, optionally following it for a few seconds.
+      kind: 'exact',
+      path: '/presence/api/tail',
+      handler: guarded(async (request, response) => {
+        if (request.method !== 'GET') {
+          send(response, 405, { ok: false, error: 'use GET' });
+          return;
+        }
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        const host = String(url.searchParams.get('host') ?? '').trim();
+        const path = String(url.searchParams.get('path') ?? '').trim();
+        if (!host || !path) {
+          send(response, 400, { ok: false, error: 'host and path are required' });
+          return;
+        }
+        const lines = boundedInt(url.searchParams.get('lines'), { fallback: 200, min: 1, max: 5_000 });
+        const follow = truthyFlag(url.searchParams.get('follow'));
+        const timeoutMs = boundedInt(url.searchParams.get('timeoutMs'), { fallback: 8_000, min: 0, max: 60_000 });
+        const connection = await pool.connection(host);
+        const result = await tailRemote(connection, path, { lines, follow, timeoutMs });
+        send(response, 200, {
+          ok: true,
+          path,
+          text: result.text,
+          lines: result.lines,
+          bytes: result.bytes,
+          followedMs: result.followedMs,
+          truncated: result.truncated,
+        });
       }),
     },
     {
@@ -903,7 +1224,7 @@ export function presenceRoutes(pool, late = {}) {
         let dshWorkspace = null;
         let warning = null;
         if (registry) {
-          const url = `presence://${host}${normalizeRemotePath(path)}`;
+          const mount = ensureMountDir(host, path);
           try {
             const created = await registry.create(mount, workspace.title);
             dshWorkspace = { id: created.id, path: created.path, title: created.title };

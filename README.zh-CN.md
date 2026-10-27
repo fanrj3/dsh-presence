@@ -44,14 +44,19 @@ Presence 让 agent 留在本机，**通过每台机器一条常驻 SSH 连接把
 - **接近本地的编辑** —— 原子写、保留 mode、锚点歧义拒绝、读后写守卫、`presence_edit` 的 dry-run diff。
 - **真正的远程工作区** —— 远端目录注册成普通 DSH 工作区，文件树、终端都**开在远端机器上**。
 - **可恢复的删除** —— 危险 shell 命令先 dry-run；`presence_trash` 移入远端回收站并可恢复。
-- **两种外壳，同一个内核** —— DSH 插件与独立 MCP server（`presence-mcp`，20 个工具）共用同一套内核。
+- **`@` 能补全远端文件** —— 远程工作区里，文件引用补全直接索引目标机（`rg --files`，回退 `find`），不是本地镜像。
+- **文件操作不只是读** —— `presence_mkdir` / `move` / `copy` / `chmod`，文件树右键菜单直接操作；删除走可恢复回收站。
+- **Diff 与实时日志** —— 两个远端文件、或远端与本地文件之间的统一 diff；面板里直接跟随日志，不用常驻 `tail -f` 任务。
+- **转发会自己回来** —— 保存转发并自动恢复；端口面板发现新监听端口后可一键转发。
+- **任务完成通知** —— 后台任务结束时弹 toast（及桌面通知），也可配置本地 `notifyCommand` 推送到手机或守护进程。
+- **两种外壳，同一个内核** —— DSH 插件与独立 MCP server（`presence-mcp`，20 个核心工具）共用同一套内核。
 
 ## 快速开始
 
 ### 1. 安装 DSH 插件
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.17.8
+dsh plugin add @rjfan/dsh-presence@0.18.0
 ```
 
 从源码安装：
@@ -138,7 +143,7 @@ Linux 主机上的实测：
 
 ## 工具
 
-DSH 插件提供 18 个工具。相对路径相对当前远程工作区；在工作区里 `host` 可省略。
+DSH 插件提供 24 个工具。相对路径相对当前远程工作区；在工作区里 `host` 可省略。
 
 <details>
 <summary><b>展开全部工具</b></summary>
@@ -155,6 +160,12 @@ DSH 插件提供 18 个工具。相对路径相对当前远程工作区；在工
 | `presence_edit` | 精确文本替换或行号区间替换，带紧凑 diff、`dryRun` 和 JSON 字段。 |
 | `presence_ls` | 列目录；`recursive`、`totalBytes`、JSON 输出。 |
 | `presence_stat` | 批量 `stat` 1–100 个路径：类型、大小、mode、mtime、可选 sha256；缺失路径返回 `exists:false`。 |
+| `presence_mkdir` | 创建远端目录（默认递归）；已存在时幂等成功。 |
+| `presence_move` | 同一台机器内重命名/移动；目标已存在时除非 `overwrite:true` 否则拒绝。 |
+| `presence_copy` | 复制远端文件（SFTP 流，大文件走 `cp -p`），目录需 `recursive:true`。 |
+| `presence_chmod` | 按八进制 mode 改权限（`755`/`0644`），可递归。 |
+| `presence_diff` | 两个远端文件、或远端与本地文件的统一 diff；支持上下文行数和 JSON 统计。 |
+| `presence_tail` | 读远端文件最后 N 行，或在限定时间内跟随（`follow:true`、`timeoutMs`）。 |
 | `presence_search` | 远端 `rg`/`grep` 搜索，`countOnly`，JSON matches。 |
 | `presence_glob` | 远端 glob 找文件，带 size/mtime。 |
 | `presence_import` | 本地 → 远端二进制安全上传，可设 mode，返回 sha256。 |
@@ -201,8 +212,8 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.17.8
-# → dist/presence-plugin-0.17.8.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.18.0
+# → dist/presence-plugin-0.18.0.zip
 ```
 
 验证脚本需要一台可 SSH 的主机：
@@ -222,6 +233,8 @@ node scripts/safety-probe.mjs server   # 危险命令护栏 + 观测状态
 - sshd 的 `MaxSessions`（默认 10）限制并发通道；连接池最多用 8 个。
 - PTY 终端跟随连接存活；跨重连的 shell 需要目标机有 `tmux`（`presence_terminal { session }` 自动使用）。
 - ProxyJump / ProxyCommand 会被解析并提示，但目前不用于实际拨号。
+- `@` 文件补全按工作区惰性索引远端树（约 10 秒缓存）；超大目录首次查询可能要几秒。
+- 端口自动恢复在连接重建时执行；若保存的本地端口已被占用，会回退到其它空闲端口。
 
 ## 参与贡献
 

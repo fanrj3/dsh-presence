@@ -64,29 +64,39 @@ try {
   await pool.stopJob(server.id).catch(() => {});
   check('waitForPort detects closed/open', closed.ready === false && opened.ready === true, `closed=${closed.ready} open=${opened.ready} waited=${opened.waitedMs}ms`);
 
-  // 6. Search: absolute pattern split, stats, truncation, count.
-  const split = splitGlobPattern('/srv/workspace/scripts/*.py');
-  check('absolute glob pattern splits', split.root === '/srv/workspace/scripts' && split.pattern === '*.py', JSON.stringify(split));
-
-  const scriptsBase = '/srv/workspace';
-  const scriptInfo = await connection.stat(scriptsBase);
-  if (scriptInfo.exists && scriptInfo.isDir) {
-    const globbed = await remoteGlobDetailed(connection, { root: scriptsBase, pattern: 'scripts/*.py', limit: 5, stats: true });
-    check('glob returns stats and truncation', Array.isArray(globbed.files) && globbed.files.length > 0 && 'truncated' in globbed, `files=${globbed.files.length} truncated=${globbed.truncated} sample=${JSON.stringify(globbed.files[0])}`);
-  } else {
-    check('glob returns stats and truncation', false, `${scriptsBase} missing`);
-  }
-
-  const grepped = await remoteGrep(connection, { root: '/srv/workspace', pattern: 'def ', limit: 5 });
-  check('grep reports truncation + total', Array.isArray(grepped.matches) && grepped.matches.length <= 5 && (grepped.truncated || grepped.total !== undefined), `matches=${grepped.matches.length} truncated=${grepped.truncated} total=${grepped.total}`);
-
-  let badPath = null;
+  // 6. Search: absolute pattern split, stats, truncation, count. Use a fresh
+  //    fixture instead of a machine-specific path, so the probe runs anywhere.
+  const scriptsBase = `/tmp/presence-feature-scripts-${Date.now()}`;
   try {
-    await remoteGrep(connection, { root: '/srv/workspace/definitely-missing-dir', pattern: 'x' });
-  } catch (error) {
-    badPath = error.message;
+    await connection.exec(
+      `mkdir -p ${scriptsBase}/scripts && ` +
+        `printf 'def alpha():\\n    pass\\n' > ${scriptsBase}/scripts/a.py && ` +
+        `printf 'def beta():\\n    pass\\n' > ${scriptsBase}/scripts/b.py`,
+    );
+    const split = splitGlobPattern(`${scriptsBase}/scripts/*.py`);
+    check('absolute glob pattern splits', split.root === `${scriptsBase}/scripts` && split.pattern === '*.py', JSON.stringify(split));
+
+    const scriptInfo = await connection.stat(scriptsBase);
+    if (scriptInfo.exists && scriptInfo.isDir) {
+      const globbed = await remoteGlobDetailed(connection, { root: scriptsBase, pattern: 'scripts/*.py', limit: 5, stats: true });
+      check('glob returns stats and truncation', Array.isArray(globbed.files) && globbed.files.length > 0 && 'truncated' in globbed, `files=${globbed.files.length} truncated=${globbed.truncated} sample=${JSON.stringify(globbed.files[0])}`);
+    } else {
+      check('glob returns stats and truncation', false, `${scriptsBase} missing`);
+    }
+
+    const grepped = await remoteGrep(connection, { root: scriptsBase, pattern: 'def ', limit: 5 });
+    check('grep reports truncation + total', Array.isArray(grepped.matches) && grepped.matches.length <= 5 && (grepped.truncated || grepped.total !== undefined), `matches=${grepped.matches.length} truncated=${grepped.truncated} total=${grepped.total}`);
+
+    let badPath = null;
+    try {
+      await remoteGrep(connection, { root: `${scriptsBase}/definitely-missing-dir`, pattern: 'x' });
+    } catch (error) {
+      badPath = error.message;
+    }
+    check('missing search root throws', Boolean(badPath), badPath ?? 'no error');
+  } finally {
+    await connection.exec(`rm -rf ${scriptsBase}`).catch(() => {});
   }
-  check('missing search root throws', Boolean(badPath), badPath ?? 'no error');
 
   // 7. Searching ONE FILE must find matches (rg omits the filename unless
   //    --with-filename is passed; that used to make every line unparseable).

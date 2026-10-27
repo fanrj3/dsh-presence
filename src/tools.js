@@ -12,6 +12,9 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { connect as connectTcp } from 'node:net';
 import { exportDirectory, join as joinPath, dirname as dirnamePath, resolve as resolvePath, sep, pruneExports } from './localpaths.js';
+import { makeDirectory, movePath, copyPath, chmodPath } from './path-ops.js';
+import { diffLines as buildUnifiedDiff } from './diff.js';
+import { tailRemote } from './tail.js';
 
 const OUTPUT_CAP = 32 * 1024;
 const EXEC_OUTPUT_CAP = 16 * 1024;
@@ -24,6 +27,16 @@ const PROBE_MAX_PORTS = 20;
 const TRASH_MAX_PATHS = 50;
 const DIFF_LINE_CAP = 100;
 const DIFF_BYTE_CAP = 8 * 1024;
+// presence_diff holds one side in memory at a time, with the same cap the read
+// tools use; the rendered diff is capped again (lines/bytes) before it ships.
+const DIFF_SIDE_CAP = READ_CAP;
+const DIFF_JSON_MAX = 96 * 1024;
+const TAIL_DEFAULT_LINES = 200;
+const TAIL_DEFAULT_TIMEOUT_MS = 8_000;
+const TAIL_MAX_TIMEOUT_MS = 60_000;
+const TAIL_MAX_LINES = 5000;
+const TAIL_JSON_TEXT_CAP = 48 * 1024;
+const TAIL_JSON_MAX = 64 * 1024;
 
 function shq(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -708,6 +721,93 @@ function stopSummary(result, check) {
   const exit = `exit=${result.exitCode ?? '-'}${result.exitSignal ? ` signal=${result.exitSignal}` : ''}`;
   const verify = `pid ${result.pid ?? '?'} alive=${check.alive === null ? 'unknown' : check.alive} verified=${check.verified}`;
   return `${verify}  ${exit}`;
+}
+
+/** One whole remote text file for a diff; refuses directories, binary and oversized files. */
+async function readRemoteTextForDiff(connection, target, host) {
+  const info = await connection.stat(target);
+  if (!info.exists) throw new Error(`${target} does not exist on ${host}`);
+  if (info.isDir) throw new Error(`${target} is a directory; presence_diff reads files`);
+  if (info.size > DIFF_SIDE_CAP) {
+    throw new Error(
+      `${target} is ${formatBytes(info.size)}; presence_diff reads up to ${formatBytes(DIFF_SIDE_CAP)} per side`,
+    );
+  }
+  const { content } = await connection.readText(target, { length: Math.max(0, info.size) });
+  if (content.includes('\u0000')) {
+    throw new Error(`${target} looks binary (contains NUL); presence_diff reads text files only`);
+  }
+  return content;
+}
+
+/** One local file for a diff; relative paths resolve against the host process cwd. */
+function readLocalTextForDiff(input) {
+  const absolute = resolvePath(String(input));
+  let info;
+  try {
+    info = statSync(absolute);
+  } catch (error) {
+    throw new Error(`local file ${absolute} cannot be read: ${error?.message ?? String(error)}`);
+  }
+  if (!info.isFile()) throw new Error(`local path ${absolute} is not a regular file`);
+  if (info.size > DIFF_SIDE_CAP) {
+    throw new Error(`local file ${absolute} is ${formatBytes(info.size)}; presence_diff reads up to ${formatBytes(DIFF_SIDE_CAP)} per side`);
+  }
+  const buffer = readFileSync(absolute);
+  if (buffer.includes(0)) {
+    throw new Error(`local file ${absolute} looks binary (contains NUL); presence_diff reads text files only`);
+  }
+  return { path: absolute, content: buffer.toString('utf8') };
+}
+
+/** A chmod mode argument: "755"/"0644"/"0o755" strings, or an octal mode number. */
+function parseChmodMode(value) {
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value < 0 || value > 0o7777) {
+      throw new Error(`mode must be an octal number such as 0o755, got ${String(value)}`);
+    }
+    const digits = String(value);
+    // A model that sends 755 means 0755; a real mode value (0o755 = 493) is
+    // below 0o1000 and never hits this branch.
+    if (value > 0o777 && /^[0-7]{3,4}$/.test(digits)) return Number.parseInt(digits, 8);
+    return value;
+  }
+  const parsed = parseMode(value);
+  if (parsed === undefined) {
+    throw new Error('mode is required: pass an octal string such as "755" or a number such as 0o755');
+  }
+  return parsed;
+}
+
+/** Whole-number argument with a default and a hard range. */
+function clampedNumber(value, fallback, min, max) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(number)));
+}
+
+/**
+ * JSON text that stays valid: oversized text fields are shortened (twice each
+ * round) instead of being cut mid-string, so callers can always JSON.parse it.
+ * `truncated` is added set to true whenever a field was shortened.
+ */
+function jsonResponse(value, textKeys, cap) {
+  let current = { ...value };
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    if (attempt > 0) {
+      current = { ...current, truncated: true };
+      for (const key of textKeys) {
+        const text = typeof current[key] === 'string' ? current[key] : '';
+        if (text.length > 0) current[key] = text.slice(0, Math.floor(text.length / 2));
+      }
+    }
+    const json = JSON.stringify(current, null, 2);
+    if (json.length <= cap) return json;
+  }
+  for (const key of textKeys) current[key] = '';
+  current = { ...current, truncated: true };
+  return JSON.stringify(current, null, 2);
 }
 
 const textOutput = (description) => ({
@@ -1853,6 +1953,235 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           `${rows.length} path(s): ${found} found, ${rows.length - found} missing` +
           (args.hash === true ? `, ${hashed} hashed` : '');
         return clip([header, ...lines, '', summary].join('\n'));
+      },
+    }),
+
+    // ---------------------------------------------------- file ops / diff / tail
+
+    tool({
+      name: 'presence_mkdir',
+      description:
+        'Create a directory on a remote machine. Inside a workspace, relative paths resolve against the workspace root. `parents` defaults to true (mkdir -p): missing parents are created and an existing directory is a success. Pass parents:false to require the parent to exist. Prefer this over presence_exec for a plain mkdir.',
+      parameters: {
+        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
+        parents: {
+          type: 'boolean',
+          description: 'Create missing parent directories; an existing directory is still a success. Defaults to true.',
+        },
+      },
+      annotations: { destructiveHint: false, readOnlyHint: false, idempotentHint: true },
+      async execute(args, exec) {
+        ensureWritable();
+        const { host, workspace } = await pickScope(args, exec);
+        const connection = await pool.connection(host);
+        const target = await remotePath(connection, workspace, args.path);
+        const before = await connection.stat(target).catch(() => null);
+        const existed = before?.exists === true && before.isDir === true;
+        await makeDirectory(connection, target, { recursive: args.parents !== false });
+        return existed ? `directory ${target} already exists on ${host}` : `created directory ${target} on ${host}`;
+      },
+    }),
+
+    tool({
+      name: 'presence_move',
+      description:
+        'Rename or move a path on one remote machine (an atomic rename on the host). `to` is the exact new path, not a directory to move into. An existing destination file is refused unless overwrite:true; an existing destination directory is never merged into or replaced. Inside a workspace, relative paths resolve against the workspace root.',
+      parameters: {
+        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        from: { type: 'string', required: true, description: 'Remote path to move (absolute, ~/relative, or workspace-relative).' },
+        to: { type: 'string', required: true, description: 'Exact new remote path.' },
+        overwrite: { type: 'boolean', description: 'Replace an existing destination file. Defaults to false.' },
+      },
+      annotations: { destructiveHint: true, readOnlyHint: false },
+      async execute(args, exec) {
+        ensureWritable();
+        const { host, workspace } = await pickScope(args, exec);
+        const connection = await pool.connection(host);
+        const from = await remotePath(connection, workspace, args.from);
+        const to = await remotePath(connection, workspace, args.to);
+        const result = await movePath(connection, from, to, { overwrite: args.overwrite === true });
+        await markObserved(exec, args.to);
+        return `moved ${result.from} -> ${result.to} on ${host}`;
+      },
+    }),
+
+    tool({
+      name: 'presence_copy',
+      description:
+        'Copy a file or directory on one remote machine. `to` is the exact destination path. A directory requires recursive:true and is copied with remote `cp -a`; a file is streamed through SFTP up to 8 MiB and copied with remote `cp -p` above that, so nothing large goes through this process. An existing destination is refused unless overwrite:true. Inside a workspace, relative paths resolve against the workspace root.',
+      parameters: {
+        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        from: { type: 'string', required: true, description: 'Remote source path.' },
+        to: { type: 'string', required: true, description: 'Exact remote destination path.' },
+        recursive: { type: 'boolean', description: 'Copy a directory tree. Required when from is a directory. Defaults to false.' },
+        overwrite: { type: 'boolean', description: 'Replace an existing destination. Defaults to false.' },
+      },
+      annotations: { destructiveHint: true, readOnlyHint: false },
+      async execute(args, exec) {
+        ensureWritable();
+        const { host, workspace } = await pickScope(args, exec);
+        const connection = await pool.connection(host);
+        const from = await remotePath(connection, workspace, args.from);
+        const to = await remotePath(connection, workspace, args.to);
+        const result = await copyPath(connection, from, to, {
+          recursive: args.recursive === true,
+          overwrite: args.overwrite === true,
+        });
+        await markObserved(exec, args.to);
+        const facts = [];
+        if (result.files !== undefined) facts.push(`${result.files} file(s)`);
+        if (result.bytes !== undefined) facts.push(formatBytes(result.bytes));
+        return `copied ${result.from} -> ${result.to} on ${host}${facts.length > 0 ? ` (${facts.join(', ')})` : ''}`;
+      },
+    }),
+
+    tool({
+      name: 'presence_chmod',
+      description:
+        'Change permissions on a remote path and report the applied octal mode. Accepts "755"/"0644"/"0o755" strings (preferred) or an octal mode number such as 0o755. With recursive:true a directory tree is changed with `chmod -R`. Inside a workspace, relative paths resolve against the workspace root.',
+      parameters: {
+        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
+        mode: {
+          oneOf: [{ type: 'string' }, { type: 'number' }],
+          required: true,
+          description: 'Octal mode: "755", "0644", "0o755", or a mode number such as 0o755 (493).',
+        },
+        recursive: { type: 'boolean', description: 'Change a directory tree recursively. Defaults to false.' },
+      },
+      annotations: { destructiveHint: true, readOnlyHint: false },
+      async execute(args, exec) {
+        ensureWritable();
+        const { host, workspace } = await pickScope(args, exec);
+        const connection = await pool.connection(host);
+        const target = await remotePath(connection, workspace, args.path);
+        const mode = parseChmodMode(args.mode);
+        const result = await chmodPath(connection, target, mode, { recursive: args.recursive === true });
+        await markObserved(exec, args.path);
+        return `chmod ${args.recursive === true ? '-R ' : ''}${result.mode} ${result.path} on ${host}`;
+      },
+    }),
+
+    tool({
+      name: 'presence_diff',
+      description:
+        'Diff a text file on a remote machine against either another remote file (`b`) or a local host-process file (`localPath`); pass exactly one of b/localPath. Returns a unified diff body (hunk headers plus +/-/context rows, no ---/+++ headers): `context` controls context lines (default 3, max 20), the diff is capped by lines/bytes and reports truncation, and identical content returns "(no changes)". format:\'json\' returns {stats:{added,removed}, diff, truncated}. Inside a workspace, relative paths resolve against the workspace root; localPath is resolved against the host process cwd.',
+      parameters: {
+        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        a: { type: 'string', required: true, description: 'Left side: remote path (absolute, ~/relative, or workspace-relative).' },
+        b: { type: 'string', description: 'Right side: another remote path. Mutually exclusive with localPath.' },
+        localPath: { type: 'string', description: 'Right side: a local file on the host process. Mutually exclusive with b.' },
+        context: { type: 'number', description: 'Context lines around each change, 0-20. Defaults to 3.' },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: {stats:{added,removed}, diff, truncated}. Defaults to text.',
+        },
+      },
+      annotations: { readOnlyHint: true },
+      async execute(args, exec) {
+        const hasRemoteB = typeof args.b === 'string' && args.b.trim() !== '';
+        const hasLocal = typeof args.localPath === 'string' && args.localPath.trim() !== '';
+        if (hasRemoteB === hasLocal) {
+          throw new Error('pass exactly one of b (another remote path) or localPath (a local file) as the right side');
+        }
+        const { host, workspace } = await pickScope(args, exec);
+        const connection = await pool.connection(host);
+        const leftTarget = await remotePath(connection, workspace, args.a);
+        const left = await readRemoteTextForDiff(connection, leftTarget, host);
+        let right;
+        let rightLabel;
+        if (hasRemoteB) {
+          rightLabel = await remotePath(connection, workspace, args.b);
+          right = await readRemoteTextForDiff(connection, rightLabel, host);
+          await markObserved(exec, args.b);
+        } else {
+          const local = readLocalTextForDiff(args.localPath);
+          right = local.content;
+          rightLabel = local.path;
+        }
+        await markObserved(exec, args.a);
+        const context = clampedNumber(args.context, 3, 0, 20);
+        const result = buildUnifiedDiff(left, right, { context });
+        if (args.format === 'json') {
+          return jsonResponse(
+            {
+              stats: { added: result.added, removed: result.removed },
+              diff: result.diff,
+              truncated: result.truncated,
+            },
+            ['diff'],
+            DIFF_JSON_MAX,
+          );
+        }
+        const header =
+          `diff ${leftTarget} -> ${rightLabel} on ${host} ` +
+          `(+${result.added} -${result.removed}${result.truncated ? ', truncated' : ''})`;
+        const body = result.diff === '' ? '(no changes)' : result.diff;
+        return clip(`${header}\n${body}`);
+      },
+    }),
+
+    tool({
+      name: 'presence_tail',
+      description:
+        'Read the last lines of a text file on a remote machine (default 200), optionally following it: follow:true keeps polling for new bytes for timeoutMs (default 8000, max 60000) and returns everything appended meanwhile. Only an incremental byte window is read, so a large log is never pulled whole; `truncated` is true when content before the returned window was dropped. format:\'json\' returns {path, lines, bytes, followedMs, truncated, text}. Inside a workspace, relative paths resolve against the workspace root.',
+      parameters: {
+        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
+        lines: { type: 'number', description: 'How many trailing lines to return, 1-5000. Defaults to 200.' },
+        follow: { type: 'boolean', description: 'Keep appending new bytes for timeoutMs before returning. Defaults to false.' },
+        timeoutMs: {
+          type: 'number',
+          description: 'Follow window in milliseconds, capped at 60000. Defaults to 8000; ignored without follow:true.',
+        },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: {path, lines, bytes, followedMs, truncated, text}. Defaults to text.',
+        },
+      },
+      annotations: { readOnlyHint: true },
+      async execute(args, exec) {
+        const { host, workspace } = await pickScope(args, exec);
+        const connection = await pool.connection(host);
+        const target = await remotePath(connection, workspace, args.path);
+        const follow = args.follow === true;
+        const result = await tailRemote(connection, target, {
+          lines: clampedNumber(args.lines, TAIL_DEFAULT_LINES, 1, TAIL_MAX_LINES),
+          follow,
+          timeoutMs: clampedNumber(args.timeoutMs, TAIL_DEFAULT_TIMEOUT_MS, 0, TAIL_MAX_TIMEOUT_MS),
+          signal: exec?.signal,
+        });
+        await markObserved(exec, args.path);
+        if (args.format === 'json') {
+          let text = result.text;
+          let lines = result.lines;
+          let bytes = result.bytes;
+          let truncated = result.truncated;
+          // Keep the JSON valid and bounded: drop the oldest whole lines first.
+          if (Buffer.byteLength(text, 'utf8') > TAIL_JSON_TEXT_CAP) {
+            const rows = text.split('\n');
+            const kept = [];
+            let used = 0;
+            for (let index = rows.length - 1; index >= 0; index -= 1) {
+              const size = Buffer.byteLength(rows[index], 'utf8') + (kept.length > 0 ? 1 : 0);
+              if (used + size > TAIL_JSON_TEXT_CAP) break;
+              kept.unshift(rows[index]);
+              used += size;
+            }
+            text = kept.join('\n');
+            lines = kept.length;
+            bytes = Buffer.byteLength(text, 'utf8');
+            truncated = true;
+          }
+          return jsonResponse({ path: target, lines, bytes, followedMs: result.followedMs, truncated, text }, ['text'], TAIL_JSON_MAX);
+        }
+        const facts = [`${result.lines} line(s)`, formatBytes(result.bytes)];
+        if (follow) facts.push(`followed ${result.followedMs}ms`);
+        if (result.truncated) facts.push('truncated');
+        return clip(`${target} on ${host} (${facts.join(', ')})\n${result.text}`);
       },
     }),
 
