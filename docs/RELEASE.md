@@ -2,6 +2,15 @@
 
 ## v0.18.0 — 2026-10-27
 
+### 预构建 tarball（市场一键安装）
+
+- 已把 `npm pack` 产物以**稳定文件名** `presence-plugin.tgz`（0.18.0，约 730 KB）挂到本 Release：
+  `https://github.com/fanrj3/dsh-presence/releases/latest/download/presence-plugin.tgz`
+- awesome 条目补充 `tarball:` 字段（PR：https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/9808 ）；
+  合并且站点重建后，market / Discover 会优先用预构建包安装，免源码构建与 `allowBuilds` 授权。
+- 以后发版：`npm pack` → 改名 `presence-plugin.tgz` → 覆盖同一 Release/最新 Release 的同名 asset 即可，条目无需再改。
+
+
 功能版：远程文件操作、diff/日志、远端 `@` 补全、端口持久化与发现、任务通知。
 
 ### 新增能力
