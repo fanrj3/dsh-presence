@@ -52,6 +52,44 @@ connection per host**. The remote side is still plain `sshd`: SFTP, exec and a P
 - **Job notifications** — a toast (and desktop notification) when a background job finishes, plus an optional local `notifyCommand` for daemons and phones.
 - **Two shells, one kernel** — the DSH plugin and a standalone MCP server (`presence-mcp`, 20 core tools) share the same kernel.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/social/screenshot/setting.png" alt="Settings — Presence hosts and workspaces" /></td>
+    <td width="50%"><img src="docs/social/screenshot/explorer.png" alt="Remote workspace: file tree and editor" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Settings</b> — every host and folder is a local tab</sub></td>
+    <td align="center"><sub><b>Remote workspace</b> — the file tree and editor are on the host</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/social/screenshot/@file.png" alt="@ completes remote file paths" /></td>
+    <td width="50%"><img src="docs/social/screenshot/terminal.png" alt="A terminal on the remote host" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>@ files</b> — completion indexes the remote machine itself</sub></td>
+    <td align="center"><sub><b>Terminal</b> — the shell runs on the host, not locally</sub></td>
+  </tr>
+</table>
+
+### A real trajectory
+
+These three figures are rendered from a recorded 22-call session: train an MNIST
+classifier twice on a remote 64-core host, compare two learning rates, and export
+the result. Every row is one tool call with its measured duration; red rows are
+real failures kept verbatim.
+
+<p align="center"><img src="docs/social/figures/figure-1.png" width="100%" alt="Trajectory 1/3: staging the data and launching the first run" /></p>
+
+<p align="center"><img src="docs/social/figures/figure-2.png" width="100%" alt="Trajectory 2/3: comparing the two runs and archiving" /></p>
+
+<p align="center"><img src="docs/social/figures/figure-3.png" width="100%" alt="Time composition: Presence vs bare SSH" /></p>
+
+<sub>Figure 3 stacks end-to-end time into think / wait / tool. The same task through
+bare <code>ssh</code>/<code>scp</code> takes 452.5 s versus 272.8 s, with a 10.4×
+higher median interaction latency.</sub>
+
 ## Quick start
 
 ### 1. Install the DSH plugin
