@@ -15,8 +15,43 @@ const JOB_EARLY_TAIL_LINES = 20;
 const JOB_PRUNE_INTERVAL_MS = 60_000;
 const JOB_PRUNE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const JOB_PRUNE_MAX_ENTRIES = 100;
+// A transient connect failure is retried twice, with these gaps, and a dead
+// cached connection is dropped before each retry.
+const CONNECT_RETRY_BACKOFF_MS = [200, 600];
+// How long a failure keeps its edge on the host state: recent enough to matter,
+// old enough to clear itself once the connection has been healthy again.
+const HOST_DEGRADED_WINDOW_MS = 60_000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Auth, permission and unknown-host failures are configuration problems a retry
+// cannot fix; everything network-shaped is worth another attempt.
+const FATAL_CONNECTION_ERROR =
+  /no host "|authentication failed|authentication methods|passphrase-protected|password requested|permission denied|access denied|not authorized/i;
+const TRANSIENT_CONNECTION_ERROR =
+  /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EHOSTUNREACH|ENETUNREACH|connection refused|could not be resolved|timed out|handshake|channel|closed|socket hang up|no route to host/i;
+
+/**
+ * Whether a failed connection attempt is worth retrying.
+ *
+ * `transient` covers the network-shaped failures (DNS, refused, timeout,
+ * dropped channel, reset); `fatal` covers configuration errors a second attempt
+ * cannot fix (authentication, permissions, an alias that is not configured) and
+ * is also the default for an unrecognised error, so a retry never masks a real
+ * problem.
+ *
+ * @param {unknown} error
+ * @returns {'transient'|'fatal'}
+ */
+export function classifyConnectionError(error) {
+  const message = String(error?.message ?? error ?? '');
+  const code = String(error?.code ?? '');
+  // ssh2 tags authentication failures with this level even before describeSshError.
+  if (String(error?.level ?? '') === 'client-authentication') return 'fatal';
+  if (FATAL_CONNECTION_ERROR.test(message)) return 'fatal';
+  if (TRANSIENT_CONNECTION_ERROR.test(`${code} ${message}`)) return 'transient';
+  return 'fatal';
+}
 
 export class PresencePool {
   #settings;
@@ -29,6 +64,7 @@ export class PresencePool {
   #lastPruneAt = 0;
   #secrets = new Map();
   #connectionHandlers = new Set();
+  #hostStates = new Map();
   #hostsCache;
   #reaper;
   #counter = 0;
@@ -50,18 +86,49 @@ export class PresencePool {
       this.#hostsCache = { at: now, list: listHosts() };
     }
     return this.#hostsCache.list.map((entry) => {
-      const connection = this.#connections.get(entry.alias);
+      const state = this.hostState(entry.alias);
       return {
         alias: entry.alias,
         hostname: entry.hostname,
         port: entry.port,
         user: entry.user,
         source: entry.source ?? 'config',
-        connected: Boolean(connection && !connection.closed),
+        connected: state.connected,
+        state: state.state,
+        lastError: state.lastError,
         identityFile: entry.identityFile?.[0],
         terminals: [...this.#terminals.values()].filter((terminal) => terminal.host === entry.alias).length,
       };
     });
+  }
+
+  /**
+   * Current trust state of one machine.
+   *
+   * `connected` is the cached connection; `degraded` means that connection is
+   * usable but a failure happened in the last minute; `error` means the last
+   * attempt failed and nothing is cached; `idle` means no connection and no
+   * recorded failure. `retries` is how many retries the last attempt needed.
+   */
+  hostState(alias) {
+    const name = String(alias ?? '');
+    const connection = this.#connections.get(name);
+    const connected = Boolean(connection && !connection.closed);
+    const record = this.#hostStates.get(name) ?? null;
+    const failedAt = record?.lastErrorAt ?? null;
+    const recent = failedAt !== null && Date.now() - failedAt <= HOST_DEGRADED_WINDOW_MS;
+    let state;
+    if (connected) state = recent ? 'degraded' : 'connected';
+    else if (failedAt !== null) state = 'error';
+    else state = 'idle';
+    return {
+      alias: name,
+      connected,
+      state,
+      lastError: record?.lastError ?? null,
+      lastErrorAt: record?.lastErrorAt ?? null,
+      retries: record?.retries ?? 0,
+    };
   }
 
   /** Resolve a live connection, opening one if needed. */
@@ -71,6 +138,9 @@ export class PresencePool {
       this.#lastUsed.set(host, Date.now());
       return existing;
     }
+    // A cached connection that died between calls is not reusable: drop it (and
+    // anything that hung off it) before dialling again.
+    if (existing) this.#dropConnection(host);
     if (this.#connecting.has(host)) return this.#connecting.get(host);
 
     const entry = readSshConfig().get(host);
@@ -92,20 +162,72 @@ export class PresencePool {
     if (password || passphrase) this.#secrets.set(host, { password, passphrase });
     const secret = this.#secrets.get(host) ?? (envPassword ? { password: envPassword } : {});
 
-    const pending = PresenceConnection.connect(
-      { ...entry, maxChannels: this.#settings.maxChannels },
-      { password: secret.password, passphrase: secret.passphrase, timeoutMs: this.#settings.connectTimeoutMs },
-    )
-      .then((connection) => {
-        this.#connections.set(host, connection);
-        this.#lastUsed.set(host, Date.now());
-        this.#notifyConnectionEstablished(host, connection);
-        return connection;
-      })
-      .finally(() => this.#connecting.delete(host));
-
+    // The whole retry sequence is one shared promise, so concurrent callers do
+    // not dial the same machine three times over.
+    const pending = this.#connectWithRetry(host, entry, secret).finally(() => this.#connecting.delete(host));
     this.#connecting.set(host, pending);
     return pending;
+  }
+
+  /**
+   * Open one connection, retrying transient failures. Auth/permission/unknown
+   * host errors are configuration problems and fail on the first attempt; a
+   * network-shaped failure is retried (200 ms, 600 ms apart) after dropping the
+   * dead cached connection, and the final error is the last one observed.
+   */
+  async #connectWithRetry(host, entry, secret) {
+    const previous = this.#hostStates.get(host) ?? {};
+    const state = {
+      lastError: previous.lastError ?? null,
+      lastErrorAt: previous.lastErrorAt ?? null,
+      retries: 0,
+    };
+    let lastError = null;
+    for (let attempt = 0; attempt <= CONNECT_RETRY_BACKOFF_MS.length; attempt += 1) {
+      if (attempt > 0) {
+        this.#dropConnection(host);
+        state.retries = attempt;
+        await sleep(CONNECT_RETRY_BACKOFF_MS[attempt - 1]);
+      }
+      try {
+        const connection = await PresenceConnection.connect(
+          { ...entry, maxChannels: this.#settings.maxChannels },
+          { password: secret.password, passphrase: secret.passphrase, timeoutMs: this.#settings.connectTimeoutMs },
+        );
+        this.#connections.set(host, connection);
+        this.#lastUsed.set(host, Date.now());
+        // Keep the failure that led here: a host that needed a retry is usable
+        // but degraded for the next minute.
+        this.#hostStates.set(host, state);
+        this.#notifyConnectionEstablished(host, connection);
+        return connection;
+      } catch (error) {
+        lastError = error;
+        state.lastError = String(error?.message ?? error);
+        state.lastErrorAt = Date.now();
+        if (classifyConnectionError(error) !== 'transient' || attempt === CONNECT_RETRY_BACKOFF_MS.length) {
+          this.#hostStates.set(host, state);
+          throw error;
+        }
+      }
+    }
+    this.#hostStates.set(host, state);
+    throw lastError ?? new Error(`could not connect to ${host}`);
+  }
+
+  /** Forget a cached connection and close anything that hung off it. */
+  #dropConnection(host) {
+    const connection = this.#connections.get(host);
+    this.#connections.delete(host);
+    this.#lastUsed.delete(host);
+    if (!connection) return;
+    try {
+      connection.end();
+    } catch {
+      /* already gone */
+    }
+    // A forward whose SSH connection is gone still owns a local listener.
+    this.#closeTunnelsForHost(host).catch(() => {});
   }
 
   /**
@@ -141,6 +263,8 @@ export class PresencePool {
     const connection = this.#connections.get(host);
     this.#connections.delete(host);
     this.#lastUsed.delete(host);
+    // A deliberate disconnect is not a failure: the host goes back to `idle`.
+    this.#hostStates.delete(host);
     for (const terminal of [...this.#terminals.values()]) {
       if (terminal.host === host) this.#closeTerminal(terminal.id);
     }
@@ -814,5 +938,6 @@ export class PresencePool {
     this.#jobs.clear();
     for (const connection of this.#connections.values()) connection.end();
     this.#connections.clear();
+    this.#hostStates.clear();
   }
 }

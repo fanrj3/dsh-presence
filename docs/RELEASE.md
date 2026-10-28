@@ -1,5 +1,70 @@
 # Presence 发布说明（Release）
 
+## v0.19.0 — P0 batch
+
+P0 反馈整批修复（工具面、输出卫生、超时语义、长任务指引、危险命令分段、连接状态可信度、文档），
+面向 agent 长时间、非交互使用的真实轨迹。
+
+### 工具面：参数别名 + 错误可读性
+- 所有路径工具接受 `path` / `file_path` / `filePath`；`presence_edit` 接受
+  `old` / `oldString`、`new` / `newString`、`replaceAll` / `replace_all`、`dryRun` / `dry_run`；
+  `presence_exec` 接受 `cwd` / `workdir` / `dir`。schema 仍只记录规范名。
+- 缺参数错误带工具名、收到的键、可用别名和一行示例（`missing "path" on presence_write
+  (accepted: path, file_path). Example: ...`）。
+- `presence_edit` 锚点找不到时给出最近的 3 行，并提示重读 / `ifMatchSha256`。
+- `presence_jobs list` 命令截断到 200 字符、label 先行。
+
+### 输出卫生（presence_exec）
+- 新增 `progress`（`last` | `all` | `strip`，默认 `last`）：`\r` 进度条只留每行最后状态，
+  不再把整条进度折线塞进上下文。
+- 超长输出**总是**落盘 `/tmp/presence-exec-<rand>.log` 并返回 `stdoutFile` / `stderrFile`
+  （落盘失败带 `stdoutFileError` 并重试一次），文本报告以 `cwd:` 开头、带文件路径和字节数。
+- 截断提示给出 `… (N characters omitted; full stdout: <path>)`（修掉旧的乱码字面量）。
+- 新增 `tailLines`（0–5000）：长报告保留前 40% + 最后 N 行。
+- `nohup` / 结尾 `&` / `tmux new-session` 检测：文本前置一行 `hint:`，JSON 带 `hints: []`；
+  超时文本追加「后台子进程可能仍在运行」提示。
+
+### 超时语义 + 部分输出
+- `presence_exec` 超时默认 120 s → **300 s**。
+- 超时返回 `timedOut: true`、`killed: true`、`killSequence: ['SIGTERM','SIGKILL']`
+  （无远程 `timeout` 包装器时为 `['channel-close']`），并保留 kill 之前捕获的部分 stdout/stderr
+  （超限同样落盘）；文本明确「远程进程树已终止（SIGTERM，5 秒后 SIGKILL），下面是部分输出」。
+- 退出码 141 / SIGPIPE 标记 `sigpipe: true`，文本显示为「下游提前关闭，通常无害」。
+
+### 危险命令 dry-run 分段（confirm:"partial"）
+- 顶层按 `;`、`&&`、`||`、换行拆分（引号 / `$(...)` 内不拆），拒绝报告以
+  `Nothing was executed — the whole command was skipped, including non-destructive parts.`
+  开头，并列出 `Safe segments you can run separately:`（没有则 `(none)`）。
+- `confirm:true` 执行整条命令；**新增** `confirm:"partial"` 只执行安全分段并报告跳过了哪些分段；
+  `presence_trash` 仍是工作区内删除的首选。
+- 工作区内单文件字面量 `rm -f <路径>` 免检（不可能删树）；路径先解析符号链接，逃出工作区照旧拦截。
+- 修正 dry-run 会真的执行 `shred` / `truncate` / `mkfs` / `dd of=` / `:>` 的问题：这类命令现在只报告、
+  不重放。
+
+### 连接状态可信度
+- 连接池对 `dns` / `refused` / `timeout` / `channel` / `closed` / `econnreset` 自动重试（2 次，
+  200 ms / 600 ms），先替换死连接；`auth` / `permission` / `unknown host` 立即失败。
+- `pool.hostState(alias)` 增加 `state`（`connected` / `degraded` / `idle` / `error`）、`lastError`、
+  `lastErrorAt`、`retries`；`degraded` = 最近 60 s 内失败过、但随后连接成功或缓存连接仍可用。
+- `presence_hosts` 把**当前会话工作区所在机器**标为 `default`（并加 `workspace: true`），
+  `degraded` 渲染为 `degraded (last error: ...)`。
+- 设置页主机卡片显示 `⚠ 降级`，tooltip 是最后一次错误；正常时仍显示 `已连接`。
+
+### 文档 + 系统提示
+- `index.js` 的 `presence:remote-machines` 系统提示追加 5 条紧凑指引：路径→工具、长任务、
+  输出、危险命令、主机状态。
+- `README.md` / `README.zh-CN.md`：更新 `presence_exec`（300 s、`progress`、输出落盘、`tailLines`、
+  `confirm:"partial"`），新增「路径与工具怎么选」「长时间任务」两节，补充已知边界
+  （登录节点清理风险、别名、后台任务不跨重启）。
+- 新增探针：`scripts/p0-transport-probe.mjs`、`scripts/p0-surface-probe.mjs`、
+  `scripts/p0-guard-probe.mjs`（无需真机）。
+
+### 验证
+- `p0-guard-probe` 68/68、`safety-probe` 24/24、`api-probe` 27/27；`build-client` 重建 `client.js`；
+  patch 校验（Electron-as-Node）通过。
+- `p0-transport-probe` / `p0-surface-probe` 及既有 `regression` / `tool-probe` 由对应 owner 在
+  同一批次运行。
+
 ## v0.18.0 — 2026-10-27
 
 ### 预构建 tarball（市场一键安装）

@@ -313,7 +313,13 @@ export function apply(ctx, config = {}) {
             'For long work start it with presence_exec {background:true}, then use presence_jobs {action:"wait"} instead of sleep+poll, ' +
             'and presence_jobs {action:"list"|"stop"} to manage this session\'s jobs. ' +
             'The mount path is virtual: Explorer, Office, Python and native open cannot see remote files — call presence_export first, then present the returned local path. ' +
-            'Paths may be given relative to the workspace root, as a presence:// URL, or as the local mount path.'
+            'Paths may be given relative to the workspace root, as a presence:// URL, or as the local mount path.' +
+            '\n\nGuidance:\n' +
+            '- Which tool: inside the workspace mount use the built-in read/write/edit/grep/glob (grep/glob are routed to the remote machine); absolute paths outside it (/data, GPFS, /scratch) need presence_read/write/edit/ls/stat/search/glob; present and Office only see local files, so presence_export first.\n' +
+            '- Long jobs: presence_exec {background:true} then presence_jobs {action:"status"|"wait"}, with presence_tail to follow the log. Interactive shells: presence_terminal (tmux sessions survive reconnects). Do not start nohup/tmux new-session/& inside a foreground presence_exec for long work — a login-node session can be cleaned up; background:true already detaches with setsid, and on scheduler-managed clusters use the cluster launcher (rlaunch -d, salloc/sbatch).\n' +
+            '- Output: \\r progress bars are normalized by default (progress:"all"/"strip" available); output over the cap is spilled to a remote file whose path is returned — presence_tail it.\n' +
+            '- Destructive commands: dry-run first; confirm:true runs the whole command, confirm:"partial" runs only the safe segments; prefer presence_trash.\n' +
+            '- Hosts: transient failures are retried, then a host may show degraded with the last error; presence_hosts marks the current workspace machine.'
           );
         },
       }),

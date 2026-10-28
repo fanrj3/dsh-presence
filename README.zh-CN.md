@@ -56,7 +56,7 @@ Presence 让 agent 留在本机，**通过每台机器一条常驻 SSH 连接把
 ### 1. 安装 DSH 插件
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.18.0
+dsh plugin add @rjfan/dsh-presence@0.19.0
 ```
 
 从源码安装：
@@ -143,17 +143,19 @@ Linux 主机上的实测：
 
 ## 工具
 
-DSH 插件提供 24 个工具。相对路径相对当前远程工作区；在工作区里 `host` 可省略。
+DSH 插件提供 24 个工具。相对路径相对当前远程工作区；在工作区里 `host` 可省略。执行时接受
+参数别名（`path`/`file_path`/`filePath`、`old`/`oldString`、`new`/`newString`、
+`cwd`/`workdir` 等），习惯写法都能用。
 
 <details>
 <summary><b>展开全部工具</b></summary>
 
 | 工具 | 说明 |
 | --- | --- |
-| `presence_hosts` | 列出 SSH 主机、连接状态和默认主机（支持 `format:"json"`）。 |
+| `presence_hosts` | 列出 SSH 主机、连接状态和默认主机（支持 `format:"json"`）；`workspace:true` 标记当前会话的机器，`degraded` 行带最后一次错误。 |
 | `presence_connect` | 建立/复用连接并返回远端身份。 |
-| `presence_exec` | 执行远端命令；`pipefail`、`background`、`waitForPort`、结构化 JSON、`script`、`saveStdout`；危险命令先 dry-run。 |
-| `presence_jobs` | 后台任务：`list`、`status`、`wait`（含 `timedOut`）、`stop`（`alive`/`verified`/`portReleased`）、`purge`。 |
+| `presence_exec` | 执行远端命令；`pipefail`、`background`、`waitForPort`、结构化 JSON、`saveStdout`；超时默认 300 秒；`progress` 归一化 `\r` 进度条；超长输出落盘到远端文件并返回路径（`tailLines`）；危险命令先 dry-run —— `confirm:true` 执行整条命令，`confirm:"partial"` 只执行安全分段。 |
+| `presence_jobs` | 后台任务：`list`、`status`、`wait`（含 `timedOut`）、`stop`（`alive`/`verified`/`portReleased`）。 |
 | `presence_read` | 读远端文件，带行号、`offset`/`limit`，`raw:true` 返回逐字节原样内容。 |
 | `presence_read_many` | 一次读 1–50 个文件，支持每文件字节/行数上限。 |
 | `presence_write` | 原子写；保留 mode；返回真实 mode、字节数和完整 sha256；`ifMatchSha256` 乐观锁。 |
@@ -178,11 +180,39 @@ DSH 插件提供 24 个工具。相对路径相对当前远程工作区；在工
 
 </details>
 
+## 路径与工具怎么选
+
+| 路径在哪 | 用什么 | 说明 |
+| --- | --- | --- |
+| 工作区挂载目录下（`~/.dsh/presence/mounts/...`） | 内置 `read` / `write` / `edit` / `grep` / `glob` | 都直达远端机器；`grep`/`glob` 会自动路由过去 |
+| 工作区之外的远端绝对路径（`/data`、`/scratch`、GPFS） | `presence_read` / `write` / `edit` / `ls` / `stat` / `search` / `glob` | 内置工具只看得到挂载目录，看不到整台机器 |
+| 本地文件（预览或 Office） | 先 `presence_export`，再 `present` / 原生打开 | 挂载路径是虚拟的，只有真实本地文件能被原生程序打开 |
+
+## 长时间任务
+
+`presence_exec` 会等命令结束，所以训练、构建、起服务都不该直接用它。推荐流程：
+
+```text
+1. presence_exec { command: "python train.py --lr 3e-4", background: true, label: "train-3e-4" }
+   → { id: "j7", pid: 4242, logPath: "/tmp/presence-jobs/....log" }
+2. presence_jobs { action: "wait", jobId: "j7" }        # 阻塞等待，不要 sleep+poll
+3. presence_tail { path: "/tmp/presence-jobs/....log", follow: true }   # 看进度
+```
+
+- `presence_jobs { action: "status" }` 取快照；`stop` 结束进程组并验证端口已释放。
+- 交互式任务：`presence_terminal { action: "open", session: "train" }`，tmux 会话跨重连存活。
+- **不要**在前台 `presence_exec` 里用 `nohup`、`tmux new-session` 或结尾 `&` 跑长任务：登录节点
+  会话结束时，集群可能清理残留进程。`background: true` 本身用 `setsid` 脱离；调度器管理的集群
+  请用集群自己的启动器（`rlaunch -d …`、`salloc`/`sbatch`），让调度器持有任务。
+
 ## 安全与恢复
 
 - **危险命令不会直接执行。** `rm -r/-f`、`git clean -fdx`、`find -delete`、`shred`、
   `truncate`、`dd of=` 会先用 no-op shim 重放以展开真实目标；未设置变量和受保护路径
-  （工作区根、家目录、`/`、`.git`）直接拒绝。必须再带 `confirm:true` 才会执行。
+  （工作区根、家目录、`/`、`.git`）直接拒绝。必须再带 `confirm:true` 才会执行。被拒绝的
+  混合命令还会列出可单独执行的安全分段（`Safe segments you can run separately:`），
+  `confirm:"partial"` 只执行这些分段；工作区内对单个文件的字面量 `rm -f <路径>` 免检
+  （它不可能删掉一棵树）。
 - **工作区内删除优先 `presence_trash`**：移动到 `~/.dsh/presence-trash/<时间戳>/` 并返回恢复提示。
 - **写入是原子的**，保留原文件 mode；`presence_edit` 锚点不唯一时报错而不是猜。
 - **读后写守卫**：内置 `read`/`write`/`edit` 共享读后写守卫；`presence_write` 也会记账，两套 API 可混用。
@@ -212,11 +242,11 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.18.0
-# → dist/presence-plugin-0.18.0.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.19.0
+# → dist/presence-plugin-0.19.0.zip
 ```
 
-验证脚本需要一台可 SSH 的主机：
+验证脚本需要一台可 SSH 的主机（标注“不需要真机”的除外）：
 
 ```sh
 node scripts/regression.mjs server     # 传输层、符号链接、超时、二进制
@@ -224,12 +254,20 @@ node scripts/job-probe.mjs server      # 后台任务 + 端口转发
 node scripts/feature-probe.mjs server  # wait、会话、pgid、就绪、搜索
 node scripts/import-probe.mjs server   # 本地→远端二进制、mode、sha256
 node scripts/safety-probe.mjs server   # 危险命令护栏 + 观测状态
+node scripts/p0-guard-probe.mjs        # 危险命令分段/单文件豁免（不需要真机）
 ```
 
 ## 已知边界
 
 - 挂载路径（`~/.dsh/presence/mounts/...`）是虚拟的：对 `ctx.fs` / agent 工具有效，
   但 Explorer、Office、宿主 Python 看不到 —— 需要先用 `presence_export`。
+- `presence_exec` 超时默认 300 秒；更长的任务必须用 `background: true`（前台输出超限会
+  落盘到远端文件，`tailLines` 保留长报告末尾）。后台任务按会话跟踪，不跨 DSH 重启持久化。
+- 登录节点可能在会话结束时清理残留进程：不要在前台 `presence_exec` 里用 `nohup` /
+  `tmux new-session` / `&` 跑长任务。用 `background: true`（`setsid` 脱离）或
+  `presence_terminal`（tmux）；集群上让调度器持有任务（`rlaunch -d`、`salloc`/`sbatch`）。
+- 参数别名可用（`path`/`file_path`/`filePath`、`old`/`oldString`、`new`/`newString`、
+  `replaceAll`/`replace_all`、`dryRun`/`dry_run`、`cwd`/`workdir`）；schema 里记录的是规范名。
 - sshd 的 `MaxSessions`（默认 10）限制并发通道；连接池最多用 8 个。
 - PTY 终端跟随连接存活；跨重连的 shell 需要目标机有 `tmux`（`presence_terminal { session }` 自动使用）。
 - ProxyJump / ProxyCommand 会被解析并提示，但目前不用于实际拨号。

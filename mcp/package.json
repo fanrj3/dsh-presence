@@ -1,6 +1,6 @@
 {
   "name": "presence-mcp",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "MCP server for Presence: use any SSH machine from Codex CLI, Claude Code, OpenCode and other MCP clients. One persistent connection per host, nothing installed on the remote side.",
   "license": "MIT",
   "type": "module",

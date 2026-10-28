@@ -95,7 +95,7 @@ higher median interaction latency.</sub>
 ### 1. Install the DSH plugin
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.18.0
+dsh plugin add @rjfan/dsh-presence@0.19.0
 ```
 
 From a source checkout:
@@ -185,17 +185,19 @@ Measured on a Linux host:
 ## Tools
 
 The DSH plugin exposes 24 tools. Relative paths resolve against the active remote
-workspace; `host` is optional inside a workspace.
+workspace; `host` is optional inside a workspace. Argument aliases are accepted at
+execute time (`path`/`file_path`/`filePath`, `old`/`oldString`, `new`/`newString`,
+`cwd`/`workdir`, …), so an agent's habitual spelling still works.
 
 <details>
 <summary><b>Show all tools</b></summary>
 
 | Tool | What it does |
 | --- | --- |
-| `presence_hosts` | List SSH hosts, connection state and default host (`format:"json"` supported). |
+| `presence_hosts` | List SSH hosts, connection state and default host (`format:"json"` supported); `workspace:true` marks this session's machine and `degraded` rows carry the last error. |
 | `presence_connect` | Open/reuse a host connection and report the remote identity. |
-| `presence_exec` | Run a remote command; `pipefail`, `background`, `waitForPort`, structured JSON, `script`, `saveStdout`; destructive commands dry-run first. |
-| `presence_jobs` | Manage background jobs: `list`, `status`, `wait` (with `timedOut`), `stop` (with `alive`/`verified`/`portReleased`), `purge`. |
+| `presence_exec` | Run a remote command; `pipefail`, `background`, `waitForPort`, structured JSON, `saveStdout`; timeout defaults to 300 s; `progress` normalizes `\r` progress bars; long output spills to a remote file whose path is returned (`tailLines`); destructive commands dry-run first — `confirm:true` runs the whole command, `confirm:"partial"` runs only the safe segments. |
+| `presence_jobs` | Manage background jobs: `list`, `status`, `wait` (with `timedOut`), `stop` (with `alive`/`verified`/`portReleased`). |
 | `presence_read` | Read a remote file with line numbers, `offset`/`limit`, or `raw:true` for verbatim content. |
 | `presence_read_many` | Read 1–50 remote files in one call, with per-file byte/line caps. |
 | `presence_write` | Atomic write; preserves mode; returns real mode, size and full sha256; `ifMatchSha256` optimistic lock. |
@@ -220,13 +222,46 @@ workspace; `host` is optional inside a workspace.
 
 </details>
 
+## Which tool for which path
+
+| Where the path lives | Use | Why |
+| --- | --- | --- |
+| under the workspace mount (`~/.dsh/presence/mounts/...`) | built-in `read` / `write` / `edit` / `grep` / `glob` | they reach the remote machine; `grep`/`glob` are routed to it automatically |
+| remote absolute path outside the workspace (`/data`, `/scratch`, GPFS) | `presence_read` / `write` / `edit` / `ls` / `stat` / `search` / `glob` | the built-in tools only see the mount, not the rest of the machine |
+| local file, for preview or Office | `presence_export` first, then `present` / native open | the mount path is virtual; only a real local file can be opened natively |
+
+## Long-running tasks
+
+`presence_exec` waits for the command, so it is the wrong tool for a training run, a
+build or a server. The recipe:
+
+```text
+1. presence_exec { command: "python train.py --lr 3e-4", background: true, label: "train-3e-4" }
+   → { id: "j7", pid: 4242, logPath: "/tmp/presence-jobs/....log" }
+2. presence_jobs { action: "wait", jobId: "j7" }        # blocks; no sleep+poll loop
+3. presence_tail { path: "/tmp/presence-jobs/....log", follow: true }   # watch progress
+```
+
+- `presence_jobs { action: "status" }` gives a snapshot; `stop` terminates the process
+  group and verifies the port was released.
+- Interactive work: `presence_terminal { action: "open", session: "train" }` — the
+  tmux-backed session survives a reconnect.
+- **Do not** start `nohup`, `tmux new-session` or a trailing `&` inside a foreground
+  `presence_exec` for long jobs: when the login-node session ends, the cluster may clean
+  up what it left behind. `background: true` already detaches through `setsid`; on
+  scheduler-managed clusters start the job with the cluster's own launcher
+  (`rlaunch -d …`, `salloc`/`sbatch`) so the scheduler owns it.
+
 ## Safety and recovery
 
 - **Destructive commands never run unconfirmed.** `rm -r/-f`, `git clean -fdx`,
   `find -delete`, `shred`, `truncate` and `dd of=` are first replayed with
   no-op shims to expand their real targets; unset variables and protected paths
   (workspace root, home, `/`, `.git`) are refused. A second call with
-  `confirm:true` is required to execute.
+  `confirm:true` is required to execute. A rejected mixed command also lists the
+  segments that are safe on their own (`Safe segments you can run separately:`);
+  `confirm:"partial"` runs only those. Removing one file with a literal
+  `rm -f <path>` inside the workspace is exempt — it cannot remove a tree.
 - **Prefer `presence_trash`** for anything under a workspace: it moves the path to
   `~/.dsh/presence-trash/<timestamp>/` and returns a restore hint.
 - **Writes are atomic** and keep the original file mode; `presence_edit` refuses
@@ -259,11 +294,11 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.18.0
-# → dist/presence-plugin-0.18.0.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.19.0
+# → dist/presence-plugin-0.19.0.zip
 ```
 
-Tests require one SSH-reachable host:
+Tests need one SSH-reachable host unless noted:
 
 ```sh
 node scripts/regression.mjs server     # transport, symlinks, timeouts, binary
@@ -271,6 +306,7 @@ node scripts/job-probe.mjs server      # jobs + port forwarding
 node scripts/feature-probe.mjs server  # wait, sessions, pgid, readiness, search
 node scripts/import-probe.mjs server   # local→remote binary, mode, sha256
 node scripts/safety-probe.mjs server   # destructive guard + observation store
+node scripts/p0-guard-probe.mjs        # guard split/partial/single-rm (no host needed)
 ```
 
 ## Known limits
@@ -278,6 +314,17 @@ node scripts/safety-probe.mjs server   # destructive guard + observation store
 - The mount path (`~/.dsh/presence/mounts/...`) is virtual: it works through
   `ctx.fs` / agent tools, but native apps (Explorer, Office, host Python) cannot
   see it — use `presence_export` first.
+- `presence_exec` defaults to a 300 s timeout; longer work must use `background: true`
+  (foreground output over the cap is spilled to a remote file, and `tailLines` keeps the
+  end of a long report). Background jobs are tracked per session, not persisted across a
+  DSH restart.
+- A login node may clean up processes left behind when a session closes: do not rely on
+  `nohup` / `tmux new-session` / `&` started inside a foreground `presence_exec` for long
+  jobs. Use `background: true` (detached with `setsid`) or `presence_terminal` (tmux),
+  and let the cluster scheduler own the job where required (`rlaunch -d`, `salloc`/`sbatch`).
+- Argument aliases are accepted (`path`/`file_path`/`filePath`, `old`/`oldString`,
+  `new`/`newString`, `replaceAll`/`replace_all`, `dryRun`/`dry_run`, `cwd`/`workdir`);
+  the canonical name is what the tool schema documents.
 - SSH `MaxSessions` (default 10) bounds concurrent channels; the pool uses at most 8.
 - PTY terminals follow the connection; cross-reconnect shells need `tmux` on the target
   (used automatically by `presence_terminal { session }`).

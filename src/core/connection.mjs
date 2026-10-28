@@ -123,6 +123,42 @@ function splitLines(text) {
   return lines;
 }
 
+// Progress bars (tqdm, apt, pip, docker pull) repaint one line with `\r`, so a
+// captured stream carries every intermediate state. `last` keeps what each line
+// finally settled on; `all` turns every repaint into its own line so the log
+// stays lossless; `strip` only drops the CR bytes. `raw` is the internal escape
+// hatch for callers reading file content, where a CR may be real data.
+const PROGRESS_MODES = new Set(['last', 'all', 'strip', 'raw']);
+
+/**
+ * Normalize carriage-return progress output in one captured stream.
+ *
+ * Applied before the output cap and the spill file are computed, so the text a
+ * caller sees, the bytes counted against `maxOutputBytes` and the spilled copy
+ * all describe the same stream.
+ *
+ * @param {string} text - the captured stream decoded as latin1 (byte-faithful).
+ * @param {'last'|'all'|'strip'|'raw'} [mode] - an unknown mode falls back to
+ *   `'last'`.
+ * @returns {string} the normalized text; re-encoding it as latin1 restores the
+ *   original bytes except for the CR/LF bytes this mode rewrote.
+ */
+export function normalizeProgress(text, mode = 'last') {
+  const chosen = PROGRESS_MODES.has(mode) ? mode : 'last';
+  const value = String(text ?? '');
+  if (chosen === 'raw') return value;
+  if (chosen === 'strip') return value.replace(/\r/g, '');
+  if (chosen === 'all') return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  // 'last': per line, keep only what was written after its final carriage return.
+  return value
+    .split('\n')
+    .map((line) => {
+      const at = line.lastIndexOf('\r');
+      return at === -1 ? line : line.slice(at + 1);
+    })
+    .join('\n');
+}
+
 function randomToken() {
   return randomBytes(6).toString('hex');
 }
@@ -391,7 +427,10 @@ export class PresenceConnection {
   }
 
   /** Run one command over a fresh channel; the connection stays up. */
-  async exec(command, { timeoutMs = 120_000, env = null, signal, maxOutputBytes = OUTPUT_CAP_BYTES } = {}) {
+  async exec(
+    command,
+    { timeoutMs = 120_000, env = null, signal, maxOutputBytes = OUTPUT_CAP_BYTES, progress = 'last' } = {},
+  ) {
     if (this.#closed) throw new Error('connection is closed');
     if (signal?.aborted) throw new Error('command aborted');
 
@@ -415,13 +454,22 @@ export class PresenceConnection {
 
     await this.#acquire();
     try {
-      return await this.#execChannel(wrapped, { timeoutMs: budgetMs, signal, maxOutputBytes, remoteDeadline });
+      return await this.#execChannel(wrapped, { timeoutMs: budgetMs, signal, maxOutputBytes, remoteDeadline, progress });
     } finally {
       this.#release();
     }
   }
 
-  #execChannel(command, { timeoutMs = 0, signal = null, maxOutputBytes = OUTPUT_CAP_BYTES, remoteDeadline = false } = {}) {
+  #execChannel(
+    command,
+    {
+      timeoutMs = 0,
+      signal = null,
+      maxOutputBytes = OUTPUT_CAP_BYTES,
+      remoteDeadline = false,
+      progress = 'last',
+    } = {},
+  ) {
     const cap = Number(maxOutputBytes) > 0 ? Math.floor(Number(maxOutputBytes)) : Infinity;
 
     return new Promise((resolve, reject) => {
@@ -438,26 +486,27 @@ export class PresenceConnection {
         signal?.removeEventListener('abort', onAbort);
       };
 
-      /** Head of the stream for the caller, the rest onto the remote disk. */
+      /**
+       * Head of the stream for the caller, the rest onto the remote disk.
+       *
+       * Normalization happens first: CR and LF are single-byte ASCII, so
+       * decoding as latin1 rewrites only those bytes and re-encoding restores
+       * every other byte exactly, even for binary output. The returned head is
+       * decoded as UTF-8 afterwards, as before.
+       *
+       * A truncated stream always carries either the spill path or the reason
+       * the spill could not be written, so output is never dropped silently.
+       */
       const keepHead = async (chunks, kind) => {
-        const all = Buffer.concat(chunks);
-        if (all.length <= cap) return { text: all.toString('utf8'), truncated: false, file: null, bytes: 0 };
-        const text = all.subarray(0, cap).toString('utf8');
-        // One file per truncated stream, so a caller can follow the rest even
-        // after the tool output was clipped. It holds at most SPILL_MAX_BYTES:
-        // a command that prints gigabytes must not fill /tmp.
-        const file = `/tmp/presence-exec-${randomToken()}${kind === 'stdout' ? '' : `-${kind}`}.log`;
-        // Best effort, and deliberately outside the slot pool: the caller still
-        // owns a slot while this result is being built.
-        await this.#pruneSpillLogs();
-        const data = all.subarray(0, SPILL_MAX_BYTES);
-        try {
-          const written = await this.writeText(file, data);
-          return { text, truncated: true, file, bytes: written.bytes };
-        } catch {
-          // A read-only /tmp must not turn a finished command into a failure.
-          return { text, truncated: true, file: null, bytes: 0 };
+        const raw = Buffer.concat(chunks);
+        const all =
+          progress === 'raw' ? raw : Buffer.from(normalizeProgress(raw.toString('latin1'), progress), 'latin1');
+        if (all.length <= cap) {
+          return { text: all.toString('utf8'), truncated: false, file: null, bytes: 0, error: null };
         }
+        const text = all.subarray(0, cap).toString('utf8');
+        const spill = await this.#spillOutput(all, kind);
+        return { text, truncated: true, file: spill.file, bytes: spill.bytes, error: spill.error };
       };
 
       const buildResult = async (code, signalName, { timedOut, durationMs }) => {
@@ -471,16 +520,30 @@ export class PresenceConnection {
           durationMs,
           stdoutTruncated: stdout.truncated,
           stderrTruncated: stderr.truncated,
-          timedOut,
+          timedOut: Boolean(timedOut),
         };
         if (stdout.truncated) {
+          // A path is always reported; when the spill write itself failed the
+          // path is null and the reason travels with it.
           value.stdoutFile = stdout.file;
           value.stdoutFileBytes = stdout.bytes;
+          if (stdout.file === null) value.stdoutFileError = stdout.error;
         }
         if (stderr.truncated) {
           value.stderrFile = stderr.file;
           value.stderrFileBytes = stderr.bytes;
+          if (stderr.file === null) value.stderrFileError = stderr.error;
         }
+        if (timedOut) {
+          // The deadline fired: the remote `timeout` wrapper sends TERM and
+          // then KILL; when only the local deadline applies, closing the
+          // channel is the only kill there is.
+          value.killed = true;
+          value.killSequence = remoteDeadline ? ['SIGTERM', 'SIGKILL'] : ['channel-close'];
+        }
+        // The shell convention is 128 + 13 for SIGPIPE; keep the code as-is and
+        // let callers translate the meaning.
+        if (code === 141 || /^SIGPIPE$/i.test(String(signalName ?? ''))) value.sigpipe = true;
         return value;
       };
 
@@ -514,14 +577,9 @@ export class PresenceConnection {
         } catch {
           /* channel already gone */
         }
-        if (!remoteDeadline) {
-          // Nothing on the far side enforces the deadline, so do not pretend
-          // the process tree is gone; closing the channel is all we have.
-          reject(new Error(`command timed out after ${timeoutMs}ms (the remote process may still be running)`));
-          return;
-        }
-        // The remote `timeout` should have returned by now; report the deadline
-        // as hit instead of hanging the caller on a channel that never closes.
+        // Keep the output captured before the kill instead of throwing it away:
+        // the caller gets `timedOut`, the kill sequence and the partial stream
+        // (which `buildResult` spills when it is over the cap).
         buildResult(124, null, { timedOut: true, durationMs: started ? Date.now() - started : 0 }).then(resolve, reject);
       }
 
@@ -552,7 +610,8 @@ export class PresenceConnection {
         }
         started = Date.now();
         // No setEncoding: byte counts must match the cap, and the spill file has
-        // to hold the exact bytes the remote process wrote.
+        // to hold the captured stream (progress-normalized in `keepHead`, with
+        // the raw bytes preserved for every non-CR/LF byte).
         channel.on('data', (chunk) => {
           stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'));
         });
@@ -601,6 +660,39 @@ export class PresenceConnection {
     } catch {
       // A host without bash, a read-only /tmp, a closed connection: nothing to do.
     }
+  }
+
+  /**
+   * Write captured output past the in-memory cap to /tmp. The usual path is
+   * `/tmp/presence-exec-<token>.log`; a failed write is retried once at
+   * `/tmp/presence-exec-<token>-retry.log`, and only then does the result carry
+   * a null path plus the reason — output is never dropped without a trace.
+   *
+   * Best effort, and deliberately outside the slot pool: the caller still owns
+   * a slot while this result is being built.
+   */
+  async #spillOutput(buffer, kind) {
+    if (this.#closed) return { file: null, bytes: 0, error: 'the connection closed before the spill file was written' };
+    const file = `/tmp/presence-exec-${randomToken()}${kind === 'stdout' ? '' : `-${kind}`}.log`;
+    const retry = `${file.slice(0, -'.log'.length)}-retry.log`;
+    // It holds at most SPILL_MAX_BYTES: a command that prints gigabytes must not
+    // fill /tmp.
+    const data = buffer.subarray(0, SPILL_MAX_BYTES);
+    await this.#pruneSpillLogs();
+    let failure = null;
+    for (const path of [file, retry]) {
+      try {
+        const written = await this.writeText(path, data);
+        return { file: path, bytes: written.bytes, error: null };
+      } catch (error) {
+        failure = error;
+      }
+    }
+    return {
+      file: null,
+      bytes: 0,
+      error: String(failure?.message ?? failure ?? 'could not write the spill file'),
+    };
   }
 
   /** Open an interactive terminal channel (PTY allocated server-side). */
@@ -1283,6 +1375,8 @@ export class PresenceConnection {
     const read = await this.exec(`sed -n ${shellQuote(`${first},${end}p`)} ${shellQuote(path)}`, {
       timeoutMs: 60_000,
       maxOutputBytes: budget,
+      // This is file content, not command output: a CR in the file is data.
+      progress: 'raw',
     });
     if (read.code !== 0 && read.stdout === '') {
       throw new Error(`could not read ${path}: ${read.stderr.trim() || `sed exited ${read.code}`}`);

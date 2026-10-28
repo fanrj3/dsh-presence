@@ -501,6 +501,7 @@ export function createApp({ React, ReactDOM }) {
       muted: 'var(--dsw-alias-label-secondary)',
       brand: 'var(--dsw-alias-brand-primary)',
       ok: 'var(--dsw-alias-state-success-primary)',
+      warn: 'var(--dsw-alias-state-warn-primary)',
       error: 'var(--dsw-alias-state-error-primary)',
     };
 
@@ -662,6 +663,91 @@ export function createApp({ React, ReactDOM }) {
         transition: background-color var(--dp-fast) var(--dp-ease);
       }
       .dp-ws:hover { background: var(--dsw-alias-interactive-bg-hover); }
+
+      /* ---- Presence settings page ---- */
+      .dp-settings-page { display: flex; flex-direction: column; gap: 12px; }
+      .dp-page-head { display: flex; flex-direction: column; gap: 5px; padding: 2px 0 2px; }
+      .dp-page-title-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+      .dp-page-title { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.3; white-space: nowrap; }
+      .dp-page-subtitle { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 1.55; }
+      .dp-settings-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+      .dp-section {
+        border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dp-radius-lg);
+        background: var(--dsw-alias-bg-layer-1); padding: 12px 14px;
+      }
+      .dp-section-head { display: flex; align-items: center; gap: 8px; padding: 0 2px 8px; min-width: 0; }
+      .dp-section-title { font-size: 13px; font-weight: 600; white-space: nowrap; }
+      .dp-section-hint {
+        color: var(--dsw-alias-label-tertiary); font-size: 11.5px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        margin-left: auto; min-width: 0;
+      }
+      .dp-host-group {
+        border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dp-radius-md);
+        background: var(--dsw-alias-bg-layer-1); overflow: hidden;
+      }
+      .dp-host-group + .dp-host-group { margin-top: 10px; }
+      .dp-host-head {
+        padding: 10px 12px 9px;
+        background: color-mix(in srgb, var(--dsw-alias-bg-module-platform) 60%, transparent);
+      }
+      .dp-host-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .dp-host-alias {
+        font-weight: 600; font-size: 13px; line-height: 1.35;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        min-width: 0; flex: 0 1 auto;
+      }
+      .dp-host-meta {
+        margin-top: 3px; color: var(--dsw-alias-label-tertiary); font-size: 11.5px; line-height: 1.4;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
+      }
+      .dp-state-chip {
+        display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+        white-space: nowrap; font-size: 11.5px; color: var(--dsw-alias-label-secondary);
+      }
+      .dp-state-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+      .dp-ws-list { display: flex; flex-direction: column; }
+      .dp-ws-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; min-width: 0; }
+      .dp-ws-row + .dp-ws-row { border-top: 1px solid var(--dsw-alias-border-l2); }
+      .dp-ws-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
+      .dp-ws-icon {
+        width: 26px; height: 26px; border-radius: 8px; flex: 0 0 auto;
+        display: inline-flex; align-items: center; justify-content: center;
+        background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary);
+      }
+      .dp-ws-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+      .dp-ws-name {
+        display: flex; align-items: center; gap: 6px; min-width: 0;
+        font-size: 13px; font-weight: 500; line-height: 1.35;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .dp-ws-path {
+        font-size: 11.5px; line-height: 1.4; color: var(--dsw-alias-label-tertiary);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
+      }
+      .dp-ws-actions {
+        display: flex; align-items: center; gap: 6px; flex: 0 0 auto; opacity: .78;
+        transition: opacity var(--dp-fast) var(--dp-ease);
+      }
+      .dp-ws-row:hover .dp-ws-actions { opacity: 1; }
+      .dp-empty {
+        border: 1px dashed var(--dsw-alias-border-l3); border-radius: var(--dp-radius-md);
+        padding: 18px 16px; text-align: center; color: var(--dsw-alias-label-secondary);
+        font-size: 12.5px; line-height: 1.7;
+      }
+      .dp-setting-row { display: flex; align-items: flex-start; gap: 12px; padding: 4px 2px 6px; }
+      .dp-setting-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; }
+      .dp-setting-title { font-size: 13px; font-weight: 500; }
+      .dp-setting-hint { font-size: 11.5px; color: var(--dsw-alias-label-tertiary); line-height: 1.55; }
+      .dp-btn--ghost { background: transparent; border-color: transparent; color: var(--dsw-alias-label-secondary); }
+      .dp-btn--ghost:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); border-color: transparent; }
+      .dp-btn--ghost:active:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+      .dp-chip--accent {
+        background: color-mix(in srgb, var(--dp-accent) 14%, transparent);
+        color: var(--dp-accent);
+      }
 
       @media (prefers-reduced-motion: reduce) {
         .dp-btn, .dp-row, .dp-crumb, .dp-iconbtn, .dp-input, .dp-ws, .dp-card {
@@ -1334,15 +1420,17 @@ export function createApp({ React, ReactDOM }) {
       document.head.appendChild(element);
     }
 
-    function Button({ label, onClick, primary, disabled, small }) {
+    function Button({ label, onClick, primary, disabled, small, className, title }) {
       return h('button', {
         type: 'button',
         onClick,
         disabled,
+        title,
         className: [
           'dp-btn',
           small ? 'dp-btn--sm' : '',
           primary ? 'dp-btn--primary' : '',
+          className ?? '',
         ].filter(Boolean).join(' '),
       }, label);
     }
@@ -4037,20 +4125,24 @@ export function createApp({ React, ReactDOM }) {
         }
       }, []);
 
-      const header = h('header', {
-        style: { display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 2 },
-      }, [
-        h('h2', { key: 'title', style: { fontSize: 16, fontWeight: 600, margin: 0 } }, '远程工作区'),
-        h('span', {
-          key: 'count',
-          style: { color: C.muted, fontSize: 12 },
-        }, mode === 'browse'
-          ? `${browse?.host ?? ''} · ${browse?.entries?.length ?? 0} 个文件夹`
-          : `${workspaces.length} 个工作区`),
-        h('div', { key: 'spacer', style: { flex: 1 } }),
-        mode === 'list'
-          ? Button({ label: '新建', onClick: () => { setMode('new'); notifyError(null); }, primary: true })
-          : Button({ label: '返回', onClick: () => { setMode('list'); setBrowse(null); setFiles(null); setPreview(null); notifyError(null); } }),
+      const header = h('header', { className: 'dp-page-head' }, [
+        h('div', { key: 'title-row', className: 'dp-page-title-row' }, [
+          h('h2', { key: 'title', className: 'dp-page-title' }, '远程工作区'),
+          h('span', {
+            key: 'count',
+            className: 'dp-chip',
+          }, mode === 'browse'
+            ? `${browse?.host ?? ''} · ${browse?.entries?.length ?? 0} 个文件夹`
+            : mode === 'files'
+              ? `${files?.host ?? ''} · ${files?.entries?.length ?? 0} 个条目`
+              : `${workspaces.length} 个工作区`),
+          h('div', { key: 'spacer', style: { flex: 1 } }),
+          mode === 'list'
+            ? Button({ label: '新建', onClick: () => { setMode('new'); notifyError(null); }, primary: true })
+            : Button({ label: '返回', onClick: () => { setMode('list'); setBrowse(null); setFiles(null); setPreview(null); notifyError(null); } }),
+        ]),
+        h('p', { key: 'sub', className: 'dp-page-subtitle' },
+          '选一台机器和一个远程文件夹，agent 就只在这个文件夹里工作；连接常驻复用，远端不安装任何东西。'),
       ]);
 
       let body;
@@ -4301,35 +4393,34 @@ export function createApp({ React, ReactDOM }) {
 
         const tunnelSection = h('div', {
           key: 'tunnels',
-          className: 'dp-card',
-          style: { marginTop: 22, padding: '12px 14px' },
+          className: 'dp-section',
         }, [
           h('div', {
             key: 'head',
-            style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: tunnels.length === 0 ? 4 : 8 },
+            className: 'dp-section-head',
           }, [
             h('span', { key: 'icon', className: 'dp-icon', style: { width: 22, height: 22 } }, h(Icon, { name: 'server', size: 13 })),
-            h('span', { key: 'title', style: { fontSize: 13, fontWeight: 600 } }, '端口转发'),
+            h('span', { key: 'title', className: 'dp-section-title' }, '端口转发'),
             h('span', { key: 'count', className: 'dp-chip' }, `${tunnels.length} 个`),
             h('div', { key: 'spacer', style: { flex: 1 } }),
-            h('span', { key: 'hint', style: { color: C.muted, fontSize: 11.5 } }, '在右侧栏「端口转发」里新建 / 停止'),
+            h('span', { key: 'hint', className: 'dp-section-hint' }, '在右侧栏「端口转发」里新建 / 停止'),
           ]),
           tunnels.length === 0
-            ? h('div', { key: 'empty', style: { color: C.muted, fontSize: 12, padding: '2px 0 4px' } },
+            ? h('div', { key: 'empty', className: 'dp-empty', style: { padding: '12px 14px' } },
                 '没有正在转发的端口。打开右侧栏的「端口转发」标签，把远程 8080 之类的端口映射到本地。')
-            : tunnels.map((tunnel) => h('div', {
+            : h('div', { key: 'rows', className: 'dp-ws-list' }, tunnels.map((tunnel) => h('div', {
                 key: tunnel.id,
-                className: 'dp-row',
+                className: 'dp-ws-row',
                 style: { cursor: 'default' },
               }, [
-                h('span', { key: 'dot', className: 'dp-dot dp-dot--on', style: { marginRight: 2 } }),
-                h('span', { key: 'host', style: { fontWeight: 600, fontSize: 12.5, minWidth: 82 } }, tunnel.host),
+                h('span', { key: 'dot', className: 'dp-state-dot', style: { background: C.ok } }),
+                h('span', { key: 'host', style: { fontWeight: 600, fontSize: 12.5, whiteSpace: 'nowrap', flex: '0 0 auto' } }, tunnel.host),
                 h('span', {
                   key: 'route',
-                  className: 'dp-mono dp-tunnel-route',
-                  style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                  className: 'dp-mono',
+                  style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 },
                 }, [tunnel.remoteHost, ':', String(tunnel.remotePort),
-                  h('span', { key: 'arrow', className: 'dp-tunnel-arrow' }, '→'),
+                  h('span', { key: 'arrow', className: 'dp-tunnel-arrow' }, ' → '),
                   `127.0.0.1:${tunnel.localPort}`]),
                 h('a', {
                   key: 'open',
@@ -4337,25 +4428,24 @@ export function createApp({ React, ReactDOM }) {
                   target: '_blank',
                   rel: 'noopener noreferrer',
                   className: 'dp-link dp-mono',
-                  style: { fontSize: 12 },
-                }, tunnel.url),
-                Button({ label: '停止', small: true, onClick: () => stopTunnel(tunnel.id), disabled: busy }),
-              ])),
+                  style: { fontSize: 12, whiteSpace: 'nowrap', flex: '0 0 auto' },
+                }, '打开'),
+                Button({ label: '停止', small: true, onClick: () => stopTunnel(tunnel.id), disabled: busy, className: 'dp-btn--ghost' }),
+              ]))),
         ]);
 
         // C2: background-job completion notifications. The in-app toast is
         // always on; this toggle only controls the OS/browser notification.
         const notificationSection = h('div', {
           key: 'notifications',
-          className: 'dp-card',
-          style: { marginTop: 14, padding: '2px' },
+          className: 'dp-section',
         }, [
           h('div', {
             key: 'head',
-            style: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px 4px' },
+            className: 'dp-section-head',
           }, [
             h('span', { key: 'icon', className: 'dp-icon', style: { width: 22, height: 22 } }, h(Icon, { name: 'info', size: 13 })),
-            h('span', { key: 'title', style: { fontSize: 13, fontWeight: 600 } }, '通知'),
+            h('span', { key: 'title', className: 'dp-section-title' }, '通知'),
           ]),
           h('div', { key: 'desktop', className: 'dp-setting-row' }, [
             h('div', { key: 'text', className: 'dp-setting-text' }, [
@@ -4378,76 +4468,70 @@ export function createApp({ React, ReactDOM }) {
           ]),
         ]);
 
-        body = h('div', { style: { marginTop: 12 } }, [
+        body = h('div', { className: 'dp-settings-body' }, [
           workspaces.length === 0
-            ? h('div', { key: 'none', style: { padding: '18px 0', color: C.muted, fontSize: 13 } }, [
-                h('div', { key: 'a', style: { marginBottom: 8 } }, '还没有远程工作区。'),
-                h('div', { key: 'b', style: { fontSize: 12 } }, '点右上角「新建」，选一台机器，然后在它的目录树里挑一个项目文件夹。'),
+            ? h('div', { key: 'none', className: 'dp-empty' }, [
+                h('div', { key: 'a', style: { fontWeight: 500, color: C.text, marginBottom: 4 } }, '还没有远程工作区'),
+                h('div', { key: 'b' }, '点右上角「新建」，选一台机器，然后在它的目录树里挑一个项目文件夹。'),
               ])
             : groups.map(([alias, folders]) => {
                 const host = hostState.get(alias);
                 const connected = Boolean(host?.connected);
-                return h('div', { key: alias, style: { marginTop: 14 } }, [
-                  h('div', {
-                    key: 'head',
-                    style: {
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      padding: '6px 0', borderBottom: `1px solid ${C.border}`,
-                    },
-                  }, [
-                    h('span', {
-                      key: 'dot',
-                      title: connected ? '已连接' : '未连接',
-                      style: {
-                        width: 9, height: 9, borderRadius: '50%', flex: '0 0 auto',
-                        background: connected ? C.ok : C.muted,
-                        boxShadow: connected ? `0 0 0 3px color-mix(in srgb, ${C.ok} 22%, transparent)` : 'none',
-                      },
-                    }),
-                    h('span', { key: 'name', style: { fontWeight: 600, fontSize: 13 } }, alias),
-                    host?.source === 'manual'
-                      ? h('span', {
-                          key: 'manual',
-                          style: {
-                            fontSize: 10.5, lineHeight: '16px', padding: '0 7px', borderRadius: 999,
-                            background: 'var(--dsw-alias-bg-module-platform)', color: C.muted,
-                          },
-                        }, '手动')
-                      : null,
-                    host
-                      ? h('span', {
-                          key: 'where',
-                          style: { color: C.muted, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-                        }, `${host.user ?? '?'}@${host.hostname}:${host.port}`)
-                      : null,
-                    h('span', {
-                      key: 'state',
-                      style: { color: connected ? C.ok : C.muted, fontSize: 12 },
-                    }, connected ? '已连接' : '未连接'),
-                    h('div', { key: 'spacer', style: { flex: 1 } }),
-                    connected ? null : Button({ label: '连接', onClick: () => pickHost(alias), small: true, disabled: busy }),
-                  ]),
-                  ...folders.map((workspace) => h('div', {
-                    key: workspace.id,
-                    className: 'dp-ws',
-                    style: {
-                      padding: '8px 8px 8px 17px', borderBottom: `1px solid ${C.border}`,
-                    },
-                  }, [
-                    h('span', { key: 'icon', style: { color: C.muted } }, '📁'),
-                    h('div', { key: 'id', style: { flex: 1, minWidth: 0 } }, [
-                      h('div', { key: 'title', style: { fontSize: 13, fontWeight: 500 } }, workspace.title),
-                      h('div', {
-                        key: 'path',
-                        style: {
-                          fontSize: 12, color: C.muted,
-                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        },
-                      }, workspace.path),
+                // 0.19.0: a retried-then-recovered connection is "degraded", not
+                // "connected": the chip says so and its tooltip carries the last
+                // error so a flaky machine is visible before the next failure.
+                const degraded = host?.state === 'degraded';
+                const stateColor = degraded ? C.warn : connected ? C.ok : C.muted;
+                return h('div', { key: alias, className: 'dp-host-group' }, [
+                  h('div', { key: 'head', className: 'dp-host-head' }, [
+                    h('div', { key: 'line', className: 'dp-host-line' }, [
+                      h('span', { key: 'name', className: 'dp-host-alias', title: alias }, alias),
+                      host?.source === 'manual'
+                        ? h('span', { key: 'manual', className: 'dp-chip' }, '手动')
+                        : null,
+                      h('div', { key: 'spacer', style: { flex: 1 } }),
+                      h('span', {
+                        key: 'state',
+                        className: 'dp-state-chip',
+                        style: { color: stateColor },
+                        title: degraded ? host?.lastError ?? '连接曾失败，正在使用重试后的连接' : undefined,
+                      }, [
+                        h('span', {
+                          key: 'dot',
+                          className: 'dp-state-dot',
+                          style: { background: stateColor },
+                        }),
+                        degraded ? '⚠ 降级' : connected ? '已连接' : '未连接',
+                      ]),
+                      degraded
+                        ? null
+                        : connected
+                          ? null
+                          : Button({ label: '连接', onClick: () => pickHost(alias), small: true, disabled: busy }),
                     ]),
-                    Button({ label: '浏览文件', onClick: () => openFiles(workspace.host, workspace.path), small: true, disabled: busy }),
-                    Button({ label: '移除', onClick: () => remove(workspace.id), small: true, disabled: busy }),
-                  ])),
+                    host
+                      ? h('div', { key: 'where', className: 'dp-host-meta', title: `${host.user ?? '?'}@${host.hostname}:${host.port}` },
+                          `${host.user ?? '?'}@${host.hostname}:${host.port}`)
+                      : null,
+                  ]),
+                  h('div', { key: 'list', className: 'dp-ws-list' },
+                    folders.map((workspace) => h('div', { key: workspace.id, className: 'dp-ws-row' }, [
+                      h('span', { key: 'icon', className: 'dp-ws-icon' }, h(Icon, { name: 'folder', size: 14 })),
+                      h('div', { key: 'text', className: 'dp-ws-text' }, [
+                        h('div', { key: 'title', className: 'dp-ws-name', title: workspace.title }, [
+                          workspace.title,
+                          workspace.id === activeId
+                            ? h('span', { key: 'active', className: 'dp-chip dp-chip--accent' }, '当前')
+                            : null,
+                        ]),
+                        h('div', { key: 'path', className: 'dp-ws-path', title: workspace.path }, workspace.path),
+                      ]),
+                      h('div', { key: 'actions', className: 'dp-ws-actions' }, [
+                        Button({ label: '浏览', onClick: () => openFiles(workspace.host, workspace.path), small: true, disabled: busy }),
+                        Button({ label: '移除', onClick: () => remove(workspace.id), small: true, disabled: busy, className: 'dp-btn--ghost' }),
+                      ]),
+                    ])),
+                  ),
                 ]);
               }),
           tunnelSection,
@@ -4456,14 +4540,10 @@ export function createApp({ React, ReactDOM }) {
       }
 
       return h('section', {
-        className: 'dp-ui',
+        className: 'dp-ui dp-settings-page',
         style: { color: C.text, fontSize: 14, padding: '4px 0 24px', maxWidth: 780 },
       }, [
         header,
-        h('p', {
-          key: 'sub',
-          style: { color: C.muted, fontSize: 12, margin: '2px 0 0' },
-        }, '选一台机器和一个远程文件夹，agent 就只在这个文件夹里工作，连接常驻复用，远端不安装任何东西。'),
         loadingList
           ? h('div', {
               key: 'loading',
