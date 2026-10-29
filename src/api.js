@@ -296,7 +296,9 @@ export function presenceRoutes(pool, late = {}) {
         }
         // C2: the client detects running -> exited transitions from this list.
         // Trimmed to the toast fields: this poll runs every few seconds and the
-        // full pool row carries the command line (session-log sensitive).
+        // full pool row carries the command line (session-log sensitive). 0.20
+        // adds the process identity and the two log paths, so a client can show
+        // which process a persisted job belongs to and tail the right log.
         let jobs = [];
         try {
           jobs = (await pool.listJobs({ sessionId: undefined })).map((job) => ({
@@ -309,6 +311,9 @@ export function presenceRoutes(pool, late = {}) {
             startedAt: job.startedAt ?? null,
             logPath: job.logPath ?? null,
             pid: job.pid ?? null,
+            pgid: job.pgid ?? null,
+            commandLogPath: job.commandLogPath ?? null,
+            persisted: job.persisted === true,
           }));
         } catch {
           jobs = [];

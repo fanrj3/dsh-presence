@@ -3,11 +3,10 @@
 // and nothing is installed on the far side.
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { activeWorkspace } from './workspaces.js';
 import { parseMountPath, parsePresenceUrl } from './mounts.js';
 import { remoteGlobDetailed, remoteGrep, splitGlobPattern } from './remote-search.js';
 import { guardDestructive } from './destructive.js';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, globSync as nodeGlobSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { connect as connectTcp } from 'node:net';
@@ -15,6 +14,7 @@ import { exportDirectory, join as joinPath, dirname as dirnamePath, resolve as r
 import { makeDirectory, movePath, copyPath, chmodPath } from './path-ops.js';
 import { diffLines as buildUnifiedDiff } from './diff.js';
 import { tailRemote } from './tail.js';
+import { waitUntil } from './wait.js';
 
 const OUTPUT_CAP = 32 * 1024;
 const EXEC_OUTPUT_CAP = 16 * 1024;
@@ -42,6 +42,22 @@ const TAIL_MAX_TIMEOUT_MS = 60_000;
 const TAIL_MAX_LINES = 5000;
 const TAIL_JSON_TEXT_CAP = 48 * 1024;
 const TAIL_JSON_MAX = 64 * 1024;
+// presence_wait: one condition, polled; a timeout is data (met:false), not an error.
+const WAIT_DEFAULT_TIMEOUT_MS = 120_000;
+const WAIT_MAX_TIMEOUT_MS = 3_600_000;
+const WAIT_DEFAULT_POLL_MS = 1_000;
+const WAIT_MIN_POLL_MS = 50;
+const WAIT_MAX_POLL_MS = 60_000;
+// One copyable example per condition, used in the tool's validation errors.
+const WAIT_EXAMPLES = {
+  file: '{"file": {"path": "/srv/app/done.marker"}}',
+  grep: '{"grep": {"path": "/srv/app/run.log", "pattern": "ready", "count": 1}}',
+  process: '{"process": {"pattern": "python3 train.py", "alive": true}}',
+  port: '{"port": {"port": 8000, "state": "open"}}',
+  job: '{"job": {"jobId": "j_123"}}',
+};
+// Batch transfers: one call may move at most this many files.
+const TRANSFER_MAX_FILES = 50;
 
 // ------------------------------------------------------- argument aliases
 //
@@ -887,9 +903,13 @@ function jobRecord(job) {
     exitCode: job.exitCode ?? null,
     exitSignal: job.exitSignal ?? null,
     pid: job.pid ?? null,
+    // The persisted registry may add these; older pools simply lack them.
+    pgid: job.pgid ?? null,
+    persisted: job.persisted === true,
     label: job.label ? stripPipefailPrelude(job.label) : null,
     startedAt: job.startedAt ?? null,
     logPath: job.logPath ?? null,
+    commandLogPath: job.commandLogPath ?? null,
     logSize: job.logSize ?? null,
     command: job.command ? stripPipefailPrelude(job.command) : null,
     cwd: job.cwd ?? null,
@@ -992,6 +1012,75 @@ function clampedNumber(value, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.floor(number)));
 }
 
+/** `presence_write` mode: 'append'/'overwrite', or null when the value is an octal file mode. */
+function writeModeOf(value) {
+  if (typeof value !== 'string') return null;
+  const lower = value.trim().toLowerCase();
+  return lower === 'append' || lower === 'overwrite' ? lower : null;
+}
+
+/** A short unpredictable suffix for private staging files (never model-visible). */
+function stagingSuffix() {
+  return `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * The files one batch transfer call names: `paths[]` (1-50) plus, for export,
+ * an optional single `path`. Missing input is a self-explaining error.
+ */
+function transferInputs(args, toolName, { single = null } = {}) {
+  const listed = Array.isArray(args.paths) ? args.paths : [];
+  const raw = single !== null && single !== undefined ? [single, ...listed] : listed;
+  const inputs = [];
+  for (const value of raw) {
+    if (typeof value !== 'string' || value.trim() === '') {
+      throw new Error(`${toolName}: every path must be a non-empty string`);
+    }
+    if (!inputs.includes(value.trim())) inputs.push(value.trim());
+  }
+  if (inputs.length > TRANSFER_MAX_FILES) {
+    throw new Error(`${toolName} moves at most ${TRANSFER_MAX_FILES} files per call, got ${inputs.length}`);
+  }
+  return inputs;
+}
+
+/** Local paths matching one glob, relative to `cwd`; the caller resolves them. */
+function localGlobPaths(pattern, cwd) {
+  const source = String(pattern ?? '').trim();
+  if (!source) return [];
+  if (typeof nodeGlobSync !== 'function') {
+    throw new Error('this Node build has no fs.globSync; pass explicit paths instead of a glob');
+  }
+  const matches = nodeGlobSync(source, { cwd });
+  const rows = [];
+  for (const entry of matches) {
+    const value = typeof entry === 'string' ? entry : String(entry?.name ?? entry);
+    if (value && !rows.includes(value)) rows.push(value);
+  }
+  return rows;
+}
+
+/**
+ * Default local destination for one export: the remote basename. An occupied
+ * name (or a name already used by this batch) gets `-<sha8>` before the
+ * extension, so nothing in the export folder is silently overwritten.
+ */
+function exportLocalTarget(folder, remoteTarget, digest, used = new Set()) {
+  const name = String(remoteTarget).split('/').filter(Boolean).pop() ?? 'export.bin';
+  const absolute = (candidate) => joinPath(folder, candidate);
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const extension = dot > 0 ? name.slice(dot) : '';
+  let candidate = name;
+  if (used.has(candidate) || existsSync(absolute(candidate))) {
+    candidate = `${stem}-${digest.slice(0, 8)}${extension}`;
+    let index = 2;
+    while (used.has(candidate)) candidate = `${stem}-${digest.slice(0, 8)}-${index++}${extension}`;
+  }
+  used.add(candidate);
+  return absolute(candidate);
+}
+
 /**
  * JSON text that stays valid: oversized text fields are shortened (twice each
  * round) instead of being cut mid-string, so callers can always JSON.parse it.
@@ -1047,10 +1136,13 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
   };
 
   /**
-   * Where this call belongs. Inside a workspace the session's own directory
-   * decides the machine — every workspace in the sidebar just works, with no
-   * "make it current" step. Explicit host still wins; a session outside any
-   * remote workspace falls back to the last opened one.
+   * Where this call belongs. The session's own directory decides the machine
+   * when it is a mount path — every remote workspace in the sidebar just works,
+   * with no "make it current" step. An explicit `host` still wins, and
+   * `settings.defaultHost` (PRESENCE_HOST) is the documented opt-in for local
+   * sessions. A genuinely local session with neither must fail loudly: the
+   * globally last-activated remote workspace is another session's machine and
+   * silently borrowing it can run commands in the wrong place.
    */
   const pickScope = async (args, exec) => {
     let cwd = null;
@@ -1060,15 +1152,24 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
       cwd = null;
     }
     const mounted = cwd ? parseMountPath(cwd) : null;
-    if (mounted && !args.host) return { host: mounted.host, workspace: { host: mounted.host, path: mounted.path } };
-
-    const active = activeWorkspace();
-    const host = args.host || active?.host;
-    if (!host) {
-      throw new Error('no host given and no remote workspace here; call presence_hosts then pass host');
+    const workspace = mounted ? { host: mounted.host, path: mounted.path } : null;
+    const explicitHost =
+      typeof args?.host === 'string' && args.host.trim() !== '' ? args.host.trim() : null;
+    if (explicitHost) {
+      // A workspace-relative path only makes sense on the workspace's own host:
+      // another explicit host gets no workspace context.
+      return { host: explicitHost, workspace: workspace && workspace.host === explicitHost ? workspace : null };
     }
-    const workspace = active && active.host === host ? active : null;
-    return { host, workspace };
+    if (workspace) return { host: workspace.host, workspace };
+    const configured =
+      typeof settings.defaultHost === 'string' && settings.defaultHost.trim() !== ''
+        ? settings.defaultHost.trim()
+        : null;
+    if (configured) return { host: configured, workspace: null };
+    throw new Error(
+      `this session is local (cwd=${cwd ?? 'unknown'}); pass an explicit host. ` +
+        'Remote workspaces are not bound to this session; call presence_hosts first.',
+    );
   };
 
   /** Every alias the ssh config knows, for the "known hosts" hint. */
@@ -1151,16 +1252,24 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
       },
       async execute(args, exec) {
         const hosts = pool.hosts();
-        // The session's own workspace decides the working machine; a session
-        // that is not in a remote workspace falls back to the configured host.
-        let workspaceHost = null;
+        // Scope is decided by this session only: a mount path means the session
+        // runs in that remote workspace; otherwise settings.defaultHost
+        // (PRESENCE_HOST) is the documented opt-in. The globally last-activated
+        // workspace is never inherited — it may belong to another session.
+        let workspace = null;
         try {
           const cwd = (await cwdOf?.(exec)) ?? null;
-          workspaceHost = cwd ? parseMountPath(cwd)?.host ?? null : null;
+          workspace = cwd ? parseMountPath(cwd) : null;
         } catch {
-          workspaceHost = null;
+          workspace = null;
         }
-        const defaultHost = workspaceHost ?? settings.defaultHost ?? activeWorkspace()?.host ?? null;
+        const configured =
+          typeof settings.defaultHost === 'string' && settings.defaultHost.trim() !== ''
+            ? settings.defaultHost.trim()
+            : null;
+        const candidate = workspace?.host ?? configured;
+        // A default that is not in the host list cannot be used by this session.
+        const defaultHost = candidate && hosts.some((host) => host.alias === candidate) ? candidate : null;
         const stateOf = (host) => host.state ?? (host.connected ? 'connected' : 'idle');
         const stateText = (host) => {
           const state = stateOf(host);
@@ -1184,7 +1293,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
               state: stateOf(host),
               connected: host.connected === true,
               default: host.alias === defaultHost,
-              workspace: host.alias === defaultHost,
+              workspace: workspace?.host === host.alias,
               ...(host.lastError ? { lastError: host.lastError } : {}),
             })),
           );
@@ -1196,7 +1305,10 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           const marker = host.alias === defaultHost ? '*' : '';
           return `${marker}${host.alias}  ${host.user ?? '?'}@${host.hostname}:${host.port}  ${state}  (${key})`;
         });
-        return `${hosts.length} host(s):\n${lines.join('\n')}`;
+        const defaultLine = defaultHost
+          ? `default: ${defaultHost} (${workspace?.host === defaultHost ? 'session workspace machine' : 'PRESENCE_HOST default'})`
+          : null;
+        return `${hosts.length} host(s):\n${lines.join('\n')}${defaultLine ? `\n${defaultLine}` : ''}`;
       },
     }),
 
@@ -1250,9 +1362,13 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_exec',
       description:
-        'Run a shell command on a remote machine and return its exit code, stdout and stderr. Inside a workspace the machine and working directory come from the session itself, so no host is needed. The connection persists between calls. Commands run with `set -o pipefail` by default, so `cmd | tail` reports cmd\'s real failure; pass pipefail:false to disable. The text report starts with the absolute remote cwd; long output is shown as a head/tail excerpt that says how many characters were omitted and where the full stream was spilled. For servers or long jobs use background:true instead of `&`: it returns a job id, takes an optional label, and can wait until a port is listening with waitForPort.\n\nDESTRUCTIVE COMMANDS (`rm -r/-f`, `git clean -fdx`, `find -delete`, `shred`, `truncate`, `dd of=`) are dry-run first: the tool shows every resolved target and refuses workspace roots, ancestors, home, `/` and `.git` metadata. Re-run with confirm:true to execute the whole command, or confirm:"partial" to execute only the non-destructive segments (the result reports executedSegments/skippedSegments). Prefer presence_trash for recoverable deletes.',
+        'Run a shell command on a remote machine and return its exit code, stdout and stderr. In a remote-workspace session the machine and working directory come from the session itself, so no host is needed; a local session must pass host (or configure PRESENCE_HOST). The connection persists between calls. Commands run with `set -o pipefail` by default, so `cmd | tail` reports cmd\'s real failure; pass pipefail:false to disable. The text report starts with `host: <alias>  remote cwd: <absolute>`; long output is shown as a head/tail excerpt that says how many characters were omitted and where the full stream was spilled. For servers or long jobs use background:true instead of `&`: it returns a job id, takes an optional label, and can wait until a port is listening with waitForPort.\n\nDESTRUCTIVE COMMANDS (`rm -r/-f`, `git clean -fdx`, `find -delete`, `shred`, `truncate`, `dd of=`) are dry-run first: the tool shows every resolved target and refuses workspace roots, ancestors, home, `/` and `.git` metadata. Re-run with confirm:true to execute the whole command, or confirm:"partial" to execute only the non-destructive segments (the result reports executedSegments/skippedSegments). Prefer presence_trash for recoverable deletes.',
       parameters: {
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         command: { type: 'string', required: true, description: 'Command line, interpreted by the remote shell.' },
         cwd: { type: 'string', description: 'Directory to run in, absolute or workspace-relative. Defaults to the workspace root, else the remote login directory.' },
         timeoutMs: {
@@ -1315,12 +1431,14 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           args.timeoutMs === undefined || args.timeoutMs === null || args.timeoutMs === ''
             ? EXEC_DEFAULT_TIMEOUT_MS
             : Number(args.timeoutMs) || 0;
-        // The report always names the directory the command really runs in:
-        // the workspace/cwd when one applies, else the remote login directory.
+        // The report always names the machine and the directory the command
+        // really runs in: the workspace/cwd when one applies, else the remote
+        // login directory. "remote cwd" is explicit so it is never mistaken for
+        // a local path.
         const effectiveCwd =
           directory ??
           (typeof connection.homePath === 'function' ? await connection.homePath().catch(() => null) : null);
-        const cwdLine = `cwd: ${effectiveCwd ?? '(remote login directory)'}`;
+        const scopeLine = `host: ${host}  remote cwd: ${effectiveCwd ?? '(remote login directory)'}`;
         const backgroundHint = backgroundCommandHint(commandText);
         const hints = backgroundHint ? [backgroundHint] : [];
 
@@ -1440,7 +1558,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
             const size =
               job.logSize === undefined || job.logSize === null ? null : ` (${formatBytes(job.logSize)})`;
             return [
-              cwdLine,
+              scopeLine,
               `background job ${job.id ?? '(unknown)'} exited immediately on ${host} (it did not stay running)`,
               `exit: ${job.exitCode ?? 'unknown'}`,
               job.logPath ? `log: ${job.logPath}${size ?? ''}` : null,
@@ -1451,7 +1569,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           }
 
           const parts = [
-            cwdLine,
+            scopeLine,
             `started in background on ${host}`,
             `job: ${job.id}`,
             `pid: ${job.pid}`,
@@ -1563,7 +1681,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         }
 
         const inlineCap = Math.max(1000, Math.min(Number(args.maxOutput) || EXEC_OUTPUT_CAP, 256 * 1024));
-        const parts = [cwdLine];
+        const parts = [scopeLine];
         if (hints.length > 0) parts.push(`hint: ${hints[0]}`);
         if (partialInfo) {
           parts.push(
@@ -1620,11 +1738,195 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     }),
 
     tool({
+      name: 'presence_wait',
+      description:
+        'Wait for one remote condition instead of a sleep+tail loop. Exactly one condition: file {path, exists?=true, minBytes?, mtimeAfter?}, grep {path, pattern, count?=1}, process {pid?|pattern, alive?=true}, port {port, state:"open"|"closed"}, or job {jobId}. Polls every pollMs (default 1000) until met or timeoutMs (default 120000, max 3600000) expires. A timeout is data — the tool returns met:false and never throws. Returns {met, timedOut, elapsedMs, observed, condition, polls}; format:"json" returns the same object as JSON.',
+      parameters: {
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST). Ignored for a job condition, which finds the host from the job itself.',
+        },
+        timeoutMs: {
+          type: 'number',
+          description: 'How long to wait. Defaults to 120000 ms; capped at 3600000 ms (1 hour).',
+        },
+        pollMs: {
+          type: 'number',
+          description: 'Milliseconds between probes. Defaults to 1000 (min 50, max 60000).',
+        },
+        intervalMs: { type: 'number', description: 'Alias for pollMs.' },
+        file: {
+          type: 'object',
+          description: 'Condition: {path, exists?: true, minBytes?, mtimeAfter?} — mtimeAfter accepts epoch ms, epoch seconds or an ISO timestamp.',
+        },
+        grep: {
+          type: 'object',
+          description: 'Condition: {path, pattern, count?: 1} — met when at least `count` lines match the extended regex.',
+        },
+        process: {
+          type: 'object',
+          description: 'Condition: {pid?|pattern, alive?: true} — exactly one of pid or pattern (pgrep -f).',
+        },
+        port: {
+          type: 'object',
+          description: 'Condition: {port, state?: "open"|"closed"} — TCP probe on the remote loopback.',
+        },
+        job: {
+          type: 'object',
+          description: 'Condition: {jobId} — met when the background job has exited (state "exited").',
+        },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Return one text block containing JSON: {met, timedOut, elapsedMs, observed, condition, polls}. Defaults to text.',
+        },
+      },
+      async execute(args, exec) {
+        const kinds = ['file', 'grep', 'process', 'port', 'job'].filter(
+          (kind) => args[kind] !== undefined && args[kind] !== null,
+        );
+        if (kinds.length === 0) {
+          throw new Error(
+            'presence_wait needs exactly one condition: file, grep, process, port or job — ' +
+              'e.g. {"file": {"path": "/srv/app/done.marker"}} or {"job": {"jobId": "j_123"}}',
+          );
+        }
+        if (kinds.length > 1) {
+          throw new Error(
+            `presence_wait takes exactly one condition, got ${kinds.join(', ')}; make one call per condition ` +
+              '(or run them in sequence)',
+          );
+        }
+        const kind = kinds[0];
+        const spec = args[kind];
+        if (typeof spec !== 'object' || Array.isArray(spec)) {
+          throw new Error(`presence_wait.${kind} must be an object, e.g. ${WAIT_EXAMPLES[kind]}`);
+        }
+        const timeoutMs = clampedNumber(args.timeoutMs, WAIT_DEFAULT_TIMEOUT_MS, 1, WAIT_MAX_TIMEOUT_MS);
+        const pollMs = clampedNumber(
+          pickArg(args, ['pollMs', 'poll_ms', 'intervalMs', 'interval_ms']),
+          WAIT_DEFAULT_POLL_MS,
+          WAIT_MIN_POLL_MS,
+          WAIT_MAX_POLL_MS,
+        );
+
+        // A job condition is host-independent (the registry knows where it
+        // ran), so it never opens a connection; everything else needs one.
+        let connection = null;
+        let condition;
+        if (kind === 'job') {
+          if (typeof spec.jobId !== 'string' || spec.jobId.trim() === '') {
+            throw new Error(`presence_wait.job needs a jobId, e.g. ${WAIT_EXAMPLES.job}`);
+          }
+          condition = { kind: 'job', jobId: spec.jobId.trim() };
+        } else {
+          const { host, workspace } = await pickScope(args, exec);
+          connection = await pool.connection(host);
+          if (kind === 'file' || kind === 'grep') {
+            const rawPath = pickArg(spec, PATH_ALIASES);
+            if (rawPath === undefined || rawPath === '') {
+              throw new Error(`presence_wait.${kind} needs a path, e.g. ${WAIT_EXAMPLES[kind]}`);
+            }
+            const path = await remotePath(connection, workspace, rawPath);
+            if (kind === 'file') {
+              const minBytes =
+                spec.minBytes === undefined || spec.minBytes === null ? null : Number(spec.minBytes);
+              if (minBytes !== null && (!Number.isFinite(minBytes) || minBytes < 0)) {
+                throw new Error('presence_wait.file.minBytes must be a non-negative number');
+              }
+              condition = {
+                kind: 'file',
+                path,
+                exists: spec.exists !== false,
+                ...(minBytes !== null ? { minBytes } : {}),
+                ...(spec.mtimeAfter !== undefined && spec.mtimeAfter !== null && spec.mtimeAfter !== ''
+                  ? { mtimeAfter: spec.mtimeAfter }
+                  : {}),
+              };
+            } else {
+              if (typeof spec.pattern !== 'string' || spec.pattern === '') {
+                throw new Error(`presence_wait.grep needs a pattern, e.g. ${WAIT_EXAMPLES.grep}`);
+              }
+              condition = {
+                kind: 'grep',
+                path,
+                pattern: spec.pattern,
+                count: clampedNumber(spec.count, 1, 1, 1_000_000),
+              };
+            }
+          } else if (kind === 'process') {
+            const hasPid = spec.pid !== undefined && spec.pid !== null && spec.pid !== '';
+            const hasPattern = typeof spec.pattern === 'string' && spec.pattern !== '';
+            if (hasPid === hasPattern) {
+              throw new Error(`presence_wait.process needs exactly one of pid or pattern, e.g. ${WAIT_EXAMPLES.process}`);
+            }
+            if (hasPid) {
+              const pid = Number(spec.pid);
+              if (!Number.isInteger(pid) || pid <= 0) {
+                throw new Error(`presence_wait.process.pid must be a positive integer, got ${spec.pid}`);
+              }
+              condition = { kind: 'process', pid, alive: spec.alive !== false };
+            } else {
+              condition = { kind: 'process', pattern: spec.pattern, alive: spec.alive !== false };
+            }
+          } else {
+            const port = Number(spec.port);
+            if (!Number.isInteger(port) || port < 1 || port > 65535) {
+              throw new Error(`presence_wait.port.port must be a TCP port number, got ${spec.port}`);
+            }
+            condition = { kind: 'port', port, state: spec.state === 'closed' ? 'closed' : 'open' };
+          }
+        }
+
+        // waitUntil never throws on timeout: it reports met:false/timedOut:true.
+        const result = await waitUntil({ pool, connection, condition, timeoutMs, pollMs, signal: exec?.signal });
+        const payload = {
+          met: result.met === true,
+          timedOut: result.timedOut === true,
+          elapsedMs: Number(result.elapsedMs) || 0,
+          observed: result.observed ?? null,
+          condition,
+          polls: result.polls ?? null,
+        };
+        if (result.aborted === true) payload.aborted = true;
+        if (args.format === 'json') return jsonText(payload);
+        if (payload.aborted) {
+          return clip(
+            [
+              `wait: aborted after ${payload.elapsedMs}ms (met:${payload.met})`,
+              `condition: ${JSON.stringify(condition)}`,
+              `observed: ${JSON.stringify(payload.observed)}`,
+            ].join('\n'),
+          );
+        }
+        const polls = payload.polls === null ? '' : `, ${payload.polls} poll(s)`;
+        const headline = payload.met
+          ? `wait: met after ${payload.elapsedMs}ms${polls}`
+          : `wait: timed out after ${payload.elapsedMs}ms${polls} — condition not met (met:false)`;
+        return clip(
+          [
+            headline,
+            `condition: ${JSON.stringify(condition)}`,
+            `observed: ${JSON.stringify(payload.observed)}`,
+            payload.met ? '' : 'hint: the last observed value is above; follow it with presence_tail, presence_jobs or presence_port_probe.',
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        );
+      },
+    }),
+
+    tool({
       name: 'presence_read',
       description:
         'Read a text file on a remote machine. Inside a workspace, relative paths resolve against the workspace root and the machine comes from the workspace. Returns line-numbered content with a line-count footer, like reading a local file. Use offset/limit for large files. Pass `raw:true` for the exact file content with no path header, no line numbers and no footer; pass `numbered:false` for unnumbered content that keeps the path header.',
       parameters: {
-        host: { type: 'string', description: 'ssh alias. Defaults to the active workspace\'s machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
         offset: { type: 'number', description: '1-based first line to return. Defaults to 1.' },
         limit: { type: 'number', description: 'Maximum lines to return. Defaults to 2000.' },
@@ -1666,7 +1968,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           required: true,
           description: 'Remote paths (absolute, ~/..., presence://host/path, or workspace-relative). 1-50 entries.',
         },
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         raw: { type: 'boolean', description: 'Return verbatim content without line numbers. Defaults to false (numbered lines).' },
         limit: { type: 'number', description: 'Maximum lines per file. Defaults to 2000.' },
       },
@@ -1720,35 +2026,104 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_write',
       description:
-        'Create or fully replace a file on a remote machine. Missing parent directories are created. Inside a workspace, relative paths resolve against the workspace root. The write is atomic (temp file + rename), so a reader never sees a half-written file. An existing file keeps its mode (e.g. 0755 stays executable); pass `mode` to set one explicitly. After writing, the remote file is stat-ed and the result reports its actual size, octal mode and full sha256. Pass `ifMatchSha256` (the hash the file must currently have) to refuse the overwrite when the remote content changed since you read it.',
+        'Create or replace a file on a remote machine. Missing parent directories are created; in a remote-workspace session relative paths resolve against the workspace root. mode:"overwrite" (default) writes atomically (temp file + rename), so a reader never sees a half-written file, and an existing file keeps its mode (e.g. 0755 stays executable). mode:"append" appends content at the end of the file (creating it when missing) and reports bytesAppended, total size and the resulting sha256. An octal mode string such as "755" (or "0644") still sets the file permissions for an overwrite. After writing, the remote file is stat-ed and the result reports its actual size, octal mode and full sha256. Pass ifMatchSha256 (the hash the file must currently have) to refuse an overwrite when the remote content changed since you read it; it is overwrite-only.',
       parameters: {
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
-        path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
-        content: { type: 'string', required: true, description: 'Complete new file content.' },
-        mode: {
+        host: {
           type: 'string',
-          description: 'Octal file mode to set, e.g. "755" or "644". Defaults to the existing file\'s mode, or 644 for a new file.',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
+        path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
+        content: { type: 'string', required: true, description: 'Content to write (overwrite) or append.' },
+        mode: {
+          oneOf: [{ type: 'string' }, { type: 'number' }],
+          description:
+            'Write mode "overwrite" (default) or "append"; or an octal file mode such as "755"/"0644" for an overwrite ("append" + an octal mode cannot be combined).',
         },
         ifMatchSha256: {
           type: 'string',
-          description: 'Optimistic lock: only write when the file currently has this sha256. A mismatch (or a missing/unreadable file) is an error that reports both hashes, and nothing is written.',
+          description:
+            'Overwrite only: optimistic lock; only write when the file currently has this sha256. A mismatch (or a missing/unreadable file) is an error that reports both hashes, and nothing is written.',
         },
         format: {
           type: 'string',
           enum: ['text', 'json'],
-          description: 'Return one text block containing JSON: {path, sizeBytes, mode, sha256}. `mode` is the actual octal string such as "0644". Defaults to text.',
+          description:
+            'Return one text block containing JSON: {path, mode, sizeBytes, sha256, writeMode}. `mode` is the actual octal string such as "0644". An append adds bytesAppended and keeps sizeBytes as the resulting total size. Defaults to text.',
         },
       },
       async execute(args, exec) {
         ensureWritable();
-        const pathInput = requirePath(args, 'presence_write', '{"path": "/srv/app/a.txt", "content": "hi"}');
+        const example = '{"path": "/srv/app/a.txt", "content": "hi"}';
+        const pathInput = requirePath(args, 'presence_write', example);
         if (args.content === undefined || args.content === null) {
-          throw missingArgument('presence_write', 'content', ['content'], args, '{"path": "/srv/app/a.txt", "content": "hi"}');
+          throw missingArgument('presence_write', 'content', ['content'], args, example);
+        }
+        const writeMode = writeModeOf(args.mode) ?? 'overwrite';
+        // 'append'/'overwrite' is a write mode; anything else stays an octal mode.
+        const octalInput = writeModeOf(args.mode) ? undefined : args.mode;
+        const expected = typeof args.ifMatchSha256 === 'string' ? args.ifMatchSha256.trim().toLowerCase() : '';
+        if (writeMode === 'append' && expected) {
+          throw new Error(
+            'ifMatchSha256 is only valid for an overwrite; drop it (or read the file and hash-check it yourself) before appending',
+          );
         }
         const { host, workspace } = await pickScope(args, exec);
         const connection = await pool.connection(host);
         const target = await remotePath(connection, workspace, pathInput);
-        const expected = typeof args.ifMatchSha256 === 'string' ? args.ifMatchSha256.trim().toLowerCase() : '';
+        const targetParent = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) || '/' : '';
+        const ensureParent = async () => {
+          if (!targetParent) return;
+          const made = await connection.exec(`mkdir -p ${shq(targetParent)}`, { timeoutMs: 30_000 });
+          if (made.code !== 0) {
+            throw new Error(`cannot create parent directory ${targetParent}: ${made.stderr.trim()}`);
+          }
+        };
+        const payload = Buffer.from(args.content ?? '', 'utf8');
+        const digest = createHash('sha256').update(payload).digest('hex');
+
+        if (writeMode === 'append') {
+          const before = await connection.stat(target);
+          if (before.exists && before.isDir) throw new Error(`${target} is a directory on ${host}; append needs a file`);
+          await ensureParent();
+          // Stage the appended bytes with the same atomic upload the overwrite
+          // path uses, then append them with one remote `cat`: the SSH command
+          // only carries paths, so a large payload never becomes a shell string
+          // and the existing file is never rewritten or re-chmod-ed.
+          const staging = `${targetParent === '/' ? '' : targetParent}/.presence-append-${stagingSuffix()}`;
+          try {
+            await connection.writeText(staging, payload);
+            const appended = await connection.exec(`cat -- ${shq(staging)} >> ${shq(target)}`, {
+              timeoutMs: 120_000,
+            });
+            if (appended.code !== 0) {
+              const reason = String(appended.stderr ?? '').trim() || `exit ${appended.code}`;
+              throw new Error(`append to ${target} on ${host} failed: ${reason}`);
+            }
+          } finally {
+            await connection.exec(`rm -f -- ${shq(staging)}`, { timeoutMs: 15_000 }).catch(() => {});
+          }
+          const info = await connection.stat(target);
+          const sizeBytes = info.exists ? info.size : (before.exists ? before.size : 0) + payload.length;
+          const sha256 = await remoteFileSha256(connection, target);
+          const mode = modeLabel(info.exists ? info.mode : null);
+          await markObserved(exec, pathInput);
+          if (args.format === 'json') {
+            return jsonText({
+              path: target,
+              writeMode: 'append',
+              bytesAppended: payload.length,
+              sizeBytes,
+              mode,
+              sha256,
+            });
+          }
+          return (
+            `appended ${payload.length} bytes to ${target} on ${host} ` +
+            `(total ${sizeBytes} bytes, mode ${mode ?? 'unknown'}, sha256 ${sha256 ?? 'unknown'})`
+          );
+        }
+
         if (expected) {
           const current = await remoteFileSha256(connection, target);
           if (!current) {
@@ -1764,21 +2139,15 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
             );
           }
         }
-        const parent = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : '';
-        if (parent) {
-          const made = await connection.exec(`mkdir -p ${shq(parent)}`, { timeoutMs: 30_000 });
-          if (made.code !== 0) throw new Error(`cannot create parent directory ${parent}: ${made.stderr.trim()}`);
-        }
-        const payload = Buffer.from(args.content ?? '', 'utf8');
-        const digest = createHash('sha256').update(payload).digest('hex');
-        const result = await connection.writeText(target, payload, { mode: parseMode(args.mode) });
+        await ensureParent();
+        const result = await connection.writeText(target, payload, { mode: parseMode(octalInput) });
         const info = await connection.stat(target);
         const sizeBytes = info.exists ? info.size : result.bytes;
         const mode = info.exists ? info.mode : result.mode;
         const octal = modeLabel(mode);
         await markObserved(exec, pathInput);
         if (args.format === 'json') {
-          return jsonText({ path: target, sizeBytes, mode: octal, sha256: digest });
+          return jsonText({ path: target, writeMode: 'overwrite', sizeBytes, mode: octal, sha256: digest });
         }
         return `wrote ${sizeBytes} bytes to ${target} on ${host} mode ${octal ?? 'unknown'} sha256 ${digest}`;
       },
@@ -1787,144 +2156,371 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_export',
       description:
-        'Copy a remote file to a real local file so desktop tools can open it. The workspace path is a virtual mount: Explorer, Office, Python and the `present` tool cannot see remote files directly. Export first, then present or open the returned local path. Files are written to the local export folder (content-addressed, deduplicated); `to` may only point inside that folder or the local workspace. Limit: 64 MiB.',
+        'Copy one or more remote files to real local files so desktop tools can open them. The workspace path is a virtual mount: Explorer, Office, Python and the `present` tool cannot see remote files directly. Export first, then present or open the returned local path. Single: `path` (or file_path) plus optional `to`. Batch: `paths` (1-50) and/or `glob` (remote-side, relative to the workspace root); every match is exported into the local export folder. The default local name is the remote basename; a name that already exists gets -<sha8> before the extension, so nothing is silently overwritten. format:\'json\' returns {files:[{remotePath, localPath, bytes, sha256}], exported, failed, errors}. Limit: 64 MiB per file.',
       parameters: {
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
-        path: { type: 'string', required: true, description: 'Remote file: absolute, workspace-relative, presence URL, or mount path.' },
-        to: { type: 'string', description: 'Optional local destination inside the export folder (defaults to a content-addressed name).' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
+        path: { type: 'string', description: 'Single remote file: absolute, workspace-relative, presence URL, or mount path.' },
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Batch: 1-50 remote files (same spellings as path). Mutually exclusive with path.',
+        },
+        glob: {
+          type: 'string',
+          description:
+            'Batch: remote glob relative to the workspace root (or absolute with its own root), e.g. "out/*.png" or "/srv/app/logs/*.log". May be combined with paths.',
+        },
+        to: {
+          type: 'string',
+          description:
+            'Single path only: explicit local destination inside the export folder (or the local workspace). Defaults to the export folder + the remote basename.',
+        },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description:
+            'Return one text block containing JSON: {files:[{remotePath, localPath, bytes, sha256}], exported, failed, errors}. Defaults to text.',
+        },
       },
       async execute(args, exec) {
-        const pathInput = requirePath(args, 'presence_export', '{"path": "/srv/app/report.pdf"}');
+        const single = pickArg(args, PATH_ALIASES);
+        const singlePath = typeof single === 'string' && single.trim() !== '' ? single.trim() : null;
+        const listed = Array.isArray(args.paths) ? args.paths : [];
+        const globInput = typeof args.glob === 'string' && args.glob.trim() !== '' ? args.glob.trim() : null;
+        if (!singlePath && listed.length === 0 && !globInput) {
+          throw missingArgument(
+            'presence_export',
+            'path',
+            ['path', 'file_path', 'paths', 'glob'],
+            args,
+            '{"paths": ["/srv/app/a.txt", "/srv/app/b.txt"]}',
+          );
+        }
+        if (singlePath && listed.length > 0) throw new Error('pass either path or paths, not both');
+        if (singlePath && globInput) throw new Error('pass either path or glob, not both');
+        if (!singlePath && args.to !== undefined && args.to !== null) {
+          throw new Error('to is only valid with a single path; a batch always lands in the export folder');
+        }
         const { host, workspace } = await pickScope(args, exec);
         const connection = await pool.connection(host);
-        const target = await remotePath(connection, workspace, pathInput);
-        const info = await connection.stat(target);
-        if (!info.exists) throw new Error(`${target} does not exist on ${host}`);
-        if (info.isDir) throw new Error(`${target} is a directory; export files one by one, or use presence_exec with tar/scp`);
-        if (info.size > EXPORT_CAP) {
-          throw new Error(`${target} is ${info.size} bytes; export is capped at ${EXPORT_CAP} bytes — use presence_exec with scp/rsync for larger files`);
-        }
-        const { buffer } = await connection.readBytes(target, { offset: 0, length: info.size });
-        const name = target.split('/').filter(Boolean).pop() ?? 'export.bin';
         const folder = exportDirectory();
         mkdirSync(folder, { recursive: true });
-        const checksum = createHash('sha256').update(buffer).digest('hex');
-        const destination = args.to ?? joinPath(folder, `${checksum.slice(0, 12)}-${name}`);
-        const absolute = resolvePath(destination);
-
         // Writes are confined to the export folder (or the local workspace, for
         // local sessions): an agent must not be able to drop files anywhere.
         const allowedRoots = [resolvePath(folder)];
         if (workspace && !parseMountPath(workspace.path)) allowedRoots.push(resolvePath(workspace.path));
-        const contained = allowedRoots.some((root) => absolute === root || absolute.startsWith(`${root}${sep}`));
-        if (!contained) {
-          throw new Error(`refusing to write "${destination}": export targets are limited to ${folder}`);
+
+        const targets = [];
+        const addTarget = (value) => {
+          if (!targets.includes(value)) targets.push(value);
+        };
+        if (singlePath) addTarget(await remotePath(connection, workspace, singlePath));
+        if (listed.length > 0) {
+          for (const input of transferInputs(args, 'presence_export')) {
+            addTarget(await remotePath(connection, workspace, input));
+          }
+        }
+        if (globInput) {
+          // The same remote-glob semantics as presence_glob: an absolute
+          // pattern carries its own root, a relative one resolves against the
+          // workspace (or the login directory).
+          const absolutePattern = splitGlobPattern(globInput);
+          const pattern = absolutePattern ? absolutePattern.pattern : globInput;
+          const base = absolutePattern
+            ? absolutePattern.root
+            : workspace?.path ?? (await connection.homePath());
+          const baseInfo = await connection.stat(base);
+          if (!baseInfo.exists) throw new Error(`${base} does not exist on ${host}`);
+          if (!baseInfo.isDir) throw new Error(`${base} on ${host} is not a directory`);
+          const detailed = await remoteGlobDetailed(connection, {
+            root: base,
+            pattern,
+            limit: TRANSFER_MAX_FILES + 1,
+          });
+          const prefix = base.replace(/\/+$/, '');
+          for (const entry of detailed.entries) addTarget(`${prefix}/${entry.path}`);
+        }
+        if (targets.length === 0) throw new Error(`no files matched ${globInput ?? ''} on ${host}`.replace('  ', ' '));
+        if (targets.length > TRANSFER_MAX_FILES) {
+          throw new Error(`presence_export moves at most ${TRANSFER_MAX_FILES} files per call, got ${targets.length}`);
         }
 
-        mkdirSync(dirnamePath(absolute), { recursive: true });
-        writeFileSync(absolute, buffer);
+        const usedNames = new Set();
+        const files = [];
+        const errors = [];
+        for (const target of targets) {
+          try {
+            const info = await connection.stat(target);
+            if (!info.exists) throw new Error(`${target} does not exist on ${host}`);
+            if (info.isDir) {
+              throw new Error(`${target} is a directory; export files, or use presence_exec with tar/scp`);
+            }
+            if (info.size > EXPORT_CAP) {
+              throw new Error(
+                `${target} is ${info.size} bytes; export is capped at ${EXPORT_CAP} bytes — use presence_exec with scp/rsync for larger files`,
+              );
+            }
+            const { buffer } = await connection.readBytes(target, { offset: 0, length: info.size });
+            const digest = createHash('sha256').update(buffer).digest('hex');
+            const destination = singlePath
+              ? args.to ?? exportLocalTarget(folder, target, digest, usedNames)
+              : exportLocalTarget(folder, target, digest, usedNames);
+            const absolute = resolvePath(destination);
+            const contained = allowedRoots.some((root) => absolute === root || absolute.startsWith(`${root}${sep}`));
+            if (!contained) {
+              throw new Error(`refusing to write "${destination}": export targets are limited to ${folder}`);
+            }
+            mkdirSync(dirnamePath(absolute), { recursive: true });
+            writeFileSync(absolute, buffer);
+            files.push({ remotePath: target, localPath: absolute, bytes: buffer.length, sha256: digest });
+          } catch (error) {
+            // A single export keeps its all-or-nothing error; a batch reports
+            // each failure and still returns the files that did land.
+            if (singlePath) throw error;
+            errors.push({ remotePath: target, error: error?.message ?? String(error) });
+          }
+        }
         pruneExports(folder);
-        const digest = createHash('sha256').update(buffer).digest('hex');
-        return (
-          `exported ${info.size} bytes from ${target} on ${host}\n` +
-          `sha256: ${digest}\n` +
-          `local file: ${absolute}\n\n` +
-          'That path is a real local file: present it, open it in Explorer, or read it with local tools.'
-        );
+        if (args.format === 'json') {
+          return jsonText({ files, exported: files.length, failed: errors.length, errors });
+        }
+        if (files.length === 0) {
+          return clip(
+            [`exported 0 of ${targets.length} file(s) from ${host}`, ...errors.map((row) => `${row.remotePath}  error: ${row.error}`)].join('\n'),
+          );
+        }
+        if (singlePath && files.length === 1) {
+          const row = files[0];
+          return (
+            `exported ${row.bytes} bytes from ${row.remotePath} on ${host}\n` +
+            `sha256: ${row.sha256}\n` +
+            `local file: ${row.localPath}\n\n` +
+            'That path is a real local file: present it, open it in Explorer, or read it with local tools.'
+          );
+        }
+        const lines = files.map((row) => `${row.remotePath} -> ${row.localPath}  (${formatBytes(row.bytes)})`);
+        const failedLines = errors.map((row) => `FAILED ${row.remotePath}: ${row.error}`);
+        const header = `exported ${files.length}/${targets.length} file(s) from ${host} into ${folder}:`;
+        return clip([header, ...lines, ...failedLines].join('\n'));
       },
     }),
 
     tool({
       name: 'presence_import',
       description:
-        'Upload a LOCAL file to the remote machine — the missing local→remote direction of presence_export, and the only way to create binary files remotely (images, PDFs, build artifacts, attachments under ~/.dsh/attachments). Writes atomically, creates parent directories, can set a mode, and returns the sha256 so both sides can be checked. format:\'json\' returns {remotePath, localPath, sizeBytes, sha256, mode} with the full digest. Limit: 64 MiB; for larger files use presence_exec with scp/rsync.',
+        'Upload LOCAL files to a remote machine — the missing local→remote direction of presence_export, and the only way to create binary files remotely (images, PDFs, build artifacts, attachments under ~/.dsh/attachments). Writes atomically, creates parent directories, can set a mode, and returns the sha256 so both sides can be checked. Single: `source` + `to` (exact remote destination). Batch: `paths` (1-50 local paths, relative to the process cwd or absolute) and/or `glob` (local glob relative to the cwd) plus `to` as a remote directory; every file keeps its basename. format:\'json\' returns {remotePath, localPath, sizeBytes, sha256, mode} for one file, or {files:[...], imported, failed, errors} for a batch. Limit: 64 MiB per file; for larger files use presence_exec with scp/rsync.',
       parameters: {
         source: {
           type: 'string',
-          required: true,
-          description: 'Absolute local path (Windows drive paths welcome), e.g. C:\\Users\\...\\attachments\\v1\\objects\\ab\\ab12....png',
+          description:
+            'Single local file: absolute (Windows drive paths welcome) or ~/relative, e.g. C:\\Users\\...\\attachments\\v1\\objects\\ab\\ab12....png',
+        },
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Batch: 1-50 local files, relative to the process cwd or absolute. Mutually exclusive with source.',
+        },
+        glob: {
+          type: 'string',
+          description:
+            'Batch: local glob relative to the process cwd, e.g. "shots/*.png" or "out/**/*.pdf". May be combined with paths.',
         },
         to: {
           type: 'string',
-          required: true,
-          description: 'Remote destination: absolute, workspace-relative, presence URL, or local mount path.',
+          description:
+            'Single: exact remote destination (absolute, workspace-relative, presence URL, or local mount path). Batch: remote directory that receives each basename.',
         },
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
-        mode: { type: 'string', description: 'Octal mode for the destination, e.g. "755". Defaults to 644 for a new file, or the existing file\'s mode.' },
-        overwrite: { type: 'boolean', description: 'Allow replacing an existing remote file. Defaults to true; pass false to fail instead.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
+        mode: {
+          type: 'string',
+          description: 'Octal mode for the destination, e.g. "755". Defaults to 644 for a new file, or the existing file\'s mode.',
+        },
+        overwrite: {
+          type: 'boolean',
+          description: 'Allow replacing an existing remote file. Defaults to true; pass false to fail instead.',
+        },
         format: {
           type: 'string',
           enum: ['text', 'json'],
-          description: 'Return one text block containing JSON: {remotePath, localPath, sizeBytes, sha256, mode}. The digest is complete, not abbreviated. Defaults to text.',
+          description:
+            'Return one text block containing JSON: {remotePath, localPath, sizeBytes, sha256, mode} for one file, or {files:[...], imported, failed, errors} for a batch. The digest is complete, not abbreviated. Defaults to text.',
         },
       },
       async execute(args, exec) {
         ensureWritable();
+        const example = '{"source": "C:\\\\Temp\\\\report.pdf", "to": "/srv/app/report.pdf"}';
         const toInput = pickArg(args, DESTINATION_ALIASES);
         if (toInput === undefined || toInput === '') {
-          throw missingArgument(
-            'presence_import',
-            'to',
-            ['to', 'to_path', 'file_path'],
-            args,
-            '{"source": "C:\\\\Temp\\\\report.pdf", "to": "/srv/app/report.pdf"}',
-          );
+          throw missingArgument('presence_import', 'to', ['to', 'to_path', 'file_path'], args, example);
         }
-        const rawSource = String(args.source ?? '').trim();
-        if (!rawSource) {
+        const rawSource = typeof args.source === 'string' ? args.source.trim() : '';
+        const listed = Array.isArray(args.paths) ? args.paths : [];
+        const globInput = typeof args.glob === 'string' && args.glob.trim() !== '' ? args.glob.trim() : null;
+        if (rawSource && (listed.length > 0 || globInput)) {
+          throw new Error('pass either source (one file) or paths/glob (a batch), not both');
+        }
+        if (!rawSource && listed.length === 0 && !globInput) {
           throw missingArgument(
             'presence_import',
             'source',
-            ['source'],
+            ['source', 'paths', 'glob'],
             args,
             '{"source": "C:\\\\Temp\\\\report.pdf", "to": "/srv/app/report.pdf"}',
           );
         }
-        const localSource = resolvePath(rawSource.startsWith('~') ? joinPath(homedir(), rawSource.slice(1)) : rawSource);
-        let localStat;
-        try {
-          localStat = statSync(localSource);
-        } catch {
-          throw new Error(`local file not found: ${localSource}`);
+        // A batch names local files relative to the process cwd; `source` keeps
+        // resolving exactly as before (absolute, or relative to the cwd).
+        const cwd = process.cwd();
+        const resolveLocal = (input) => {
+          const value = String(input);
+          const expanded = value.startsWith('~') ? joinPath(homedir(), value.slice(1)) : value;
+          return resolvePath(expanded);
+        };
+        const localCandidates = [];
+        const addLocal = (value) => {
+          const absolute = resolveLocal(value);
+          if (!localCandidates.includes(absolute)) localCandidates.push(absolute);
+        };
+        if (rawSource) addLocal(rawSource);
+        for (const value of listed) {
+          if (typeof value !== 'string' || value.trim() === '') {
+            throw new Error('presence_import: every path in paths must be a non-empty string');
+          }
+          addLocal(value.trim());
         }
-        if (!localStat.isFile()) throw new Error(`${localSource} is not a regular file`);
-        if (localStat.size > EXPORT_CAP) {
-          throw new Error(`${localSource} is ${localStat.size} bytes; import is capped at ${EXPORT_CAP} bytes — use presence_exec with scp/rsync for larger files`);
+        if (globInput) {
+          const matches = localGlobPaths(globInput, cwd);
+          if (matches.length === 0) {
+            throw new Error(`no local files match ${JSON.stringify(globInput)} under ${cwd}`);
+          }
+          for (const match of matches) addLocal(match);
         }
-
-        const buffer = readFileSync(localSource);
-        const digest = createHash('sha256').update(buffer).digest('hex');
+        if (localCandidates.length > TRANSFER_MAX_FILES) {
+          throw new Error(`presence_import moves at most ${TRANSFER_MAX_FILES} files per call, got ${localCandidates.length}`);
+        }
+        const batch = !rawSource;
 
         const { host, workspace } = await pickScope(args, exec);
         const connection = await pool.connection(host);
-        const target = await remotePath(connection, workspace, toInput);
-        const existing = await connection.stat(target);
-        if (existing.exists && existing.isDir) throw new Error(`${target} is a directory on ${host}`);
-        if (existing.exists && args.overwrite === false) {
-          throw new Error(`${target} already exists on ${host}; pass overwrite:true to replace it`);
+        const destinationInput = await remotePath(connection, workspace, toInput);
+        let destinationDirectory = null;
+        if (batch) {
+          destinationDirectory = destinationInput.replace(/\/+$/, '') || '/';
+          const existingDir = await connection.stat(destinationDirectory);
+          if (existingDir.exists && !existingDir.isDir) {
+            throw new Error(`${destinationDirectory} exists on ${host} but is not a directory; batch import needs a directory in "to"`);
+          }
         }
-        const parent = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : '';
-        if (parent) {
-          const made = await connection.exec(`mkdir -p ${shq(parent)}`, { timeoutMs: 30_000 });
-          if (made.code !== 0) throw new Error(`cannot create parent directory ${parent}: ${made.stderr.trim()}`);
+        const usedTargets = new Set();
+        const batchTarget = (localSource, digest) => {
+          const name = localSource.split(/[\\/]/).filter(Boolean).pop() ?? 'upload.bin';
+          let candidate = `${destinationDirectory}/${name}`;
+          if (usedTargets.has(candidate)) {
+            const dot = name.lastIndexOf('.');
+            const stem = dot > 0 ? name.slice(0, dot) : name;
+            const extension = dot > 0 ? name.slice(dot) : '';
+            candidate = `${destinationDirectory}/${stem}-${digest.slice(0, 8)}${extension}`;
+          }
+          usedTargets.add(candidate);
+          return candidate;
+        };
+
+        const files = [];
+        const errors = [];
+        for (const localSource of localCandidates) {
+          try {
+            let localStat;
+            try {
+              localStat = statSync(localSource);
+            } catch {
+              throw new Error(`local file not found: ${localSource}`);
+            }
+            if (!localStat.isFile()) throw new Error(`${localSource} is not a regular file`);
+            if (localStat.size > EXPORT_CAP) {
+              throw new Error(
+                `${localSource} is ${localStat.size} bytes; import is capped at ${EXPORT_CAP} bytes — use presence_exec with scp/rsync for larger files`,
+              );
+            }
+            const buffer = readFileSync(localSource);
+            const digest = createHash('sha256').update(buffer).digest('hex');
+            const target = batch ? batchTarget(localSource, digest) : destinationInput;
+            const existing = await connection.stat(target);
+            if (existing.exists && existing.isDir) throw new Error(`${target} is a directory on ${host}`);
+            if (existing.exists && args.overwrite === false) {
+              throw new Error(`${target} already exists on ${host}; pass overwrite:true to replace it`);
+            }
+            const parent = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) || '/' : '';
+            if (parent) {
+              const made = await connection.exec(`mkdir -p ${shq(parent)}`, { timeoutMs: 30_000 });
+              if (made.code !== 0) throw new Error(`cannot create parent directory ${parent}: ${made.stderr.trim()}`);
+            }
+            const mode = parseMode(args.mode) ?? (existing.exists ? undefined : 0o644);
+            const result = await connection.writeText(target, buffer, { mode });
+            const after = await connection.stat(target);
+            files.push({
+              remotePath: target,
+              localPath: localSource,
+              sizeBytes: result.bytes ?? buffer.length,
+              sha256: digest,
+              mode: modeLabel(after.exists ? after.mode : result.mode),
+            });
+          } catch (error) {
+            // A single import stays all-or-nothing; a batch reports per-file
+            // failures and still uploads the files that can be.
+            if (!batch) throw error;
+            errors.push({ localPath: localSource, error: error?.message ?? String(error) });
+          }
         }
-        const mode = parseMode(args.mode) ?? (existing.exists ? undefined : 0o644);
-        const result = await connection.writeText(target, buffer, { mode });
-        const after = await connection.stat(target);
-        const modeText = modeLabel(after.exists ? after.mode : result.mode);
+
+        if (!batch) {
+          const row = files[0];
+          if (!row) {
+            throw new Error(`import of ${localCandidates[0]} failed: ${errors[0]?.error ?? 'unknown error'}`);
+          }
+          if (args.format === 'json') {
+            return jsonText({
+              remotePath: row.remotePath,
+              localPath: row.localPath,
+              sizeBytes: row.sizeBytes,
+              sha256: row.sha256,
+              mode: row.mode,
+            });
+          }
+          return (
+            `imported ${row.sizeBytes} bytes to ${row.remotePath} on ${host}${row.mode ? ` mode ${row.mode}` : ''}\n` +
+            `sha256: ${row.sha256}\n` +
+            `local source: ${row.localPath}`
+          );
+        }
         if (args.format === 'json') {
-          return jsonText({
-            remotePath: target,
-            localPath: localSource,
-            sizeBytes: result.bytes ?? buffer.length,
-            sha256: digest,
-            mode: modeText,
-          });
+          return jsonText({ files, imported: files.length, failed: errors.length, errors });
         }
-        return (
-          `imported ${buffer.length} bytes to ${target} on ${host}${modeText ? ` mode ${modeText}` : ''}\n` +
-          `sha256: ${digest}\n` +
-          `local source: ${localSource}`
+        if (files.length === 0) {
+          return clip(
+            [
+              `imported 0 of ${localCandidates.length} file(s) to ${destinationDirectory} on ${host}`,
+              ...errors.map((row) => `${row.localPath}  error: ${row.error}`),
+            ].join('\n'),
+          );
+        }
+        const lines = files.map(
+          (row) => `${row.localPath} -> ${row.remotePath}${row.mode ? ` mode ${row.mode}` : ''}  (${formatBytes(row.sizeBytes)})`,
+        );
+        const failedLines = errors.map((row) => `FAILED ${row.localPath}: ${row.error}`);
+        return clip(
+          [
+            `imported ${files.length}/${localCandidates.length} file(s) to ${destinationDirectory} on ${host}:`,
+            ...lines,
+            ...failedLines,
+          ].join('\n'),
         );
       },
     }),
@@ -1935,7 +2531,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         'Delete a remote path RECOVERABLY: it is moved into `~/.dsh/presence-trash/<timestamp>/` on the same machine (no install, no extra service) and the restore path is returned. Prefer this over `rm -rf` for anything inside a workspace. Actions: trash (one path, or up to 50 paths in one call), list (recent trash containers, newest first; a single movedAtISO per entry), restore (move one back).',
       parameters: {
         action: { type: 'string', required: true, enum: ['trash', 'list', 'restore'], description: 'What to do.' },
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         path: { type: 'string', description: 'For trash: the remote path to move into the trash. For list: substring filter on trashPath/name.' },
         paths: {
           type: 'array',
@@ -2100,7 +2700,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
       description:
         'Replace exact text inside a file on a remote machine. Use this — or the built-in `edit` tool, which also reaches the remote workspace — instead of `sed -i`, `perl -pi`, or `python -c` for remote edits: it is atomic, refuses an anchor that occurs more than once unless replaceAll is set, and reports how many occurrences changed. Returns a compact diff of the changed lines (context +/-2, max 100 lines/8 KiB); dryRun:true validates the anchor and computes the same diff without writing. The file keeps its mode (an executable stays executable). Inside a workspace, relative paths resolve against the workspace root.',
       parameters: {
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
         old: { type: 'string', description: 'Exact text to replace, including indentation.' },
         oldString: { type: 'string', description: 'Alias for `old` (same spelling as the built-in edit tool).' },
@@ -2200,7 +2804,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
       description:
         'Search file contents on a remote machine with the tools that machine already has (ripgrep, falling back to grep). Smart-case: lowercase patterns match case-insensitively, any uppercase letter makes them exact — the same as the built-in grep. Inside a workspace the search root defaults to the workspace. `path` may be a single file or a directory; every match is reported as path:line:text. `include` accepts one glob (*.ts), a brace list (*.{js,jsx}) or a comma-separated list (*.txt,*.dat); spaces are trimmed. The result states the limit and whether it truncated; countOnly returns the exact number of matching lines instead. A bad regex or an unreadable/oversized tree is an error, never a silent empty result.',
       parameters: {
-        host: { type: 'string', description: 'ssh alias. Defaults to the active workspace\'s machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         pattern: { type: 'string', required: true, description: 'Regular expression to search for (ripgrep syntax).' },
         path: { type: 'string', description: 'File or directory to search, absolute or workspace-relative. Defaults to the workspace root, else the remote home directory.' },
         include: { type: 'string', description: 'Only files matching this glob. Accepts *.ts, *.{js,jsx}, or a comma-separated list such as *.txt,*.dat (spaces are trimmed).' },
@@ -2281,7 +2889,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         'Find files on the remote machine by glob pattern. Use this instead of `glob`, which only scans the local disk and silently returns an empty result for a remote workspace. An absolute pattern such as /srv/app/*.py carries its own root and needs no path. All matches are sorted newest-first before `limit` is applied, and the result reports the total number of matches. Returns absolute paths with size and mtime when the host\'s find supports -printf; otherwise names only, and says so.',
       parameters: {
         pattern: { type: 'string', required: true, description: 'Glob relative to the search root, e.g. "src/**/*.ts", or absolute, e.g. "/srv/app/*.py".' },
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         path: { type: 'string', description: 'Directory to search from. Ignored by an absolute pattern; defaults to the workspace root.' },
         limit: { type: 'number', description: 'Maximum files to return, applied after the newest-first sort. Defaults to 200.' },
         format: {
@@ -2362,7 +2974,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           required: true,
           description: 'Remote paths (absolute, ~/..., presence://host/path, or workspace-relative). 1-100 entries.',
         },
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         hash: {
           type: 'boolean',
           description: 'Also compute sha256 for existing regular files. Defaults to false.',
@@ -2430,7 +3046,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
       description:
         'Create a directory on a remote machine. Inside a workspace, relative paths resolve against the workspace root. `parents` defaults to true (mkdir -p): missing parents are created and an existing directory is a success. Pass parents:false to require the parent to exist. Prefer this over presence_exec for a plain mkdir.',
       parameters: {
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
         parents: {
           type: 'boolean',
@@ -2456,7 +3076,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
       description:
         'Rename or move a path on one remote machine (an atomic rename on the host). `to` is the exact new path, not a directory to move into. An existing destination file is refused unless overwrite:true; an existing destination directory is never merged into or replaced. Inside a workspace, relative paths resolve against the workspace root.',
       parameters: {
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         from: { type: 'string', required: true, description: 'Remote path to move (absolute, ~/relative, or workspace-relative).' },
         to: { type: 'string', required: true, description: 'Exact new remote path.' },
         overwrite: { type: 'boolean', description: 'Replace an existing destination file. Defaults to false.' },
@@ -2489,7 +3113,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
       description:
         'Copy a file or directory on one remote machine. `to` is the exact destination path. A directory requires recursive:true and is copied with remote `cp -a`; a file is streamed through SFTP up to 8 MiB and copied with remote `cp -p` above that, so nothing large goes through this process. An existing destination is refused unless overwrite:true. Inside a workspace, relative paths resolve against the workspace root.',
       parameters: {
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         from: { type: 'string', required: true, description: 'Remote source path.' },
         to: { type: 'string', required: true, description: 'Exact remote destination path.' },
         recursive: { type: 'boolean', description: 'Copy a directory tree. Required when from is a directory. Defaults to false.' },
@@ -2529,7 +3157,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
       description:
         'Change permissions on a remote path and report the applied octal mode. Accepts "755"/"0644"/"0o755" strings (preferred) or an octal mode number such as 0o755. With recursive:true a directory tree is changed with `chmod -R`. Inside a workspace, relative paths resolve against the workspace root.',
       parameters: {
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
         mode: {
           oneOf: [{ type: 'string' }, { type: 'number' }],
@@ -2557,7 +3189,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
       description:
         'Diff a text file on a remote machine against either another remote file (`b`) or a local host-process file (`localPath`); pass exactly one of b/localPath. Returns a unified diff body (hunk headers plus +/-/context rows, no ---/+++ headers): `context` controls context lines (default 3, max 20), the diff is capped by lines/bytes and reports truncation, and identical content returns "(no changes)". format:\'json\' returns {stats:{added,removed}, diff, truncated}. Inside a workspace, relative paths resolve against the workspace root; localPath is resolved against the host process cwd.',
       parameters: {
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         a: { type: 'string', required: true, description: 'Left side: remote path (absolute, ~/relative, or workspace-relative).' },
         b: { type: 'string', description: 'Right side: another remote path. Mutually exclusive with localPath.' },
         localPath: { type: 'string', description: 'Right side: a local file on the host process. Mutually exclusive with b.' },
@@ -2624,7 +3260,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
       description:
         'Read the last lines of a text file on a remote machine (default 200), optionally following it: follow:true keeps polling for new bytes for timeoutMs (default 8000, max 60000) and returns everything appended meanwhile. Only an incremental byte window is read, so a large log is never pulled whole; `truncated` is true when content before the returned window was dropped. format:\'json\' returns {path, lines, bytes, followedMs, truncated, text}. Inside a workspace, relative paths resolve against the workspace root.',
       parameters: {
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         path: { type: 'string', required: true, description: 'Absolute path, ~/relative, or workspace-relative.' },
         lines: { type: 'number', description: 'How many trailing lines to return, 1-5000. Defaults to 200.' },
         follow: { type: 'boolean', description: 'Keep appending new bytes for timeoutMs before returning. Defaults to false.' },
@@ -2780,6 +3420,10 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           if (body.logPath) {
             lines.push(`log: ${body.logPath}${body.logSize !== null ? ` (${formatBytes(body.logSize)})` : ''}`);
           }
+          if (body.commandLogPath && body.commandLogPath !== body.logPath) {
+            lines.push(`command log: ${body.commandLogPath}`);
+          }
+          if (body.pgid !== null) lines.push(`pgid: ${body.pgid}${body.persisted ? '  (persisted job)' : ''}`);
           return clip(lines.join('\n'));
         }
 
@@ -2909,7 +3553,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         localPort: { type: 'number', description: 'For open: local port to bind. Defaults to an OS-assigned free port.' },
         remoteHost: { type: 'string', description: 'For open: remote bind host. Defaults to 127.0.0.1.' },
         forwardId: { type: 'string', description: 'For close: the id returned by open.' },
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         format: {
           type: 'string',
           enum: ['text', 'json'],
@@ -2992,7 +3640,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           required: true,
           description: 'TCP ports to check (1-20 entries).',
         },
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         expect: {
           type: 'string',
           enum: ['open', 'closed'],
@@ -3084,7 +3736,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           type: 'boolean',
           description: 'Wait up to timeoutMs for the remote port to accept TCP before forwarding. Defaults to true.',
         },
-        host: { type: 'string', description: 'ssh alias. Defaults to this session\'s workspace machine.' },
+        host: {
+          type: 'string',
+          description:
+            'ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         format: {
           type: 'string',
           enum: ['text', 'json'],
@@ -3209,7 +3865,11 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           enum: ['open', 'write', 'read', 'close', 'list'],
           description: 'What to do with the terminal.',
         },
-        host: { type: 'string', description: 'For open: ssh alias. Defaults to the active workspace\'s machine.' },
+        host: {
+          type: 'string',
+          description:
+            'For open: ssh alias. In a remote-workspace session defaults to that machine; a local session must pass host (or configure PRESENCE_HOST).',
+        },
         session: {
           type: 'string',
           description:

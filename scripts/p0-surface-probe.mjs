@@ -404,7 +404,7 @@ try {
   const execLines = execText.split('\n');
   check(
     'exec text: starts with the absolute remote cwd',
-    execLines[0] === `cwd: ${dir}` && execText.includes('surface-text') && execText.includes('exit: 0'),
+    execLines[0] === `host: ${alias}  remote cwd: ${dir}` && execText.includes('surface-text') && execText.includes('exit: 0'),
     execLines[0],
   );
   const execJson = asJson(await call('presence_exec', { command: 'echo surface-json', cwd: dir, format: 'json' }));
@@ -516,7 +516,7 @@ try {
   });
   check(
     'exec timeout text: background-children warning for nohup/& commands',
-    timeoutBackground.startsWith(`cwd: ${dir}`) &&
+    timeoutBackground.startsWith(`host: ${alias}  remote cwd: ${dir}`) &&
       timeoutBackground.split('\n')[1].startsWith('hint: ') &&
       timeoutBackground.includes(
         'background children started by this command may still be running — use background:true / presence_terminal to track them',
@@ -533,7 +533,7 @@ try {
     Array.isArray(hintJson.hints) &&
       hintJson.hints.length === 1 &&
       hintJson.hints[0].includes('background:true') &&
-      hintText.split('\n')[0] === `cwd: ${dir}` &&
+      hintText.split('\n')[0] === `host: ${alias}  remote cwd: ${dir}` &&
       hintText.split('\n')[1].startsWith('hint: '),
     `hint=${JSON.stringify(hintJson.hints[0]?.slice(0, 60))}`,
   );

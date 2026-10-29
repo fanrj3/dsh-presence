@@ -1,6 +1,7 @@
 // The pool the plugin owns: one live connection per machine, plus the
 // terminals that belong to it.
 
+import { randomUUID } from 'node:crypto';
 import { listHosts, readSshConfig } from './core/ssh-config.mjs';
 import { PresenceConnection } from './core/connection.mjs';
 
@@ -9,12 +10,12 @@ const MAX_TERMINAL_BUFFER = 256 * 1024;
 // started: give the wrapper a moment, then check the process group.
 const JOB_EARLY_CHECK_MS = 800;
 const JOB_EARLY_TAIL_LINES = 20;
-// Finished jobs pile up in the local registry for the life of the app. Prune
-// them at most once a minute from `listJobs`, keeping the newest entries and
-// anything that finished in the last six hours.
+// Finished jobs pile up in the local registry and in the JSON store. Prune at
+// most once a minute from `listJobs`; the 0.20 store keeps a month of finished
+// jobs (a run is worth coming back to after a restart), bounded to 500 rows.
 const JOB_PRUNE_INTERVAL_MS = 60_000;
-const JOB_PRUNE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const JOB_PRUNE_MAX_ENTRIES = 100;
+const JOB_PRUNE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const JOB_PRUNE_MAX_ENTRIES = 500;
 // A transient connect failure is retried twice, with these gaps, and a dead
 // cached connection is dropped before each retry.
 const CONNECT_RETRY_BACKOFF_MS = [200, 600];
@@ -60,6 +61,7 @@ export class PresencePool {
   #terminals = new Map();
   #tunnels = new Map();
   #jobs = new Map();
+  #jobStore = null;
   #lastUsed = new Map();
   #lastPruneAt = 0;
   #secrets = new Map();
@@ -69,10 +71,24 @@ export class PresencePool {
   #reaper;
   #counter = 0;
 
-  constructor(settings) {
+  /**
+   * @param settings - resolved plugin config.
+   * @param options.jobStore - optional persistent job registry (`JobStore`, or
+   *   any object with `list/upsert/remove/prune`). It is captured once and
+   *   never replaced, so persistence cannot be attached halfway through a run.
+   */
+  constructor(settings, { jobStore = null } = {}) {
     this.#settings = settings;
+    this.#jobStore = jobStore;
+    this.#loadPersistedJobs();
     this.#reaper = setInterval(() => this.#reapIdle(), 60_000);
     this.#reaper.unref?.();
+    // A job started before a restart is `unknown` until the machine is asked;
+    // the first successful connection is exactly that chance. Fire-and-forget:
+    // a slow probe must never delay or fail `connection()`.
+    this.onConnectionEstablished((host) => {
+      this.#refreshPersistedJobs(host).catch(() => {});
+    });
   }
 
   get settings() {
@@ -373,12 +389,19 @@ export class PresencePool {
     if (!command) throw new Error('command is required');
     const connection = await this.connection(host);
     const started = await connection.startBackground(command, { cwd, logPath });
-    const id = `j${(this.#counter += 1)}`;
+    const id = this.#nextJobId();
+    const pid = Number(started.pid);
     const job = {
       id,
       host,
-      pid: started.pid,
+      pid,
+      pgid: Number.isFinite(Number(started.pgid)) ? Number(started.pgid) : pid,
       logPath: started.logPath,
+      // The 0.20 factory returns a distinct command-output log when the
+      // wrapper exposes one; the current kernel returns only `logPath`, which
+      // IS the command's stdout/stderr log. Keep the public field non-null and
+      // truthful either way (it equals logPath on today's kernels).
+      commandLogPath: started.commandLogPath ?? started.logPath ?? null,
       statusPath: started.statusPath,
       command,
       cwd,
@@ -392,13 +415,29 @@ export class PresencePool {
       logSize: null,
       logTail: '',
       stopped: false,
+      persisted: false,
+      lastPersistedJson: null,
     };
     this.#jobs.set(id, job);
+    // Persist before the early-death check: a job that dies instantly must
+    // still leave a record, otherwise a restart cannot explain it.
+    this.#syncJob(job);
 
     await sleep(JOB_EARLY_CHECK_MS);
     const alive = await this.#groupAlive(connection, job.pid);
     if (alive !== false) {
-      return { id, host, pid: job.pid, logPath: job.logPath, statusPath: job.statusPath, label: job.label, sessionId: job.sessionId };
+      this.#syncJob(job);
+      return {
+        id,
+        host,
+        pid: job.pid,
+        pgid: job.pgid,
+        logPath: job.logPath,
+        commandLogPath: job.commandLogPath,
+        statusPath: job.statusPath,
+        label: job.label,
+        sessionId: job.sessionId,
+      };
     }
     const status = await connection.backgroundStatus(job.statusPath);
     const output = await this.#readOutput(connection, job, JOB_EARLY_TAIL_LINES);
@@ -407,11 +446,14 @@ export class PresencePool {
     job.exitedAt = Date.now();
     job.logSize = output.logSize;
     job.logTail = output.logTail;
+    this.#syncJob(job);
     return {
       id,
       host,
       pid: job.pid,
+      pgid: job.pgid,
       logPath: job.logPath,
+      commandLogPath: job.commandLogPath,
       statusPath: job.statusPath,
       label: job.label,
       sessionId: job.sessionId,
@@ -458,6 +500,7 @@ export class PresencePool {
         job.exitedAt ??= Date.now();
         job.logSize = output.logSize ?? job.logSize;
         job.logTail = output.logTail;
+        this.#syncJob(job);
         return this.#jobResult(job, {
           state: 'exited',
           exitCode: status.exitCode,
@@ -478,6 +521,7 @@ export class PresencePool {
         job.exitedAt ??= Date.now();
         job.logSize = output.logSize ?? job.logSize;
         job.logTail = output.logTail;
+        this.#syncJob(job);
         return this.#jobResult(job, {
           state: 'exited',
           exitCode: null,
@@ -520,7 +564,9 @@ export class PresencePool {
         id: job?.id ?? null,
         host: target,
         pid: numeric,
+        pgid: job?.pgid ?? numeric,
         logPath: job?.logPath ?? null,
+        commandLogPath: job?.commandLogPath ?? null,
         stopped: result.stopped,
         wasAlive: result.wasAlive,
         reason: result.reason ?? null,
@@ -536,7 +582,9 @@ export class PresencePool {
       id,
       host: job.host,
       pid: job.pid,
+      pgid: job.pgid ?? job.pid ?? null,
       logPath: job.logPath,
+      commandLogPath: job.commandLogPath ?? null,
       stopped: result.stopped,
       wasAlive: result.wasAlive,
       reason: result.reason ?? null,
@@ -578,6 +626,7 @@ export class PresencePool {
         job.exitedAt ??= Date.now();
         job.exitCode = result.exitCode ?? job.exitCode ?? null;
       }
+      this.#syncJob(job);
     }
     return {
       host,
@@ -593,10 +642,11 @@ export class PresencePool {
   }
 
   /**
-   * Drop local bookkeeping for jobs that are finished and past their welcome:
-   * older than `maxAgeMs`, or beyond the newest `maxEntries`. Only EXITED jobs
-   * are dropped — a running (or still unknown) job keeps its slot no matter
-   * how old it is, and the detached process on the machine is never touched.
+   * Drop bookkeeping for jobs that are finished and past their welcome: older
+   * than `maxAgeMs`, or beyond the newest `maxEntries`. Only EXITED jobs are
+   * dropped — a running (or still unknown) job keeps its slot no matter how old
+   * it is, and the detached process on the machine is never touched. The
+   * persisted store is bounded by the same limits.
    * Returns the ids that were forgotten.
    */
   async pruneJobs({ maxAgeMs = JOB_PRUNE_MAX_AGE_MS, maxEntries = JOB_PRUNE_MAX_ENTRIES } = {}) {
@@ -616,15 +666,42 @@ export class PresencePool {
       if (job.state === 'exited') dropped.add(job.id);
     }
     for (const id of dropped) this.#jobs.delete(id);
+    if (this.#jobStore) {
+      // The store applies the same age/count bounds; a record it drops beyond
+      // the local view is forgotten here too, so the two cannot drift apart.
+      let pruned = { removed: 0, ids: [] };
+      try {
+        pruned = this.#jobStore.prune({ maxAgeMs: age, maxEntries: limit }) ?? pruned;
+      } catch {
+        /* persistence is an optimization; a broken store must not fail a prune */
+      }
+      for (const id of Array.isArray(pruned.ids) ? pruned.ids : []) {
+        this.#jobs.delete(id);
+        dropped.add(id);
+      }
+      // Only records the store's own bound did not already drop need a second
+      // write; normally this set is empty (one save, not one per dropped job).
+      const prunedIds = new Set(Array.isArray(pruned.ids) ? pruned.ids : []);
+      for (const id of [...dropped]) {
+        if (prunedIds.has(id)) continue;
+        try {
+          this.#jobStore.remove(id);
+        } catch {
+          /* already gone */
+        }
+      }
+    }
     this.#lastPruneAt = now;
     return { removed: dropped.size, ids: [...dropped] };
   }
 
   /**
-   * Jobs this pool started, optionally narrowed to one session, with liveness
-   * read from the machines connected right now. `state` is 'unknown' when the
-   * host cannot be asked: a detached job outlives its SSH connection, so no
-   * answer is not the same as a dead job.
+   * Jobs this pool started, plus records inherited from the persisted store,
+   * optionally narrowed to one session, with liveness read from the machines
+   * connected right now. A record loaded from disk is `unknown` until a pid
+   * probe says otherwise: a detached job outlives its SSH connection, so no
+   * answer is not the same as a dead job. A record says `persisted: true` when
+   * it came from the JSON store rather than from this process.
    */
   async listJobs({ sessionId = undefined } = {}) {
     // Local bookkeeping only, so no round trip; at most once a minute so a
@@ -632,6 +709,9 @@ export class PresencePool {
     if (Date.now() - this.#lastPruneAt >= JOB_PRUNE_INTERVAL_MS) {
       await this.pruneJobs().catch(() => {});
     }
+    // A record written by another process (or by a previous run) joins the view
+    // as `unknown`; the per-host liveness pass below may resolve it.
+    this.#mergePersistedJobs();
     const jobs = [...this.#jobs.values()].filter((job) => sessionId === undefined || job.sessionId === sessionId);
     if (jobs.length === 0) return [];
 
@@ -640,90 +720,228 @@ export class PresencePool {
       if (!byHost.has(job.host)) byHost.set(job.host, []);
       byHost.get(job.host).push(job);
     }
+    await Promise.all([...byHost.entries()].map(([host, hostJobs]) => this.#probeHostJobs(host, hostJobs)));
+    return jobs.map((job) => this.#jobRow(job));
+  }
 
+  // ------------------------------------------------- job registry internals
+
+  /**
+   * Ask one host about a group of jobs: seed its process registry, read the
+   * whole process table once and every status file once. Live jobs keep their
+   * state; a record loaded from disk is only promoted to `running` when `ps`
+   * actually finds its process group.
+   */
+  async #probeHostJobs(host, hostJobs) {
+    const connection = this.#connections.get(host);
+    if (!connection || connection.closed) {
+      for (const job of hostJobs) if (job.state !== 'exited') job.state = 'unknown';
+      for (const job of hostJobs) this.#syncJob(job);
+      return;
+    }
+    // A job started before a reconnect is not in this connection's registry;
+    // its process group still exists on the machine, so seed it back in.
+    for (const job of hostJobs) {
+      if (job.stopped || job.state === 'exited' || job.pid === null || job.pid === undefined) continue;
+      connection.trackBackground({
+        pid: job.pid,
+        command: job.command,
+        cwd: job.cwd,
+        logPath: job.logPath,
+        statusPath: job.statusPath,
+        startedAt: job.startedAt,
+      });
+    }
+    let running;
+    try {
+      running = new Set((await connection.listBackground()).map((entry) => entry.pid));
+    } catch {
+      // Liveness is a convenience; a failed `ps` must not hide the job list.
+      running = null;
+    }
+    if (!running) {
+      for (const job of hostJobs) if (job.state !== 'exited') job.state = 'unknown';
+      for (const job of hostJobs) this.#syncJob(job);
+      return;
+    }
+    // One round trip for every status file on this host: the command may have
+    // finished while a child it spawned kept the group alive.
+    let statuses = null;
+    try {
+      statuses = await connection.backgroundStatuses(hostJobs.map((job) => job.statusPath ?? ''));
+    } catch {
+      // Liveness from `ps` is still worth reporting.
+    }
     await Promise.all(
-      [...byHost.entries()].map(async ([host, hostJobs]) => {
-        const connection = this.#connections.get(host);
-        if (!connection || connection.closed) {
-          for (const job of hostJobs) if (job.state !== 'exited') job.state = 'unknown';
-          return;
+      hostJobs.map(async (job, index) => {
+        const status = statuses?.[index] ?? null;
+        if (job.stopped) {
+          job.state = 'exited';
+          job.exitedAt ??= Date.now();
+        } else if (status?.found) {
+          job.state = 'exited';
+          job.exitCode = status.exitCode;
+          job.exitedAt ??= Date.now();
+        } else if (job.state === 'exited') {
+          // Already reported finished; a recycled pgid must not resurrect it.
+          job.exitedAt ??= Date.now();
+        } else if (job.pid !== null && job.pid !== undefined && running.has(job.pid)) {
+          job.state = 'running';
+        } else {
+          // No wrapper left to write a status: it was killed.
+          job.state = 'exited';
+          job.exitCode = null;
+          job.exitedAt ??= Date.now();
         }
-        // A job started before a reconnect is not in this connection's registry;
-        // its process group still exists on the machine, so seed it back in.
-        for (const job of hostJobs) {
-          if (job.stopped || job.state === 'exited') continue;
-          connection.trackBackground({
-            pid: job.pid,
-            command: job.command,
-            cwd: job.cwd,
-            logPath: job.logPath,
-            statusPath: job.statusPath,
-            startedAt: job.startedAt,
-          });
-        }
-        let running;
-        try {
-          running = new Set((await connection.listBackground()).map((entry) => entry.pid));
-        } catch {
-          // Liveness is a convenience; a failed `ps` must not hide the job list.
-          running = null;
-        }
-        if (!running) {
-          for (const job of hostJobs) if (job.state !== 'exited') job.state = 'unknown';
-          return;
-        }
-        // One round trip for every status file on this host: the command may
-        // have finished while a child it spawned kept the group alive.
-        let statuses = null;
-        try {
-          statuses = await connection.backgroundStatuses(hostJobs.map((job) => job.statusPath));
-        } catch {
-          // Liveness from `ps` is still worth reporting.
-        }
-        await Promise.all(
-          hostJobs.map(async (job, index) => {
-            const status = statuses?.[index] ?? null;
-            if (job.stopped) {
-              job.state = 'exited';
-              job.exitedAt ??= Date.now();
-            } else if (status?.found) {
-              job.state = 'exited';
-              job.exitCode = status.exitCode;
-              job.exitedAt ??= Date.now();
-            } else if (job.state === 'exited') {
-              // Already reported finished; a recycled pgid must not resurrect it.
-              job.exitedAt ??= Date.now();
-            } else if (running.has(job.pid)) {
-              job.state = 'running';
-            } else {
-              // No wrapper left to write a status: it was killed.
-              job.state = 'exited';
-              job.exitCode = null;
-              job.exitedAt ??= Date.now();
-            }
-            const info = await connection.stat(job.logPath).catch(() => null);
-            if (info?.exists) job.logSize = info.size;
-          }),
-        );
+        const info = job.logPath ? await connection.stat(job.logPath).catch(() => null) : null;
+        if (info?.exists) job.logSize = info.size;
+        this.#syncJob(job);
       }),
     );
+  }
 
-    return jobs.map((job) => ({
+  /** One public job row (live view, no remote probe). */
+  #jobRow(job) {
+    return {
       id: job.id,
       host: job.host,
-      pid: job.pid,
+      pid: job.pid ?? null,
+      pgid: job.pgid ?? job.pid ?? null,
       state: job.state ?? 'unknown',
       exitCode: job.exitCode ?? null,
       exitSignal: job.exitSignal ?? null,
+      exitedAt: job.exitedAt ?? null,
       label: job.label ?? null,
       sessionId: job.sessionId ?? null,
-      startedAt: job.startedAt,
-      logPath: job.logPath,
+      startedAt: job.startedAt ?? null,
+      logPath: job.logPath ?? null,
+      commandLogPath: job.commandLogPath ?? null,
       logSize: job.logSize ?? null,
+      persisted: job.persisted === true,
       // Kept for the existing jobs view, which still prints the command line.
-      command: job.command,
-      cwd: job.cwd,
-    }));
+      command: job.command ?? null,
+      cwd: job.cwd ?? null,
+    };
+  }
+
+  /**
+   * Next job id. The plain `jN` counter keeps ids readable; when a store is
+   * attached a short random suffix keeps two Harness windows that share the
+   * same jobs.json from overwriting each other's records.
+   */
+  #nextJobId() {
+    this.#counter += 1;
+    const base = `j${this.#counter}`;
+    return this.#jobStore ? `${base}-${randomUUID().slice(0, 4)}` : base;
+  }
+
+  #numericSuffix(id) {
+    const match = /^j(\d+)/u.exec(String(id ?? ''));
+    return match ? Number(match[1]) : 0;
+  }
+
+  /** Turn one stored record into an in-memory job; never assumes it is running. */
+  #adoptPersistedRecord(record) {
+    if (!record || typeof record !== 'object' || !record.id || this.#jobs.has(record.id)) return null;
+    const pid = Number.isFinite(Number(record.pid)) ? Number(record.pid) : null;
+    const pgid = Number.isFinite(Number(record.pgid)) ? Number(record.pgid) : pid;
+    const job = {
+      id: record.id,
+      host: record.host,
+      pid,
+      pgid,
+      logPath: record.logPath ?? null,
+      commandLogPath: record.commandLogPath ?? null,
+      statusPath: record.statusPath ?? null,
+      command: record.command ?? null,
+      cwd: record.cwd ?? null,
+      label: record.label ?? null,
+      sessionId: record.sessionId ?? null,
+      startedAt: record.startedAt ?? null,
+      // A finished record stays finished; anything else is `unknown` until a
+      // liveness probe proves the process group still exists.
+      state: record.state === 'exited' ? 'exited' : 'unknown',
+      exitCode: record.exitCode ?? null,
+      exitSignal: record.exitSignal ?? null,
+      exitedAt: record.exitedAt ?? null,
+      logSize: null,
+      logTail: '',
+      stopped: false,
+      persisted: true,
+      lastPersistedJson: null,
+    };
+    this.#jobs.set(job.id, job);
+    this.#counter = Math.max(this.#counter, this.#numericSuffix(job.id));
+    return job;
+  }
+
+  #storeRecords() {
+    const store = this.#jobStore;
+    if (!store || typeof store.list !== 'function') return [];
+    try {
+      const records = store.list();
+      return Array.isArray(records) ? records : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Load the registry at startup; records are visible but not trusted as live. */
+  #loadPersistedJobs() {
+    for (const record of this.#storeRecords()) this.#adoptPersistedRecord(record);
+  }
+
+  /** Pick up records a second process (or an earlier prune) wrote meanwhile. */
+  #mergePersistedJobs() {
+    for (const record of this.#storeRecords()) this.#adoptPersistedRecord(record);
+  }
+
+  /**
+   * First connection to a host after a restart: resolve that machine's
+   * persisted jobs instead of leaving them `unknown` until the next listing.
+   * Called fire-and-forget from the connection handler; never affects dialling.
+   */
+  async #refreshPersistedJobs(host) {
+    const pending = [...this.#jobs.values()].filter(
+      (job) => job.host === host && job.persisted === true && job.state !== 'exited',
+    );
+    if (pending.length === 0) return;
+    await this.#probeHostJobs(host, pending);
+  }
+
+  /**
+   * Write one job through to the JSON store, skipping unchanged records: the
+   * state poll would otherwise rewrite the file every couple of seconds.
+   */
+  #syncJob(job) {
+    const store = this.#jobStore;
+    if (!store || typeof store.upsert !== 'function') return;
+    const record = {
+      id: job.id,
+      host: job.host,
+      label: job.label ?? null,
+      command: job.command ?? null,
+      sessionId: job.sessionId ?? null,
+      pid: job.pid ?? null,
+      pgid: job.pgid ?? job.pid ?? null,
+      logPath: job.logPath ?? null,
+      commandLogPath: job.commandLogPath ?? null,
+      statusPath: job.statusPath ?? null,
+      cwd: job.cwd ?? null,
+      startedAt: job.startedAt ?? null,
+      exitedAt: job.exitedAt ?? null,
+      exitCode: job.exitCode ?? null,
+      exitSignal: job.exitSignal ?? null,
+      state: job.state ?? 'unknown',
+    };
+    const json = JSON.stringify(record);
+    if (json === job.lastPersistedJson) return;
+    try {
+      store.upsert(record);
+      job.lastPersistedJson = json;
+    } catch {
+      /* a read-only home must never fail a tool; the live job still works */
+    }
   }
 
   /**
@@ -756,7 +974,11 @@ export class PresencePool {
       id: job.id,
       host: job.host,
       pid: job.pid,
+      pgid: job.pgid ?? job.pid ?? null,
+      // The wrapper log (exit status) and, when the kernel exposes one, the
+      // command's own stdout/stderr log. Older kernels only have `logPath`.
       logPath: job.logPath,
+      commandLogPath: job.commandLogPath ?? null,
       statusPath: job.statusPath,
       state,
       exitCode,

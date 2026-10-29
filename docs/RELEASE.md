@@ -1,5 +1,72 @@
 # Presence 发布说明（Release）
 
+## v0.20.0 — hotfix + P1 batch
+
+安全热修 + P1 批次：本地会话不再静默借用远端工作区；新增条件等待原语 `presence_wait`；
+后台任务持久化；批量导入/导出与追加写；读后写状态修正；文档与系统提示。
+
+### 安全热修：会话不再静默解析到远端工作区
+- 症状（真实事故）：本地会话（cwd 在本地，如 `D:\02_Research\...`）调用 `presence_exec`
+  未带 host 时，会解析到**全局最后激活**的远端工作区（`workspaces.json` active=`lthpc-v6:/nas4/Tent`），
+  命令在错误的机器上、以错误的 cwd 执行。
+- 现在的解析顺序：会话 cwd 在挂载目录内 → 用挂载主机；显式 `host` → 用它；配置 `PRESENCE_HOST`
+  → 用它；否则**报错**（提示 `this session is local (cwd=...); pass an explicit host ...`）。
+  绝不回退到全局 active workspace。
+- `presence_hosts` 的 `default` 同样会话作用域（`sessionWorkspaceHost ?? PRESENCE_HOST`），
+  `workspace: true` 只标记本会话的挂载主机。
+- 系统提示改为按会话作用域：静态文本给出 (a) 远程工作区 / (b) 本地 两条明确规则，不再有
+  "如果 cwd 在挂载根下……"这种含糊条件；另外新增 per-agent 动态小节 `presence:session-scope`
+  （`agent/created` 时解析 cwd，本地会话直接看到 `This session is LOCAL (cwd=...)`，随 agent 释放）。
+- `presence_exec` 文本头改为 `host: <alias>  remote cwd: <abs>`，前台/后台报告一致；工具描述同步。
+
+### presence_wait 条件原语（第 25 个工具）
+- 条件（五选一）：`file`（`exists`/`minBytes`/`mtimeAfter`）、`grep`（`pattern`/`count`）、
+  `process`（`pid`/`pattern`/`alive`）、`port`（`open`/`closed`）、`job`（`jobId`）。
+- 返回 `{ met, timedOut, elapsedMs, observed, condition }`；**超时返回 `met:false`，不抛错**。
+- 选项：`timeoutMs` 默认 120000（上限 3600000），`pollMs`/`intervalMs` 默认 1000；每次轮询只发一个
+  有界远端调用（stat/grep/ps/connect）。
+- 取代 agent 手写的 sleep + tail 轮询循环。
+
+### 后台任务持久化 + 可信状态
+- 新增 `src/job-store.js`：`~/.dsh/presence/jobs.json`（`PRESENCE_JOBS_FILE` 可覆盖），原子写，
+  损坏文件备份后重置。
+- 任务记录跨 DSH 重启可见；启动时读入的记录状态为 `unknown`（不是 `running`），直到 pid 探活
+  成功；记录 `pid`/`pgid`/`exitCode`/`exitSignal`/`startedAt`/`exitedAt`，重启后退出码可能缺失。
+- 日志：`logPath` 是要 tail 的任务日志（当前内核里就是命令的 stdout/stderr）；`commandLogPath` 是
+  命令自己的日志，当前内核下等于 `logPath`（只有内核提供独立包装日志时才不同），请用
+  `commandLogPath ?? logPath`。
+- 后台启动保持 `setsid` 脱离，SSH 断开不影响任务。
+- `/state` 的 jobs 增加 `pid`、`pgid`、`commandLogPath`、`persisted`。
+
+### 批量传输与追加写
+- `presence_import`：新增 `paths[]`（1–50）和/或本地 `glob`（相对本地 cwd）+ `to` 目录，逐文件返回结果；
+  单文件行为不变。
+- `presence_export`：新增 `paths[]` 或远端 `glob`；默认本地文件名 = basename，重名冲突变成
+  `name-<sha8>.ext`；逐文件返回 `{remotePath, localPath, bytes, sha256}`；单文件行为不变。
+- `presence_write` 新增 `mode:"overwrite"|"append"`（默认 overwrite）：append 读取当前大小后在 EOF 追加，
+  返回追加字节数、总大小、sha256；`ifMatchSha256` 只在 overwrite 下有效，append 传入会直接报错；
+  `mode` 仍接受八进制权限字符串（如 `"755"`，仅 overwrite）。
+
+### 读后写状态（guard）
+- 路径 key 归一化：`presence://host/path`、挂载路径、工作区相对路径、远端绝对路径映射到同一个
+  canonical key；保留 legacy key。
+- `presence_read`/`presence_write`/`presence_edit` 成功都会发布 `fs/observed` 并记账（写也算已读），
+  后续内置 `edit` 可通过守卫。
+- 限制：`presence_exec` 的 `cat file` 无法回填守卫状态，**不计为已读** —— 文档写明。
+
+### 文档 / UI
+- README / README.zh-CN：本地 vs 远程会话警告（顶部 + Known limits）、`presence_wait`、任务持久化与
+  `commandLogPath`、批量/追加示例、读后写 guard 限制、工具表 25 个（移除从未注册的过时 `presence_ls` 行）、
+  长时间任务 recipe 扩展、安装/开发版本号 0.20.0。
+- `index.js` 系统提示：会话作用域分支 + hotfix 措辞（backend owner 实现）。
+- 设置页无新增 UI。
+
+### 验证
+- `p1-docs-probe` 51/51（README/zh/RELEASE 锚点、工具表 25、版本号、双语同步、hotfix 警告与
+  `commandLogPath ?? logPath` 语义，无网络）。
+- `p1-backend-probe`、`p1-tools-probe`、`tool-probe`、`regression`、`api-probe` 由对应 owner 运行；
+  `build-client` 只在客户端改动时执行（本批无 UI 改动）。（verification counts 由 Lead 整合时补齐）
+
 ## v0.19.0 — P0 batch
 
 P0 反馈整批修复（工具面、输出卫生、超时语义、长任务指引、危险命令分段、连接状态可信度、文档），

@@ -22,6 +22,12 @@
 
 ---
 
+> ⚠️ **本地会话不会绑定远端工作区。** 在 Presence 里打开一个远程工作区，并不会把本地 agent
+> 会话变成远端会话。当会话工作目录不在 presence 挂载根下时，`presence_exec` 及其他
+> `presence_*` 工具必须显式传 `host`（或配置 `PRESENCE_HOST`）；否则会带着当前 cwd 报错，
+> 而不是静默跑到上一次激活的机器上。在远程工作区内启动的会话则自动解析到该机器。
+> 详见[已知边界](#已知边界)。
+
 ## 为什么不是「agent 跑在远端」
 
 在每台服务器上装 agent，意味着装 N 次、升级 N 次、逐台配代理；让本地 agent 每次
@@ -43,6 +49,10 @@ Presence 让 agent 留在本机，**通过每台机器一条常驻 SSH 连接把
 - **用目标机的原生工具** —— `rg`/`grep` 在目标机跑，命令在目标 shell 里执行；路径、权限、编码都是远端的语义。
 - **接近本地的编辑** —— 原子写、保留 mode、锚点歧义拒绝、读后写守卫、`presence_edit` 的 dry-run diff。
 - **真正的远程工作区** —— 远端目录注册成普通 DSH 工作区，文件树、终端都**开在远端机器上**。
+- **会话有作用域（0.20 热修）** —— 本地会话不再静默借用上一次激活的远程工作区：`presence_*` 必须显式传 `host` 或配置 `PRESENCE_HOST`；系统提示会告诉每个会话自己是本地还是远程工作区。
+- **条件等待，不用 sleep** —— `presence_wait` 等文件（`exists`/`minBytes`/`mtimeAfter`）、grep 命中数、进程（`pid`/`pattern`）、端口状态或任务 id；超时返回 `met:false`，不是错误。
+- **任务跨重启存活** —— 后台任务持久化到 `~/.dsh/presence/jobs.json`，带 pid/pgid；`logPath` 是要 tail 的任务日志，`commandLogPath` 是命令自己的日志（当前内核里等于 `logPath`；只有内核提供独立包装日志时才不同），用 `commandLogPath ?? logPath`；重启后状态是 `unknown` 直到探活，不会假装 `running`，退出码可能缺失。
+- **批量传输与追加写** —— `presence_import`/`presence_export` 支持 `paths[]`（1–50）或 glob，逐文件返回；`presence_write { mode:"append" }` 追加写。
 - **可恢复的删除** —— 危险 shell 命令先 dry-run；`presence_trash` 移入远端回收站并可恢复。
 - **`@` 能补全远端文件** —— 远程工作区里，文件引用补全直接索引目标机（`rg --files`，回退 `find`），不是本地镜像。
 - **文件操作不只是读** —— `presence_mkdir` / `move` / `copy` / `chmod`，文件树右键菜单直接操作；删除走可恢复回收站。
@@ -56,7 +66,7 @@ Presence 让 agent 留在本机，**通过每台机器一条常驻 SSH 连接把
 ### 1. 安装 DSH 插件
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.19.0
+dsh plugin add @rjfan/dsh-presence@0.20.0
 ```
 
 从源码安装：
@@ -70,6 +80,9 @@ dsh plugin add /path/to/dsh-presence
 打开 **设置 → Presence → 新建**，从 `~/.ssh/config` 选一台机器（或直接粘贴一条
 `ssh` 命令），再选一个远端目录。它会以工作区出现：左侧文件树、终端和 agent 工具
 都使用这个远端目录。
+
+在该工作区里启动的会话就是远程会话；在其它地方（例如普通本地项目）启动的会话仍是本地
+会话：调用 `presence_exec` / `presence_*` 前必须显式传 `host`，或配置 `PRESENCE_HOST`。
 
 ### 3. 开始用
 
@@ -143,8 +156,9 @@ Linux 主机上的实测：
 
 ## 工具
 
-DSH 插件提供 24 个工具。相对路径相对当前远程工作区；在工作区里 `host` 可省略。执行时接受
-参数别名（`path`/`file_path`/`filePath`、`old`/`oldString`、`new`/`newString`、
+DSH 插件提供 25 个工具。在远程工作区会话里，相对路径相对该工作区、`host` 可省略；**本地**
+会话必须显式传 `host`（或配置 `PRESENCE_HOST`）—— 不会回退到全局最后激活的工作区。执行时
+接受参数别名（`path`/`file_path`/`filePath`、`old`/`oldString`、`new`/`newString`、
 `cwd`/`workdir` 等），习惯写法都能用。
 
 <details>
@@ -152,15 +166,15 @@ DSH 插件提供 24 个工具。相对路径相对当前远程工作区；在工
 
 | 工具 | 说明 |
 | --- | --- |
-| `presence_hosts` | 列出 SSH 主机、连接状态和默认主机（支持 `format:"json"`）；`workspace:true` 标记当前会话的机器，`degraded` 行带最后一次错误。 |
+| `presence_hosts` | 列出 SSH 主机、连接状态和默认主机（支持 `format:"json"`）；`workspace:true` 标记当前会话的机器，`degraded` 行带最后一次错误。`default` 是会话作用域：当前会话的挂载主机或 `PRESENCE_HOST`，绝不是全局最后激活的工作区。 |
 | `presence_connect` | 建立/复用连接并返回远端身份。 |
-| `presence_exec` | 执行远端命令；`pipefail`、`background`、`waitForPort`、结构化 JSON、`saveStdout`；超时默认 300 秒；`progress` 归一化 `\r` 进度条；超长输出落盘到远端文件并返回路径（`tailLines`）；危险命令先 dry-run —— `confirm:true` 执行整条命令，`confirm:"partial"` 只执行安全分段。 |
-| `presence_jobs` | 后台任务：`list`、`status`、`wait`（含 `timedOut`）、`stop`（`alive`/`verified`/`portReleased`）。 |
+| `presence_exec` | 执行远端命令；`pipefail`、`background`、`waitForPort`、结构化 JSON、`saveStdout`；超时默认 300 秒；`progress` 归一化 `\r` 进度条；超长输出落盘到远端文件并返回路径（`tailLines`）；文本报告以 `host: <alias>  remote cwd: <abs>` 开头；危险命令先 dry-run —— `confirm:true` 执行整条命令，`confirm:"partial"` 只执行安全分段。本地会话必须传 `host`。 |
+| `presence_jobs` | 后台任务：`list`、`status`、`wait`（含 `timedOut`）、`stop`（`alive`/`verified`/`portReleased`）、`purge`。任务持久化到 `~/.dsh/presence/jobs.json`，含 `pid`/`pgid`；`logPath` 是要 tail 的任务日志（当前内核里即命令 stdout/stderr），`commandLogPath` 是命令自己的日志（当前内核里等于 `logPath`，用 `commandLogPath ?? logPath`）。重启后状态为 `unknown` 直到探活成功，退出码可能缺失。`/presence/api/state` 的 job 行还带 `pid`、`pgid`、`commandLogPath`、`persisted`。 |
+| `presence_wait` | 阻塞直到某个远端条件成立（五选一）：`file {path, exists?, minBytes?, mtimeAfter?}`、`grep {path, pattern, count?}`、`process {pid\|pattern, alive?}`、`port {port, state:"open"\|"closed"}`、`job {jobId}`（job 条件不需要 `host`，注册表知道它跑在哪台机器）。返回 `{ met, timedOut, elapsedMs, observed, condition, polls }`；超时是 `met:false`，**不会报错**。`timeoutMs` 默认 120 秒（上限 1 小时），`pollMs`/`intervalMs` 默认 1000 ms。 |
 | `presence_read` | 读远端文件，带行号、`offset`/`limit`，`raw:true` 返回逐字节原样内容。 |
 | `presence_read_many` | 一次读 1–50 个文件，支持每文件字节/行数上限。 |
-| `presence_write` | 原子写；保留 mode；返回真实 mode、字节数和完整 sha256；`ifMatchSha256` 乐观锁。 |
+| `presence_write` | 原子写；保留 mode；返回真实 mode、字节数和完整 sha256；`ifMatchSha256` 乐观锁；`mode:"append"` 在 EOF 追加，返回追加字节数和总大小（`ifMatchSha256` 仅 overwrite 有效，append 传入会直接报错）；`mode` 也可传八进制字符串（如 `"755"`）设置 overwrite 权限。 |
 | `presence_edit` | 精确文本替换或行号区间替换，带紧凑 diff、`dryRun` 和 JSON 字段。 |
-| `presence_ls` | 列目录；`recursive`、`totalBytes`、JSON 输出。 |
 | `presence_stat` | 批量 `stat` 1–100 个路径：类型、大小、mode、mtime、可选 sha256；缺失路径返回 `exists:false`。 |
 | `presence_mkdir` | 创建远端目录（默认递归）；已存在时幂等成功。 |
 | `presence_move` | 同一台机器内重命名/移动；目标已存在时除非 `overwrite:true` 否则拒绝。 |
@@ -170,8 +184,8 @@ DSH 插件提供 24 个工具。相对路径相对当前远程工作区；在工
 | `presence_tail` | 读远端文件最后 N 行，或在限定时间内跟随（`follow:true`、`timeoutMs`）。 |
 | `presence_search` | 远端 `rg`/`grep` 搜索，`countOnly`，JSON matches。 |
 | `presence_glob` | 远端 glob 找文件，带 size/mtime。 |
-| `presence_import` | 本地 → 远端二进制安全上传，可设 mode，返回 sha256。 |
-| `presence_export` | 远端 → 本地真实文件（内容寻址），供预览或原生程序打开。 |
+| `presence_import` | 本地 → 远端二进制安全上传，可设 mode，返回 sha256；支持批量 `paths[]`（1–50）和/或本地 `glob` 到 `to` 目录，逐文件返回结果。 |
+| `presence_export` | 远端 → 本地真实文件（内容寻址），供预览或原生程序打开；支持批量 `paths[]` 或远端 `glob`；默认本地文件名取 basename，重名变成 `name-<sha8>.ext`；逐文件返回结果。 |
 | `presence_forward` | 远端端口转发到 `127.0.0.1`；open/list/close 支持 JSON。 |
 | `presence_port_probe` | 检查最多 20 个端口的监听与 TCP 可达性；`expect:open|closed` 可轮询。 |
 | `presence_http_probe` | 等端口 → 开转发 → 本地 HTTP 断言 → 关转发 → 验证本地端口已释放。 |
@@ -180,13 +194,27 @@ DSH 插件提供 24 个工具。相对路径相对当前远程工作区；在工
 
 </details>
 
+### 批量传输与追加写
+
+```text
+presence_export { paths: ["/data/a.pt", "/data/b.pt"] }      # files:[{remotePath, localPath, bytes, sha256}]
+presence_export { glob: "/data/ckpt-*.pt" }                   # 全部匹配；重名变成 name-<sha8>.ext
+presence_import { glob: "dist/*.whl", to: "/data/wheels" }    # 本地 → 远端，逐文件结果
+presence_write { path: "/data/train.log", mode: "append", content: "epoch 6 done\n" }
+```
+
+单文件仍走原来的 `path`/`to`，上面的写法都不是必需的。
+
 ## 路径与工具怎么选
 
 | 路径在哪 | 用什么 | 说明 |
 | --- | --- | --- |
 | 工作区挂载目录下（`~/.dsh/presence/mounts/...`） | 内置 `read` / `write` / `edit` / `grep` / `glob` | 都直达远端机器；`grep`/`glob` 会自动路由过去 |
-| 工作区之外的远端绝对路径（`/data`、`/scratch`、GPFS） | `presence_read` / `write` / `edit` / `ls` / `stat` / `search` / `glob` | 内置工具只看得到挂载目录，看不到整台机器 |
+| 工作区之外的远端绝对路径（`/data`、`/scratch`、GPFS） | `presence_read` / `write` / `edit` / `stat` / `search` / `glob`（列目录用 `presence_exec`） | 内置工具只看得到挂载目录，看不到整台机器 |
 | 本地文件（预览或 Office） | 先 `presence_export`，再 `present` / 原生打开 | 挂载路径是虚拟的，只有真实本地文件能被原生程序打开 |
+
+**本地**会话（cwd 不在挂载根下）里内置工具只操作本地文件；每个 `presence_*` 调用都需要显式
+`host`，或一次性配置 `PRESENCE_HOST`。
 
 ## 长时间任务
 
@@ -194,12 +222,21 @@ DSH 插件提供 24 个工具。相对路径相对当前远程工作区；在工
 
 ```text
 1. presence_exec { command: "python train.py --lr 3e-4", background: true, label: "train-3e-4" }
-   → { id: "j7", pid: 4242, logPath: "/tmp/presence-jobs/....log" }
-2. presence_jobs { action: "wait", jobId: "j7" }        # 阻塞等待，不要 sleep+poll
-3. presence_tail { path: "/tmp/presence-jobs/....log", follow: true }   # 看进度
+   → { id: "j7", pid: 4242, pgid: 4242, logPath: ".../job.log", commandLogPath: ".../job.out" }
+2. presence_jobs { action: "wait", jobId: "j7" }      # 或 presence_wait { job: { jobId: "j7" } }
+3. presence_tail { path: <logPath>, follow: true }    # 看进度
+   presence_wait { grep: { path: <logPath>, pattern: "epoch 6", count: 1 } }   # 等就绪
 ```
 
-- `presence_jobs { action: "status" }` 取快照；`stop` 结束进程组并验证端口已释放。
+- `presence_jobs { action: "status" }` 取快照；`stop` 结束进程组并验证端口已释放。任务持久化到
+  `~/.dsh/presence/jobs.json`：DSH 重启后先显示 `unknown`，直到探活成功（不会假装 `running`），
+  退出码可能缺失。
+- `logPath` 是要 tail 的任务日志（当前内核里就是命令输出）；`commandLogPath` 是命令自己的日志，
+  没有独立包装日志时等于 `logPath`，所以用 `commandLogPath ?? logPath`。
+- `presence_wait` 取代手写 sleep+tail 循环：等端口
+  （`presence_wait { port: { port: 8000, state: "open" } }`）、等 checkpoint
+  （`presence_wait { file: { path: "/data/ckpt.pt", minBytes: 1000000 } }`）、等日志行或等进程。
+  超时返回 `met:false`，是正常结果而不是错误。
 - 交互式任务：`presence_terminal { action: "open", session: "train" }`，tmux 会话跨重连存活。
 - **不要**在前台 `presence_exec` 里用 `nohup`、`tmux new-session` 或结尾 `&` 跑长任务：登录节点
   会话结束时，集群可能清理残留进程。`background: true` 本身用 `setsid` 脱离；调度器管理的集群
@@ -215,7 +252,10 @@ DSH 插件提供 24 个工具。相对路径相对当前远程工作区；在工
   （它不可能删掉一棵树）。
 - **工作区内删除优先 `presence_trash`**：移动到 `~/.dsh/presence-trash/<时间戳>/` 并返回恢复提示。
 - **写入是原子的**，保留原文件 mode；`presence_edit` 锚点不唯一时报错而不是猜。
-- **读后写守卫**：内置 `read`/`write`/`edit` 共享读后写守卫；`presence_write` 也会记账，两套 API 可混用。
+- **读后写守卫**：内置 `read`/`write`/`edit` 共享读后写守卫。路径 key 会在 `presence://`、挂载路径、
+  工作区相对路径、远端绝对路径之间归一；`presence_read` / `presence_write` / `presence_edit` 成功都算
+  「已读」（写也算）。`presence_exec` 里 `cat file` **不算** —— 守卫看不到 shell 输出；编辑前请用
+  `presence_read` 或内置 `read`。
 
 ## 配置
 
@@ -223,8 +263,9 @@ DSH 插件提供 24 个工具。相对路径相对当前远程工作区；在工
 
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
-| `PRESENCE_HOST` | — | 默认 SSH 主机（`~/.ssh/config` 别名或手动主机）。 |
+| `PRESENCE_HOST` | — | **本地**会话的默认 SSH 主机（显式 opt-in；MCP server 也用）。远程工作区会话优先使用自己的挂载主机。 |
 | `PRESENCE_WORKSPACE` | — | `host:/abs/path`，绑定一个远程工作区。 |
+| `PRESENCE_JOBS_FILE` | `~/.dsh/presence/jobs.json` | 覆盖后台任务持久化文件路径。 |
 | `PRESENCE_PASSWORD_<ALIAS>` | — | 某台机器的密码；`<ALIAS>` 大写、非字母数字换成 `_`。 |
 | `PRESENCE_MAX_CHANNELS` | 8 | 每连接并发通道数。 |
 | `PRESENCE_CONNECT_TIMEOUT_MS` | 25000 | 连接尝试超时。 |
@@ -242,8 +283,8 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.19.0
-# → dist/presence-plugin-0.19.0.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.20.0
+# → dist/presence-plugin-0.20.0.zip
 ```
 
 验证脚本需要一台可 SSH 的主机（标注“不需要真机”的除外）：
@@ -255,14 +296,26 @@ node scripts/feature-probe.mjs server  # wait、会话、pgid、就绪、搜索
 node scripts/import-probe.mjs server   # 本地→远端二进制、mode、sha256
 node scripts/safety-probe.mjs server   # 危险命令护栏 + 观测状态
 node scripts/p0-guard-probe.mjs        # 危险命令分段/单文件豁免（不需要真机）
+node scripts/p1-docs-probe.mjs         # README/zh/RELEASE 锚点（不需要真机）
 ```
 
 ## 已知边界
 
+- **本地会话（有意行为）。** 本地会话不传 `host` 调 `presence_*` 现在会报
+  `this session is local (cwd=...); pass an explicit host ...` —— 这是 0.20 有意的行为，不是 bug：
+  旧逻辑会静默复用上一次激活的远程工作区，可能在别的会话的机器上执行命令。每次调用传 `host`，
+  或一次性配置 `PRESENCE_HOST` 作为显式默认值；本地会话仍然不会继承别的工作区，
+  `presence_hosts` 的 `default` 同样是会话作用域。
+- 读后写守卫看不到 shell 输出：`presence_exec { command: "cat file" }`（或 `sed -n`）**不会**把
+  文件标记为已读；`presence_read` 和内置 `read` 才算，`presence_write`/`presence_edit` 也算已读。
+  只 `exec cat` 过再让内置 `edit` 编辑，仍可能触发守卫。
 - 挂载路径（`~/.dsh/presence/mounts/...`）是虚拟的：对 `ctx.fs` / agent 工具有效，
   但 Explorer、Office、宿主 Python 看不到 —— 需要先用 `presence_export`。
 - `presence_exec` 超时默认 300 秒；更长的任务必须用 `background: true`（前台输出超限会
-  落盘到远端文件，`tailLines` 保留长报告末尾）。后台任务按会话跟踪，不跨 DSH 重启持久化。
+  落盘到远端文件，`tailLines` 保留长报告末尾）。后台任务持久化到
+  `~/.dsh/presence/jobs.json`；DSH 重启后状态是 `unknown` 直到探活成功 —— 不要把持久化记录
+  当成还在运行，退出码可能缺失。要 tail 的日志用 `commandLogPath ?? logPath`（当前内核里
+  `logPath` 就是命令输出）。
 - 登录节点可能在会话结束时清理残留进程：不要在前台 `presence_exec` 里用 `nohup` /
   `tmux new-session` / `&` 跑长任务。用 `background: true`（`setsid` 脱离）或
   `presence_terminal`（tmux）；集群上让调度器持有任务（`rlaunch -d`、`salloc`/`sbatch`）。
