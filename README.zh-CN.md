@@ -66,7 +66,7 @@ Presence 让 agent 留在本机，**通过每台机器一条常驻 SSH 连接把
 ### 1. 安装 DSH 插件
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.20.0
+dsh plugin add @rjfan/dsh-presence@0.20.1
 ```
 
 从源码安装：
@@ -283,8 +283,16 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.20.0
-# → dist/presence-plugin-0.20.0.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.20.1
+# → dist/presence-plugin-0.20.1.zip
+```
+
+DSH 升级后，用 Electron-as-Node 对着真实 Harness 运行时验证插件仍能激活
+（0.2.1-rc.5 的工具 schema 收紧就是这一步发现的）：
+
+```powershell
+$env:ELECTRON_RUN_AS_NODE = '1'
+& 'C:\...\DeepSeek Harness.exe' scripts\host-compat-check.mjs   # ACTIVATED OK with 25 tools
 ```
 
 验证脚本需要一台可 SSH 的主机（标注“不需要真机”的除外）：

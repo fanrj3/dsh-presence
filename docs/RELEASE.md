@@ -1,5 +1,20 @@
 # Presence 发布说明（Release）
 
+## v0.20.1 — DSH 0.2.1-rc.5 兼容性热修
+
+DSH 0.2.1-rc.5（2026-10-29 nightly）收紧了工具参数 JSON Schema 校验：对象类型参数必须显式声明
+`additionalProperties`。`presence_wait` 的五个条件对象（file/grep/process/port/job）缺少该字段，
+`defineTool` 在插件激活时抛 `JsonSchemaError`，导致 host 插件 fiber `failed`：设置页仍显示 Presence，
+但工作区列表为空，所有 `/presence/api/*` 返回 404（这就是「更新 DSH 后远程工作区消失 + HTTP 404」）。
+
+修复：
+- 五个条件对象改为完整嵌套 schema（`properties` + `required` + `additionalProperties: false`），
+  同时把条件字段（path/pattern/pid/port/jobId…）真正暴露给模型；
+- 用真实的 DSH runtime（`cordis` + `dsh-tools`，Electron-as-Node）复现并验证 25 个工具全部通过新校验，
+  插件 apply 激活通过；随后 p1-tools 50/50、tool-probe 32/32、p1-backend 60/60、regression 7/7 回归。
+
+升级：`dsh plugin add @rjfan/dsh-presence@0.20.1`，源码 link 安装则重启 DSH 即可。
+
 ## v0.20.0 — hotfix + P1 batch
 
 安全热修 + P1 批次：本地会话不再静默借用远端工作区；新增条件等待原语 `presence_wait`；

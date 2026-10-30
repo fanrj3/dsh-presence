@@ -108,13 +108,13 @@ for (const [label, text, phrase] of [
   ['README.md', readme, 'A local session is not bound to a remote workspace'],
   ['README.zh-CN.md', readmeZh, '本地会话不会绑定远端工作区'],
 ]) {
-  check(`${label}: version 0.20.0 in install and development commands`, () => {
+  check(`${label}: version 0.20.1 in install and development commands`, () => {
     const body = flat(text);
-    expect(body.includes('@rjfan/dsh-presence@0.20.0'), 'missing install version @rjfan/dsh-presence@0.20.0');
-    expect(body.includes('-Version 0.20.0'), 'missing package.ps1 -Version 0.20.0');
-    expect(body.includes('presence-plugin-0.20.0.zip'), 'missing dist/presence-plugin-0.20.0.zip');
+    expect(body.includes('@rjfan/dsh-presence@0.20.1'), 'missing install version @rjfan/dsh-presence@0.20.1');
+    expect(body.includes('-Version 0.20.1'), 'missing package.ps1 -Version 0.20.1');
+    expect(body.includes('presence-plugin-0.20.1.zip'), 'missing dist/presence-plugin-0.20.1.zip');
     expect(!body.includes('@rjfan/dsh-presence@0.19.0'), 'stale 0.19.0 install version');
-    return '0.20.0';
+    return '0.20.1';
   });
   check(`${label}: local-vs-remote session warning near the top`, () => {
     const at = flat(text).indexOf(phrase);
@@ -336,6 +336,15 @@ check('docs/RELEASE.md: v0.20.0 precedes v0.19.0', () => {
   const v19 = release.indexOf('## v0.19.0');
   expect(v20 >= 0 && v19 >= 0, 'missing a version section');
   expect(v20 < v19, 'v0.20.0 is not the newest section');
+  return 'newest';
+});
+check('docs/RELEASE.md: v0.20.1 compatibility hotfix is the newest section', () => {
+  const v201 = release.indexOf('## v0.20.1');
+  const v200 = release.indexOf('## v0.20.0');
+  expect(v201 >= 0 && v200 >= 0, 'missing the v0.20.1 section');
+  expect(v201 < v200, 'v0.20.1 is not above v0.20.0');
+  expect(release.includes('DSH 0.2.1-rc.5'), 'missing the DSH compatibility note');
+  expect(release.includes('additionalProperties'), 'missing the schema hotfix explanation');
   return 'newest';
 });
 check('docs/RELEASE.md: v0.20.0 covers hotfix + P1 items', () => {

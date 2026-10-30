@@ -107,7 +107,7 @@ higher median interaction latency.</sub>
 ### 1. Install the DSH plugin
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.20.0
+dsh plugin add @rjfan/dsh-presence@0.20.1
 ```
 
 From a source checkout:
@@ -342,8 +342,16 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.20.0
-# → dist/presence-plugin-0.20.0.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.20.1
+# → dist/presence-plugin-0.20.1.zip
+```
+
+After a DSH update, prove the plugin still activates against the shipped runtime
+(Electron-as-Node; this is what caught the 0.2.1-rc.5 tool-schema tightening):
+
+```powershell
+$env:ELECTRON_RUN_AS_NODE = '1'
+& 'C:\...\DeepSeek Harness.exe' scripts\host-compat-check.mjs   # ACTIVATED OK with 25 tools
 ```
 
 Tests need one SSH-reachable host unless noted:

@@ -1758,22 +1758,53 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         intervalMs: { type: 'number', description: 'Alias for pollMs.' },
         file: {
           type: 'object',
+          additionalProperties: false,
+          properties: {
+            path: { type: 'string', required: true, description: 'Remote path to watch.' },
+            exists: { type: 'boolean', description: 'Wait until the path exists (default true) or disappears (false).' },
+            minBytes: { type: 'number', description: 'Wait until a regular file is at least this many bytes.' },
+            mtimeAfter: {
+              oneOf: [{ type: 'number' }, { type: 'string' }],
+              description: 'Wait until the file mtime is newer than this epoch ms, epoch seconds or ISO timestamp.',
+            },
+          },
           description: 'Condition: {path, exists?: true, minBytes?, mtimeAfter?} — mtimeAfter accepts epoch ms, epoch seconds or an ISO timestamp.',
         },
         grep: {
           type: 'object',
+          additionalProperties: false,
+          properties: {
+            path: { type: 'string', required: true, description: 'Remote file to search.' },
+            pattern: { type: 'string', required: true, description: 'Extended regular expression to look for.' },
+            count: { type: 'number', description: 'Wait until at least this many lines match. Defaults to 1.' },
+          },
           description: 'Condition: {path, pattern, count?: 1} — met when at least `count` lines match the extended regex.',
         },
         process: {
           type: 'object',
+          additionalProperties: false,
+          properties: {
+            pid: { type: 'number', description: 'Process id to watch.' },
+            pattern: { type: 'string', description: 'pgrep -f pattern; exactly one of pid or pattern.' },
+            alive: { type: 'boolean', description: 'Wait until the process exists (default true) or is gone (false).' },
+          },
           description: 'Condition: {pid?|pattern, alive?: true} — exactly one of pid or pattern (pgrep -f).',
         },
         port: {
           type: 'object',
+          additionalProperties: false,
+          properties: {
+            port: { type: 'number', required: true, description: 'TCP port on the remote loopback.' },
+            state: { type: 'string', enum: ['open', 'closed'], description: 'Wait for the port to be open (default) or closed.' },
+          },
           description: 'Condition: {port, state?: "open"|"closed"} — TCP probe on the remote loopback.',
         },
         job: {
           type: 'object',
+          additionalProperties: false,
+          properties: {
+            jobId: { type: 'string', required: true, description: 'Background job id from presence_exec {background:true} or presence_jobs.' },
+          },
           description: 'Condition: {jobId} — met when the background job has exited (state "exited").',
         },
         format: {
