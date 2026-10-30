@@ -108,13 +108,13 @@ for (const [label, text, phrase] of [
   ['README.md', readme, 'A local session is not bound to a remote workspace'],
   ['README.zh-CN.md', readmeZh, '本地会话不会绑定远端工作区'],
 ]) {
-  check(`${label}: version 0.20.1 in install and development commands`, () => {
+  check(`${label}: version 0.20.2 in install and development commands`, () => {
     const body = flat(text);
-    expect(body.includes('@rjfan/dsh-presence@0.20.1'), 'missing install version @rjfan/dsh-presence@0.20.1');
-    expect(body.includes('-Version 0.20.1'), 'missing package.ps1 -Version 0.20.1');
-    expect(body.includes('presence-plugin-0.20.1.zip'), 'missing dist/presence-plugin-0.20.1.zip');
+    expect(body.includes('@rjfan/dsh-presence@0.20.2'), 'missing install version @rjfan/dsh-presence@0.20.2');
+    expect(body.includes('-Version 0.20.2'), 'missing package.ps1 -Version 0.20.2');
+    expect(body.includes('presence-plugin-0.20.2.zip'), 'missing dist/presence-plugin-0.20.2.zip');
     expect(!body.includes('@rjfan/dsh-presence@0.19.0'), 'stale 0.19.0 install version');
-    return '0.20.1';
+    return '0.20.2';
   });
   check(`${label}: local-vs-remote session warning near the top`, () => {
     const at = flat(text).indexOf(phrase);
@@ -345,6 +345,15 @@ check('docs/RELEASE.md: v0.20.1 compatibility hotfix is the newest section', () 
   expect(v201 < v200, 'v0.20.1 is not above v0.20.0');
   expect(release.includes('DSH 0.2.1-rc.5'), 'missing the DSH compatibility note');
   expect(release.includes('additionalProperties'), 'missing the schema hotfix explanation');
+  return 'newest';
+});
+check('docs/RELEASE.md: v0.20.2 export-progress hotfix is the newest section', () => {
+  const v202 = release.indexOf('## v0.20.2');
+  const v201 = release.indexOf('## v0.20.1');
+  expect(v202 >= 0 && v201 >= 0, 'missing the v0.20.2 section');
+  expect(v202 < v201, 'v0.20.2 is not above v0.20.1');
+  expect(release.includes('latest.json'), 'missing the live progress note');
+  expect(release.includes('skipExisting'), 'missing the resume note');
   return 'newest';
 });
 check('docs/RELEASE.md: v0.20.0 covers hotfix + P1 items', () => {

@@ -1,5 +1,26 @@
 # Presence 发布说明（Release）
 
+## v0.20.2 — 大文件导出：进度 / 超时 / 断点续传 + 并行读
+
+问题（真实事件）：`presence_export` 批量导出 21 个 60 MB 的 checkpoint 分片（`h.pjlab...` → 本地），
+顺序 SFTP 读取每次只发一个 READ（实测约 0.35 MiB/s），跑了一小时；随后一次读**无限挂起**
+（连接没有读超时），本地目录停在 24/32，调用方看不到任何进度。
+
+修复：
+- `connection.readBytes` 改为并行 SFTP 请求（默认 16 路 × 64 KiB，自动补齐短读），每次请求 30 秒超时并重试一次。
+  同一跨洋主机实测 4 MiB 读取 0.35 → 0.44 MiB/s（端到端瓶颈在网络，但不再有单请求无限等待）。
+- `presence_export` 批量：
+  - 运行中把进度写到 `~/.dsh/presence/exports/latest.json`
+    （`total/done/current/currentBytes/currentTotal/exported/skipped/failed`），可随时读取；
+  - `skipExisting`（默认 true）：导出清单（`~/.dsh/presence/exports/manifest.json`，记录远端路径/大小/mtime/sha256）
+    匹配且本地文件完好时直接跳过；同名但不同路径的文件不会被误跳过，中断后重跑即续传；
+  - 尊重取消信号（`exec.signal`），单文件失败不丢弃已完成的文件，结果带 `progressPath`；
+  - 单文件/批量语义与 64 MiB 上限不变。
+- 文档：导出进度/超时/续传说明；跨慢速公网搬多 GB 数据改用 `scp`/`rsync`/`tar`。
+
+验证：新增 `scripts/export-progress-probe.mjs`（7/7：并行读一致、进度文档、续传跳过、取消报错）；
+tool-probe/p1-tools/regression 全绿。另测得 checkpoint 分片几乎不可压缩（4.19 MB → 3.87 MB gzip），压缩传输无意义。
+
 ## v0.20.1 — DSH 0.2.1-rc.5 兼容性热修
 
 DSH 0.2.1-rc.5（2026-10-29 nightly）收紧了工具参数 JSON Schema 校验：对象类型参数必须显式声明

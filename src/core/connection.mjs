@@ -1295,8 +1295,27 @@ export class PresenceConnection {
     return this.#home;
   }
 
-  /** Read a byte range; fixed-size requests keep the round trip predictable. */
-  async readBytes(path, { offset = 0, length = 256 * 1024 } = {}) {
+  /**
+   * Read a byte range. Large ranges are fetched with several concurrent SFTP
+   * requests: a single sequential read is round-trip bound (the server answers
+   * one READ at a time), which made a 60 MiB checkpoint take tens of minutes.
+   * Every request has its own timeout, so a stalled channel fails the read
+   * instead of hanging a tool call forever; an abort signal stops the workers.
+   *
+   * @returns the bytes read (at most `length`) plus the file info.
+   */
+  async readBytes(
+    path,
+    {
+      offset = 0,
+      length = 256 * 1024,
+      chunkSize = 64 * 1024,
+      concurrency = 16,
+      readTimeoutMs = 30_000,
+      onProgress = null,
+      signal = null,
+    } = {},
+  ) {
     const info = await this.stat(path);
     if (!info.exists) {
       const error = new Error(`no such file: ${path}`);
@@ -1306,17 +1325,70 @@ export class PresenceConnection {
     const size = Math.min(length, Math.max(0, info.size - offset));
     const buffer = Buffer.alloc(size);
     if (size === 0) return { buffer, info };
+
+    const chunk = Math.max(16 * 1024, Math.min(Number(chunkSize) || 64 * 1024, 1024 * 1024));
+    const lanes = Math.max(1, Math.min(Number(concurrency) || 16, 32));
     const handle = await this.#call('open', path, 'r');
     try {
-      let read = 0;
-      while (read < size) {
-        const chunk = await new Promise((resolve, reject) => {
-          this.#call('read', handle, buffer, read, size - read, offset + read).then(([, chunk]) => resolve(chunk), reject);
+      let next = 0;
+      let done = 0;
+      const readRange = (start, len) =>
+        new Promise((resolve, reject) => {
+          let settled = false;
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            reject(new Error(`SFTP read timed out after ${readTimeoutMs}ms at offset ${offset + start}`));
+          }, readTimeoutMs);
+          this.#call('read', handle, buffer, start, len, offset + start).then(
+            ([, data]) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resolve(data);
+            },
+            (error) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              reject(error);
+            },
+          );
         });
-        if (!chunk || chunk.length === 0) break;
-        read += chunk.length;
-      }
-      return { buffer: buffer.subarray(0, read), info };
+
+      const worker = async () => {
+        for (;;) {
+          if (signal?.aborted) throw new Error('command aborted');
+          const start = next;
+          if (start >= size) return;
+          const len = Math.min(chunk, size - start);
+          next = start + len;
+          let attempt = 0;
+          for (;;) {
+            attempt += 1;
+            try {
+              // The server may answer a large READ with a shorter packet; keep
+              // filling this range until it is complete.
+              let filled = 0;
+              while (filled < len) {
+                const data = await readRange(start + filled, len - filled);
+                if (!data || data.length === 0) {
+                  throw new Error(`SFTP read returned no data at offset ${offset + start + filled}`);
+                }
+                filled += data.length;
+                done += data.length;
+                onProgress?.(done, size);
+              }
+              break;
+            } catch (error) {
+              if (attempt >= 2 || signal?.aborted) throw error;
+              await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
+            }
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(lanes, Math.ceil(size / chunk) || 1) }, () => worker()));
+      return { buffer, info };
     } finally {
       await this.#call('close', handle).catch(() => {});
     }

@@ -3,7 +3,7 @@
 // and nothing is installed on the far side.
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { parseMountPath, parsePresenceUrl } from './mounts.js';
+import { parseMountPath, parsePresenceUrl, dshHome } from './mounts.js';
 import { remoteGlobDetailed, remoteGrep, splitGlobPattern } from './remote-search.js';
 import { guardDestructive } from './destructive.js';
 import { existsSync, globSync as nodeGlobSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -2187,7 +2187,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_export',
       description:
-        'Copy one or more remote files to real local files so desktop tools can open them. The workspace path is a virtual mount: Explorer, Office, Python and the `present` tool cannot see remote files directly. Export first, then present or open the returned local path. Single: `path` (or file_path) plus optional `to`. Batch: `paths` (1-50) and/or `glob` (remote-side, relative to the workspace root); every match is exported into the local export folder. The default local name is the remote basename; a name that already exists gets -<sha8> before the extension, so nothing is silently overwritten. format:\'json\' returns {files:[{remotePath, localPath, bytes, sha256}], exported, failed, errors}. Limit: 64 MiB per file.',
+        'Copy one or more remote files to real local files so desktop tools can open them. The workspace path is a virtual mount: Explorer, Office, Python and the `present` tool cannot see remote files directly. Export first, then present or open the returned local path. Single: `path` (or file_path) plus optional `to`. Batch: `paths` (1-50) and/or `glob` (remote-side, relative to the workspace root); every match is exported into the local export folder, sequentially. The default local name is the remote basename; a name that already exists gets -<sha8> before the extension, so nothing is silently overwritten. A batch skips files recorded in the export manifest (~/.dsh/presence/exports/manifest.json) when the remote path, size and mtime still match and the local copy is intact (`skipExisting:false` re-exports); progress is written while the call runs to <DSH_HOME>/presence/exports/latest.json ({total, done, current, currentBytes, currentTotal, exported, skipped, failed}); long reads use parallel SFTP requests with a 30 s per-request timeout, so a stalled connection fails that file instead of hanging the call. format:\'json\' returns {files:[{remotePath, localPath, bytes, sha256|skipped}], exported, skipped, failed, errors, progressPath}. Limit: 64 MiB per file; for multi-GB transfers over a slow link prefer scp/rsync/tar.',
       parameters: {
         host: {
           type: 'string',
@@ -2210,11 +2210,16 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           description:
             'Single path only: explicit local destination inside the export folder (or the local workspace). Defaults to the export folder + the remote basename.',
         },
+        skipExisting: {
+          type: 'boolean',
+          description:
+            'Batch only: skip a file when the export folder already holds one with the same basename and size (default true). Set false to re-export.',
+        },
         format: {
           type: 'string',
           enum: ['text', 'json'],
           description:
-            'Return one text block containing JSON: {files:[{remotePath, localPath, bytes, sha256}], exported, failed, errors}. Defaults to text.',
+            'Return one text block containing JSON: {files:[{remotePath, localPath, bytes, sha256|skipped}], exported, skipped, failed, errors, progressPath}. Defaults to text.',
         },
       },
       async execute(args, exec) {
@@ -2283,7 +2288,70 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         const usedNames = new Set();
         const files = [];
         const errors = [];
+        const skipExisting = args.skipExisting !== false;
+        // Progress is observable while the call is still running: write a small
+        // JSON document after each file and at most every ~750 ms during one.
+        const progressDirectory = joinPath(dshHome(), 'presence', 'exports');
+        const progressPath = joinPath(progressDirectory, 'latest.json');
+        const progress = {
+          host,
+          startedAt: new Date().toISOString(),
+          updatedAt: null,
+          total: targets.length,
+          done: 0,
+          current: null,
+          currentBytes: 0,
+          currentTotal: 0,
+          exported: 0,
+          skipped: 0,
+          failed: 0,
+          files: [],
+          errors: [],
+        };
+        let lastFlush = 0;
+        const flushProgress = (force = false) => {
+          const now = Date.now();
+          if (!force && now - lastFlush < 750) return;
+          lastFlush = now;
+          try {
+            progress.updatedAt = new Date().toISOString();
+            mkdirSync(progressDirectory, { recursive: true });
+            writeFileSync(progressPath, `${JSON.stringify(progress)}\n`);
+          } catch {
+            /* progress is observability, never a failure */
+          }
+        };
+        flushProgress(true);
+        // Resume is only safe when we can prove the local file came from the same
+        // remote file: a manifest keyed by remote path records size, mtime and
+        // hash. A same-name file from another directory or a changed remote file
+        // is never skipped silently.
+        const manifestPath = joinPath(progressDirectory, 'manifest.json');
+        let manifest = {};
+        try {
+          manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) ?? {};
+          if (typeof manifest !== 'object' || Array.isArray(manifest)) manifest = {};
+        } catch {
+          manifest = {};
+        }
+        const flushManifest = () => {
+          try {
+            mkdirSync(progressDirectory, { recursive: true });
+            writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+          } catch {
+            /* best effort */
+          }
+        };
+        const basenameCounts = new Map();
         for (const target of targets) {
+          const name = target.split('/').filter(Boolean).pop() ?? '';
+          basenameCounts.set(name, (basenameCounts.get(name) ?? 0) + 1);
+        }
+        for (const target of targets) {
+          progress.current = target;
+          progress.currentBytes = 0;
+          progress.currentTotal = 0;
+          flushProgress(true);
           try {
             const info = await connection.stat(target);
             if (!info.exists) throw new Error(`${target} does not exist on ${host}`);
@@ -2295,7 +2363,42 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
                 `${target} is ${info.size} bytes; export is capped at ${EXPORT_CAP} bytes — use presence_exec with scp/rsync for larger files`,
               );
             }
-            const { buffer } = await connection.readBytes(target, { offset: 0, length: info.size });
+            if (skipExisting && !singlePath) {
+              // Resume after an interrupted batch, but only for the exact file
+              // this call would have produced: manifest entry matches the remote
+              // path, size and mtime, and the local file is still intact.
+              const resumeName = target.split('/').filter(Boolean).pop() ?? '';
+              const recorded = manifest[target];
+              if (recorded && resumeName && basenameCounts.get(resumeName) === 1) {
+                try {
+                  const existing = statSync(recorded.localPath);
+                  const sameSize = existing.isFile() && existing.size === info.size && recorded.size === info.size;
+                  const sameMtime = String(recorded.mtime ?? '') === String(info.mtime ?? '');
+                  if (sameSize && sameMtime) {
+                    files.push({ remotePath: target, localPath: recorded.localPath, bytes: existing.size, skipped: true });
+                    progress.skipped += 1;
+                    progress.done += 1;
+                    progress.files.push({ remotePath: target, localPath: recorded.localPath, bytes: existing.size, skipped: true });
+                    progress.current = null;
+                    flushProgress(true);
+                    continue;
+                  }
+                } catch {
+                  /* no resumable file */
+                }
+              }
+            }
+            progress.currentTotal = info.size;
+            const { buffer } = await connection.readBytes(target, {
+              offset: 0,
+              length: info.size,
+              signal: exec?.signal ?? null,
+              onProgress: (done, total) => {
+                progress.currentBytes = done;
+                progress.currentTotal = total;
+                flushProgress();
+              },
+            });
             const digest = createHash('sha256').update(buffer).digest('hex');
             const destination = singlePath
               ? args.to ?? exportLocalTarget(folder, target, digest, usedNames)
@@ -2308,7 +2411,26 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
             mkdirSync(dirnamePath(absolute), { recursive: true });
             writeFileSync(absolute, buffer);
             files.push({ remotePath: target, localPath: absolute, bytes: buffer.length, sha256: digest });
+            manifest[target] = {
+              localPath: absolute,
+              size: buffer.length,
+              sha256: digest,
+              mtime: info.mtime ?? null,
+              at: new Date().toISOString(),
+            };
+            progress.exported += 1;
+            progress.done += 1;
+            progress.files.push({ remotePath: target, localPath: absolute, bytes: buffer.length, sha256: digest });
+            progress.current = null;
+            progress.currentBytes = 0;
+            progress.currentTotal = 0;
+            flushProgress(true);
           } catch (error) {
+            progress.errors.push({ remotePath: target, error: error?.message ?? String(error) });
+            progress.failed += 1;
+            progress.done += 1;
+            progress.current = null;
+            flushProgress(true);
             // A single export keeps its all-or-nothing error; a batch reports
             // each failure and still returns the files that did land.
             if (singlePath) throw error;
@@ -2316,8 +2438,17 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           }
         }
         pruneExports(folder);
+        flushProgress(true);
+        flushManifest();
         if (args.format === 'json') {
-          return jsonText({ files, exported: files.length, failed: errors.length, errors });
+          return jsonText({
+            files,
+            exported: progress.exported,
+            skipped: progress.skipped,
+            failed: errors.length,
+            errors,
+            progressPath,
+          });
         }
         if (files.length === 0) {
           return clip(
@@ -2333,10 +2464,10 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
             'That path is a real local file: present it, open it in Explorer, or read it with local tools.'
           );
         }
-        const lines = files.map((row) => `${row.remotePath} -> ${row.localPath}  (${formatBytes(row.bytes)})`);
+        const lines = files.map((row) => `${row.remotePath} -> ${row.localPath}  (${formatBytes(row.bytes)}${row.skipped ? ', already present' : ''})`);
         const failedLines = errors.map((row) => `FAILED ${row.remotePath}: ${row.error}`);
-        const header = `exported ${files.length}/${targets.length} file(s) from ${host} into ${folder}:`;
-        return clip([header, ...lines, ...failedLines].join('\n'));
+        const header = `exported ${progress.exported}/${targets.length} file(s) from ${host} into ${folder} (skipped ${progress.skipped}):`;
+        return clip([header, ...lines, ...failedLines, `progress: ${progressPath}`].join('\n'));
       },
     }),
 

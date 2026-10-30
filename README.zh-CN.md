@@ -66,7 +66,7 @@ Presence 让 agent 留在本机，**通过每台机器一条常驻 SSH 连接把
 ### 1. 安装 DSH 插件
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.20.1
+dsh plugin add @rjfan/dsh-presence@0.20.2
 ```
 
 从源码安装：
@@ -185,7 +185,7 @@ DSH 插件提供 25 个工具。在远程工作区会话里，相对路径相对
 | `presence_search` | 远端 `rg`/`grep` 搜索，`countOnly`，JSON matches。 |
 | `presence_glob` | 远端 glob 找文件，带 size/mtime。 |
 | `presence_import` | 本地 → 远端二进制安全上传，可设 mode，返回 sha256；支持批量 `paths[]`（1–50）和/或本地 `glob` 到 `to` 目录，逐文件返回结果。 |
-| `presence_export` | 远端 → 本地真实文件（内容寻址），供预览或原生程序打开；支持批量 `paths[]` 或远端 `glob`；默认本地文件名取 basename，重名变成 `name-<sha8>.ext`；逐文件返回结果。 |
+| `presence_export` | 远端 → 本地真实文件（内容寻址），供预览或原生程序打开；支持批量 `paths[]` 或远端 `glob`；默认本地文件名取 basename，重名变成 `name-<sha8>.ext`；逐文件返回结果。批量会跳过导出清单（`~/.dsh/presence/exports/manifest.json`）里记录、且远端路径/大小/mtime 仍匹配的文件（`skipExisting:false` 强制重导）；运行中实时进度写到 `~/.dsh/presence/exports/latest.json`，读取用并行 SFTP 请求、单次 30 秒超时，不会把调用挂死。 |
 | `presence_forward` | 远端端口转发到 `127.0.0.1`；open/list/close 支持 JSON。 |
 | `presence_port_probe` | 检查最多 20 个端口的监听与 TCP 可达性；`expect:open|closed` 可轮询。 |
 | `presence_http_probe` | 等端口 → 开转发 → 本地 HTTP 断言 → 关转发 → 验证本地端口已释放。 |
@@ -283,8 +283,8 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.20.1
-# → dist/presence-plugin-0.20.1.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.20.2
+# → dist/presence-plugin-0.20.2.zip
 ```
 
 DSH 升级后，用 Electron-as-Node 对着真实 Harness 运行时验证插件仍能激活
@@ -324,6 +324,10 @@ node scripts/p1-docs-probe.mjs         # README/zh/RELEASE 锚点（不需要真
   `~/.dsh/presence/jobs.json`；DSH 重启后状态是 `unknown` 直到探活成功 —— 不要把持久化记录
   当成还在运行，退出码可能缺失。要 tail 的日志用 `commandLogPath ?? logPath`（当前内核里
   `logPath` 就是命令输出）。
+- `presence_export` 单文件上限 64 MiB，批量按顺序执行。运行中进度写到
+  `~/.dsh/presence/exports/latest.json`；单次读取 30 秒超时（不会挂死调用）；重跑时会跳过
+  导出清单（`~/.dsh/presence/exports/manifest.json`）里远端路径/大小/mtime 仍匹配的文件。
+  跨慢速公网搬多 GB 数据时，请改用 shell 里的 `scp`/`rsync`/`tar`，不要用单次 export 调用。
 - 登录节点可能在会话结束时清理残留进程：不要在前台 `presence_exec` 里用 `nohup` /
   `tmux new-session` / `&` 跑长任务。用 `background: true`（`setsid` 脱离）或
   `presence_terminal`（tmux）；集群上让调度器持有任务（`rlaunch -d`、`salloc`/`sbatch`）。

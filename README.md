@@ -107,7 +107,7 @@ higher median interaction latency.</sub>
 ### 1. Install the DSH plugin
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.20.1
+dsh plugin add @rjfan/dsh-presence@0.20.2
 ```
 
 From a source checkout:
@@ -231,7 +231,7 @@ so an agent's habitual spelling still works.
 | `presence_search` | Remote `rg`/`grep` search, count-only mode, JSON matches. |
 | `presence_glob` | Find remote files by glob with size/mtime. |
 | `presence_import` | Local → remote binary-safe upload with mode and sha256; batch `paths[]` (1–50) and/or a local `glob` into a `to` directory, with one result per file. |
-| `presence_export` | Remote → local real file (content-addressed), for preview or native apps; batch `paths[]` or a remote `glob`; the local name defaults to the basename and a collision becomes `name-<sha8>.ext`; one result per file. |
+| `presence_export` | Remote → local real file (content-addressed), for preview or native apps; batch `paths[]` or a remote `glob`; the local name defaults to the basename and a collision becomes `name-<sha8>.ext`; one result per file. A batch skips files recorded in the export manifest (`~/.dsh/presence/exports/manifest.json`) when the remote path, size and mtime still match (`skipExisting:false` re-exports); live progress goes to `~/.dsh/presence/exports/latest.json`, reads use parallel SFTP requests, and each read times out after 30 s instead of hanging the call. |
 | `presence_forward` | Forward a remote port to `127.0.0.1`; open/list/close with JSON. |
 | `presence_port_probe` | Check listeners and TCP reachability for up to 20 ports; `expect:open|closed`, polling. |
 | `presence_http_probe` | Wait for port → forward → local HTTP assertions → close → verify the local port was released. |
@@ -342,8 +342,8 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.20.1
-# → dist/presence-plugin-0.20.1.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.20.2
+# → dist/presence-plugin-0.20.2.zip
 ```
 
 After a DSH update, prove the plugin still activates against the shipped runtime
@@ -387,6 +387,12 @@ node scripts/p1-docs-probe.mjs         # README/zh/RELEASE anchors (no host need
   DSH restart their state is `unknown` until a liveness probe succeeds — never assume a
   persisted job is still running, and its exit code may be missing. Tail
   `commandLogPath ?? logPath` (`logPath` holds the command output on current kernels).
+- `presence_export` moves at most 64 MiB per file and processes a batch sequentially.
+  Progress is written to `~/.dsh/presence/exports/latest.json` while it runs, a stalled
+  read fails after 30 s instead of hanging the call, and a re-run skips files recorded in
+  the export manifest with the same remote path, size and mtime
+  (`~/.dsh/presence/exports/manifest.json`). For multi-GB transfers over a slow WAN use
+  `scp`/`rsync`/`tar` from a shell instead of a single export call.
 - A login node may clean up processes left behind when a session closes: do not rely on
   `nohup` / `tmux new-session` / `&` started inside a foreground `presence_exec` for long
   jobs. Use `background: true` (detached with `setsid`) or `presence_terminal` (tmux),
