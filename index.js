@@ -14,6 +14,7 @@ import { TunnelStore } from './src/tunnel-store.js';
 import { PortDiscovery } from './src/port-discovery.js';
 import { installJobNotifier } from './src/job-notifier.js';
 import { installRemoteFileReferences } from './src/file-references.js';
+import { createWaitRegistry } from './src/waits.js';
 
 /** Bundle version, shown in the runtime context so agents notice capability changes. */
 const VERSION = (() => {
@@ -80,8 +81,13 @@ export function apply(ctx, config = {}) {
   // with the pool; both are handed to the Web API through `late`.
   const tunnelStore = new TunnelStore();
   const portDiscovery = new PortDiscovery(pool, { enabled: settings.portDiscovery !== false });
+  // 0.21 wait dock: in-memory registry shared by the wait tools (writers) and
+  // `GET /presence/api/waits` (reader). It is not persisted: a wait cannot
+  // survive the process that is blocking on it.
+  const waits = createWaitRegistry();
   ctx.effect(() => () => {
     portDiscovery.clear();
+    waits.dispose();
     pool.dispose();
     shared.pool = null;
   });
@@ -98,6 +104,8 @@ export function apply(ctx, config = {}) {
     tunnelStore,
     portDiscovery,
     jobStore,
+    // 0.21 wait dock registry, read by GET /presence/api/waits.
+    waits,
   };
   ctx.inject(['agents'], (scope) => {
     late.agents = scope.agents;
@@ -142,7 +150,7 @@ export function apply(ctx, config = {}) {
   });
   const { observe } = installObservationBridge(ctx, { cwdOf, late });
 
-  for (const definition of definePresenceTools(pool, settings, { cwdOf, observe })) {
+  for (const definition of definePresenceTools(pool, settings, { cwdOf, observe, waits })) {
     ctx.tools.register(definition);
   }
 

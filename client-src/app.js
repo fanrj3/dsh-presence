@@ -12,6 +12,22 @@ import {
   remoteBaseName,
   splitDiffLines,
 } from './features.js';
+import {
+  FINISHED_HOLD_MS,
+  POLL_COLLAPSED_MS,
+  POLL_EXPANDED_MS,
+  computeEta,
+  dockPresentation,
+  elapsedMs,
+  formatClock,
+  formatDurationShort,
+  formatElapsed,
+  formatProgress,
+  normalizeWaitsPayload,
+  pillLabelText,
+  progressRatio,
+  reduceSamples,
+} from './waits-ui.js';
 
 export function createApp({ React, ReactDOM }) {
     const h = React.createElement;
@@ -110,6 +126,40 @@ export function createApp({ React, ReactDOM }) {
         'toast.unsupportedFeature.hint': '把 Presence 升级到 0.18.0 之后再试',
         'toast.notifyDenied': '浏览器通知未开启',
         'toast.notifyDenied.hint': '可以在浏览器地址栏的权限设置里允许通知；站内提示仍会保留',
+        'waitDock.title': '等待任务',
+        'waitDock.expand': '展开等待面板',
+        'waitDock.collapse': '收起',
+        'waitDock.back': '返回',
+        'waitDock.running': '{count} 个等待',
+        'waitDock.donePill': '{count} 个已完成',
+        'waitDock.runningChip': '{count} 运行中',
+        'waitDock.finishedChip': '{count} 已完成',
+        'waitDock.state.running': '运行中',
+        'waitDock.state.done': '已完成',
+        'waitDock.state.timeout': '已超时',
+        'waitDock.state.error': '失败',
+        'waitDock.status': '状态',
+        'waitDock.progress': '进度',
+        'waitDock.kind': '类型',
+        'waitDock.kindJob': '后台任务',
+        'waitDock.kindWait': '条件等待',
+        'waitDock.host': '机器',
+        'waitDock.elapsed': '已等 {time}',
+        'waitDock.eta': '剩余 ~{time}',
+        'waitDock.noProgress': '无进度',
+        'waitDock.started': '开始于',
+        'waitDock.timeout': '超时上限',
+        'waitDock.exitCode': '退出码',
+        'waitDock.error': '错误',
+        'waitDock.lastLine': '最后一行',
+        'waitDock.samples': '进度采样',
+        'waitDock.noSamples': '暂无采样',
+        'waitDock.jobId': '任务 ID',
+        'waitDock.condition': '条件',
+        'waitDock.logPath': '日志',
+        'waitDock.command': '命令',
+        'waitDock.detail': '等待详情',
+        'waitDock.footHint': '点击一行查看详情；结束的任务保留 10 秒',
       },
       en: {
         'toast.copyFailed': 'Copy failed',
@@ -167,6 +217,40 @@ export function createApp({ React, ReactDOM }) {
         'toast.unsupportedFeature.hint': 'Upgrade Presence to 0.18.0 and try again',
         'toast.notifyDenied': 'Browser notifications are off',
         'toast.notifyDenied.hint': 'Allow notifications in the address-bar permissions; in-app toasts still work',
+        'waitDock.title': 'Waiting',
+        'waitDock.expand': 'Expand the wait dock',
+        'waitDock.collapse': 'Collapse',
+        'waitDock.back': 'Back',
+        'waitDock.running': '{count} waiting',
+        'waitDock.donePill': '{count} finished',
+        'waitDock.runningChip': '{count} running',
+        'waitDock.finishedChip': '{count} finished',
+        'waitDock.state.running': 'Running',
+        'waitDock.state.done': 'Done',
+        'waitDock.state.timeout': 'Timed out',
+        'waitDock.state.error': 'Failed',
+        'waitDock.status': 'Status',
+        'waitDock.progress': 'Progress',
+        'waitDock.kind': 'Kind',
+        'waitDock.kindJob': 'Job',
+        'waitDock.kindWait': 'Condition',
+        'waitDock.host': 'Host',
+        'waitDock.elapsed': 'Elapsed {time}',
+        'waitDock.eta': '~{time} left',
+        'waitDock.noProgress': 'No progress',
+        'waitDock.started': 'Started',
+        'waitDock.timeout': 'Timeout',
+        'waitDock.exitCode': 'Exit code',
+        'waitDock.error': 'Error',
+        'waitDock.lastLine': 'Last line',
+        'waitDock.samples': 'Progress samples',
+        'waitDock.noSamples': 'No samples yet',
+        'waitDock.jobId': 'Job ID',
+        'waitDock.condition': 'Condition',
+        'waitDock.logPath': 'Log',
+        'waitDock.command': 'Command',
+        'waitDock.detail': 'Wait details',
+        'waitDock.footHint': 'Click a row for details; finished waits stay 10 s',
       },
     };
 
@@ -494,6 +578,357 @@ export function createApp({ React, ReactDOM }) {
       }
     }
 
+    // ------------------------------------------------------- 0.21 wait dock
+    // `presence_jobs wait` / `presence_wait` used to block as a black box. The
+    // host now exposes GET /waits; one dock is mounted on document.body (like
+    // the toaster) so waits are visible over the chat no matter which panel is
+    // open. It stays a bottom-right pill until clicked.
+    function waitStateInfo(wait, translate = t) {
+      if (wait?.state === 'done') return { icon: 'check', className: 'is-done', label: translate('waitDock.state.done') };
+      if (wait?.state === 'timeout') return { icon: 'clock', className: 'is-timeout', label: translate('waitDock.state.timeout') };
+      if (wait?.state === 'error') return { icon: 'alert', className: 'is-error', label: translate('waitDock.state.error') };
+      return { icon: 'clock', className: 'is-running', label: translate('waitDock.state.running') };
+    }
+
+    /** One wait row: state, label, host, elapsed, progress bar / ETA, last line. */
+    function WaitDockRow({ wait, now, onOpen }) {
+      const info = waitStateInfo(wait);
+      const elapsed = formatElapsed(elapsedMs(wait, now));
+      const ratio = progressRatio(wait.progress);
+      const progressText = formatProgress(wait.progress);
+      const eta = computeEta(wait.samples, {
+        now,
+        done: wait.progress.done,
+        total: wait.progress.total,
+      });
+      const etaText = eta.reason === null && eta.etaMs !== null
+        ? t('waitDock.eta', { time: formatDurationShort(eta.etaMs) })
+        : null;
+      return h('div', {
+        className: `dp-wait-row ${info.className}`,
+        role: 'button',
+        tabIndex: 0,
+        title: wait.label,
+        onClick: onOpen,
+        onKeyDown: (event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          onOpen();
+        },
+      }, [
+        h('span', { key: 'state', className: 'dp-wait-state' },
+          wait.state === 'running' ? h(Spinner, { size: 13 }) : h(Icon, { name: info.icon, size: 15 })),
+        h('div', { key: 'main', className: 'dp-wait-main' }, [
+          h('div', { key: 'top', className: 'dp-wait-top' }, [
+            h('span', { key: 'label', className: 'dp-wait-label', title: wait.label }, wait.label),
+            wait.host ? h('span', { key: 'host', className: 'dp-wait-host', title: wait.host }, wait.host) : null,
+            h('span', {
+              key: 'elapsed',
+              className: 'dp-wait-elapsed',
+              title: t('waitDock.elapsed', { time: elapsed }),
+            }, elapsed),
+          ]),
+          ratio !== null
+            ? h('div', { key: 'bar', className: 'dp-wait-bar' }, h('div', {
+                className: 'dp-wait-bar-fill',
+                style: { width: `${Math.round(ratio * 100)}%` },
+              }))
+            : null,
+          h('div', { key: 'meta', className: 'dp-wait-meta' }, [
+            progressText
+              ? h('span', { key: 'progress', className: 'dp-wait-progress' }, progressText)
+              : h('span', { key: 'noProgress', className: 'dp-wait-progress is-muted' }, t('waitDock.noProgress')),
+            etaText
+              ? h('span', { key: 'eta', className: 'dp-wait-eta' }, etaText)
+              : h('span', { key: 'elapsedLong', className: 'dp-wait-eta' },
+                  t('waitDock.elapsed', { time: formatDurationShort(elapsedMs(wait, now)) })),
+            wait.state === 'running'
+              ? null
+              : h('span', { key: 'stateLabel', className: 'dp-wait-state-label' }, info.label),
+          ]),
+          wait.lastLine
+            ? h('div', { key: 'line', className: 'dp-wait-line', title: wait.lastLine }, wait.lastLine)
+            : null,
+        ]),
+      ]);
+    }
+
+    /** Detail view inside the card: metadata, full last line, sample list. */
+    function WaitDockDetail({ wait, now }) {
+      const info = waitStateInfo(wait);
+      const elapsed = formatElapsed(elapsedMs(wait, now));
+      const samples = reduceSamples(wait.samples, { maxPoints: 12, now });
+      const kv = (key, label, value) => {
+        if (value === null || value === undefined || value === '') return null;
+        const text = String(value);
+        return h('div', { key, className: 'dp-wait-kv' }, [
+          h('span', { key: 'k', className: 'dp-wait-k' }, label),
+          h('span', { key: 'v', className: 'dp-wait-v', title: text }, text),
+        ]);
+      };
+      return [
+        kv('status', t('waitDock.status'), info.label),
+        kv('kind', t('waitDock.kind'), wait.kind === 'wait' ? t('waitDock.kindWait') : t('waitDock.kindJob')),
+        kv('host', t('waitDock.host'), wait.host),
+        kv('started', t('waitDock.started'), `${formatClock(wait.startedAt)} · ${t('waitDock.elapsed', { time: elapsed })}`),
+        kv('progress', t('waitDock.progress'), formatProgress(wait.progress)),
+        kv('timeout', t('waitDock.timeout'), wait.timeoutMs !== null ? formatDurationShort(wait.timeoutMs) : null),
+        kv('jobId', t('waitDock.jobId'), wait.meta.jobId),
+        kv('condition', t('waitDock.condition'), wait.meta.condition),
+        kv('logPath', t('waitDock.logPath'), wait.meta.logPath),
+        kv('command', t('waitDock.command'), wait.meta.command),
+        kv('exitCode', t('waitDock.exitCode'), wait.exitCode),
+        kv('error', t('waitDock.error'), wait.error),
+        wait.lastLine
+          ? h('div', { key: 'lastLineLabel', className: 'dp-wait-sub' }, t('waitDock.lastLine'))
+          : null,
+        wait.lastLine
+          ? h('pre', { key: 'lastLine', className: 'dp-wait-monoline' }, wait.lastLine)
+          : null,
+        h('div', { key: 'samplesLabel', className: 'dp-wait-sub' }, t('waitDock.samples')),
+        samples.length === 0
+          ? h('div', { key: 'noSamples', className: 'dp-wait-sub' }, t('waitDock.noSamples'))
+          : h('div', { key: 'samples', className: 'dp-wait-samples' }, samples.map((sample, index) => h('div', {
+              key: `${sample.at}#${index}`,
+              className: 'dp-wait-sample',
+            }, [
+              h('span', { key: 'value' }, `${sample.done ?? '—'} / ${sample.total ?? '—'}`),
+              h('span', { key: 'clock' }, formatClock(sample.at)),
+            ]))),
+      ].filter(Boolean);
+    }
+
+    /**
+     * Floating wait dock. Polls GET /waits at 1.5 s while expanded and 5 s while
+     * collapsed/idle; a 404 from an older host hides it for the rest of the
+     * session. Finished entries stay 10 s (client-side) and then vanish.
+     */
+    function WaitDock() {
+      const [waits, setWaits] = useState([]);
+      const [now, setNow] = useState(() => Date.now());
+      const [expanded, setExpanded] = useState(false);
+      const [detailId, setDetailId] = useState(null);
+      const [supported, setSupported] = useState(true);
+      const [error, setError] = useState('');
+      const unsupportedRef = useRef(false);
+      const dockRef = useRef(null);
+      const lastFetchRef = useRef(0);
+
+      // Presentation is pure, so compute it before the effects: the polling
+      // interval depends on hidden/collapsed/expanded, and expanding must start
+      // the 1.5 s loop immediately instead of waiting for the 5 s tick.
+      const presentation = dockPresentation({ expanded, waits, now, holdMs: FINISHED_HOLD_MS });
+      const mode = presentation.mode;
+
+      useEffect(() => {
+        if (!supported) return undefined;
+        let disposed = false;
+        let timer = null;
+        // Per-effect-instance guard: a restart (expand/collapse) must not leave
+        // the new loop waiting for the previous instance's request.
+        let inflight = false;
+        const schedule = (ms) => {
+          if (disposed) return;
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(tick, ms);
+        };
+        async function tick() {
+          if (disposed || inflight) return;
+          inflight = true;
+          lastFetchRef.current = Date.now();
+          try {
+            const data = await request('/waits');
+            if (disposed) return;
+            const payload = normalizeWaitsPayload(data, Date.now());
+            setWaits(payload.waits);
+            setNow(payload.now || Date.now());
+            setError('');
+          } catch (err) {
+            if (disposed) return;
+            // 404/405 is the documented "old host"; the packaged desktop shell
+            // answers unknown plugin routes with 401, which means the same here.
+            if (isMissingEndpointError(err.message) || /HTTP 401\b/u.test(err.message)) {
+              // Older host: no /waits route. Hide the dock and stop polling.
+              unsupportedRef.current = true;
+              setSupported(false);
+              setWaits([]);
+              return;
+            }
+            setError(err.message);
+          } finally {
+            inflight = false;
+            if (!disposed && !unsupportedRef.current) {
+              // 1.5 s while the card is open; 5 s collapsed, idle or hidden.
+              schedule(mode === 'expanded' ? POLL_EXPANDED_MS : POLL_COLLAPSED_MS);
+            }
+          }
+        }
+        // Resume immediately when the page becomes visible again (a hidden tab
+        // throttles timers, so the dock may be stale on return).
+        const wake = () => {
+          if (disposed || document.visibilityState !== 'visible') return;
+          if (Date.now() - lastFetchRef.current < 900) return;
+          if (timer) clearTimeout(timer);
+          tick();
+        };
+        document.addEventListener('visibilitychange', wake);
+        window.addEventListener('focus', wake);
+        tick();
+        return () => {
+          disposed = true;
+          if (timer) clearTimeout(timer);
+          timer = null;
+          document.removeEventListener('visibilitychange', wake);
+          window.removeEventListener('focus', wake);
+        };
+      }, [supported, mode]);
+
+      // Smooth the elapsed mm:ss while the card is open: /waits is polled every
+      // 1.5 s, the local clock ticks every second in between.
+      useEffect(() => {
+        if (!expanded) return undefined;
+        const timer = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(timer);
+      }, [expanded]);
+
+      // Esc leaves the detail view first, then collapses the card.
+      useEffect(() => {
+        if (!expanded) return undefined;
+        const onKeyDown = (event) => {
+          if (event.key !== 'Escape') return;
+          if (detailId) setDetailId(null);
+          else setExpanded(false);
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+      }, [expanded, detailId]);
+
+      // Let the toast stack sit above the dock: its CSS bottom offset reads
+      // --dp-dock-height, updated on expand/collapse and whenever the card
+      // changes size (new rows, detail view, window resize).
+      const reportHeight = useCallback(() => {
+        try {
+          const node = dockRef.current;
+          const height = node ? Math.ceil(node.getBoundingClientRect().height) : 0;
+          document.documentElement.style.setProperty('--dp-dock-height', `${height}px`);
+        } catch {
+          /* document is going away during unmount */
+        }
+      }, []);
+
+      useEffect(() => {
+        reportHeight();
+        if (mode === 'hidden') return undefined;
+        const node = dockRef.current;
+        if (!node) return undefined;
+        if (typeof ResizeObserver === 'function') {
+          const observer = new ResizeObserver(() => reportHeight());
+          observer.observe(node);
+          return () => observer.disconnect();
+        }
+        window.addEventListener('resize', reportHeight);
+        return () => window.removeEventListener('resize', reportHeight);
+      }, [reportHeight, mode, detailId, presentation.visible.length]);
+
+      if (!supported || mode === 'hidden') return null;
+
+      const detail = detailId ? presentation.visible.find((wait) => wait.id === detailId) : null;
+
+      if (!expanded) {
+        const pill = pillLabelText(presentation.visible);
+        return h('div', { ref: dockRef, className: 'dp-wait-dock' }, h('button', {
+          key: 'pill',
+          type: 'button',
+          className: 'dp-wait-pill',
+          title: t('waitDock.expand'),
+          onClick: () => setExpanded(true),
+        }, [
+          h('span', { key: 'icon', className: 'dp-wait-pill-icon' }, '⏳'),
+          presentation.showSpinner ? h(Spinner, { key: 'spin', size: 12 }) : null,
+          h('span', { key: 'count', className: 'dp-wait-pill-count' },
+            presentation.running > 0
+              ? t('waitDock.running', { count: presentation.running })
+              : t('waitDock.donePill', { count: presentation.finished })),
+          pill ? h('span', { key: 'label', className: 'dp-wait-pill-label' }, `· ${pill.label}`) : null,
+        ]));
+      }
+
+      return h('div', { ref: dockRef, className: 'dp-wait-dock' }, h('div', {
+        key: 'card',
+        className: 'dp-wait-card',
+        role: 'status',
+        'aria-live': 'polite',
+      }, [
+        h('div', { key: 'head', className: 'dp-wait-head' }, [
+          h('span', { key: 'icon', className: 'dp-wait-head-icon' },
+            presentation.showSpinner ? h(Spinner, { size: 14 }) : h(Icon, { name: 'clock', size: 15 })),
+          h('span', { key: 'title', className: 'dp-wait-title' }, detail ? t('waitDock.detail') : t('waitDock.title')),
+          h('span', { key: 'running', className: 'dp-wait-chip' }, t('waitDock.runningChip', { count: presentation.running })),
+          presentation.finished > 0
+            ? h('span', { key: 'finished', className: 'dp-wait-chip' }, t('waitDock.finishedChip', { count: presentation.finished }))
+            : null,
+          h('div', { key: 'spacer', style: { flex: 1 } }),
+          detail
+            ? h('button', {
+                key: 'back',
+                type: 'button',
+                className: 'dp-wait-btn',
+                onClick: () => setDetailId(null),
+              }, `← ${t('waitDock.back')}`)
+            : null,
+          h('button', {
+            key: 'collapse',
+            type: 'button',
+            className: 'dp-wait-btn',
+            title: t('waitDock.collapse'),
+            onClick: () => {
+              setDetailId(null);
+              setExpanded(false);
+            },
+          }, h(Icon, { name: 'chevron', size: 14, style: { transform: 'rotate(-90deg)' } })),
+        ]),
+        error ? h('div', { key: 'error', className: 'dp-wait-error' }, error) : null,
+        detail
+          ? h('div', { key: 'detail', className: 'dp-wait-detail' }, h(WaitDockDetail, { wait: detail, now }))
+          : h('div', { key: 'list', className: 'dp-wait-list' }, presentation.visible.map((wait) => h(WaitDockRow, {
+              key: wait.id,
+              wait,
+              now,
+              onOpen: () => setDetailId(wait.id),
+            }))),
+        detail ? null : h('div', { key: 'foot', className: 'dp-wait-foot' }, t('waitDock.footHint')),
+      ]));
+    }
+
+    /** Mount the floating wait dock on document.body; disposed with the plugin. */
+    function mountWaitDock(ReactDOM) {
+      try {
+        const existing = document.getElementById('dsh-presence-wait-dock');
+        if (existing) existing.remove();
+        const container = document.createElement('div');
+        container.id = 'dsh-presence-wait-dock';
+        document.body.appendChild(container);
+        const root = ReactDOM.createRoot(container);
+        root.render(h(WaitDock));
+        return () => {
+          try {
+            root.unmount();
+          } catch {
+            /* already unmounted */
+          }
+          container.remove();
+          try {
+            document.documentElement.style.removeProperty('--dp-dock-height');
+          } catch {
+            /* document is going away */
+          }
+        };
+      } catch (error) {
+        console.error('[presence] wait dock mount failed', error);
+        return () => {};
+      }
+    }
+
     const C = {
       soft: 'var(--dsw-alias-bg-module-platform)',
       border: 'var(--dsw-alias-border-l1)',
@@ -767,7 +1202,7 @@ export function createApp({ React, ReactDOM }) {
 
       /* ---------------------------------------------------- notifications */
       .dp-toasts {
-        position: fixed; right: 16px; bottom: 16px; z-index: 2147483000;
+        position: fixed; right: 16px; bottom: calc(16px + var(--dp-dock-height, 0px)); z-index: 2147483000;
         display: flex; flex-direction: column-reverse; gap: 8px;
         width: min(380px, calc(100vw - 32px));
         pointer-events: none;
@@ -1411,6 +1846,173 @@ export function createApp({ React, ReactDOM }) {
       .dp-setting-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
       .dp-setting-title { font-size: 12.5px; font-weight: 500; }
       .dp-setting-hint { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
+
+      /* ------------------------------------------------------ 0.21 wait dock */
+      .dp-wait-dock {
+        position: fixed; right: 16px; bottom: 16px; z-index: 2147482500;
+        display: flex; flex-direction: column; align-items: flex-end;
+        pointer-events: none;
+      }
+      .dp-wait-dock > * { pointer-events: auto; }
+      .dp-wait-pill {
+        display: inline-flex; align-items: center; gap: 7px;
+        max-width: min(420px, calc(100vw - 32px));
+        padding: 8px 14px; border-radius: 999px;
+        border: 1px solid var(--dsw-alias-border-l2);
+        background: var(--dsw-alias-bg-layer-1);
+        color: var(--dsw-alias-label-primary);
+        font: inherit; font-size: 12.5px; cursor: pointer;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, .16), 0 1px 2px rgba(0, 0, 0, .06);
+        transition:
+          transform var(--dp-fast, .1s) var(--dp-ease, ease),
+          box-shadow var(--dp-base, 220ms) var(--dp-ease, ease),
+          border-color var(--dp-fast, .1s) var(--dp-ease, ease);
+        animation: dp-toast-in 200ms var(--dp-ease, ease) both;
+      }
+      .dp-wait-pill:hover {
+        transform: translateY(-1px);
+        border-color: var(--dsw-alias-border-l3);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, .2);
+      }
+      .dp-wait-pill:active { transform: translateY(0) scale(.99); }
+      .dp-wait-pill:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent);
+      }
+      .dp-wait-pill-icon { display: inline-flex; font-size: 14px; line-height: 1; }
+      .dp-wait-pill-count { font-weight: 600; white-space: nowrap; }
+      .dp-wait-pill-label {
+        color: var(--dsw-alias-label-secondary); font-size: 11.5px;
+        max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .dp-wait-card {
+        width: min(420px, calc(100vw - 32px));
+        max-height: min(62vh, 540px);
+        display: flex; flex-direction: column; overflow: hidden;
+        border: 1px solid var(--dsw-alias-border-l2);
+        border-radius: var(--dsw-radius-md, 12px);
+        background: var(--dsw-alias-bg-layer-1);
+        color: var(--dsw-alias-label-primary);
+        box-shadow: 0 16px 40px rgba(0, 0, 0, .2), 0 1px 2px rgba(0, 0, 0, .06);
+        animation: dp-modal-in var(--ds-transition-duration-slow, .3s) var(--dp-ease, ease) both;
+      }
+      .dp-wait-head {
+        display: flex; align-items: center; gap: 6px;
+        padding: 9px 10px 8px; border-bottom: 1px solid var(--dsw-alias-border-l2);
+        flex: 0 0 auto;
+      }
+      .dp-wait-head-icon { display: inline-flex; color: var(--dsw-alias-label-secondary); }
+      .dp-wait-title { font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+      .dp-wait-chip {
+        padding: 0 7px; border-radius: 999px; line-height: 16px;
+        font-size: 10.5px; background: var(--dsw-alias-bg-module-platform);
+        color: var(--dsw-alias-label-secondary); white-space: nowrap;
+      }
+      .dp-wait-btn {
+        display: inline-flex; align-items: center; gap: 4px;
+        height: 24px; padding: 0 8px; border: 0; border-radius: 6px;
+        background: transparent; color: var(--dsw-alias-label-secondary);
+        font: inherit; font-size: 11.5px; cursor: pointer; white-space: nowrap;
+      }
+      .dp-wait-btn:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+      .dp-wait-btn:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 1px; }
+      .dp-wait-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 6px 6px; }
+      .dp-wait-row {
+        display: flex; align-items: flex-start; gap: 8px; width: 100%;
+        padding: 7px; border: 0; border-radius: 8px;
+        background: transparent; color: inherit; font: inherit;
+        text-align: left; cursor: pointer;
+        transition: background-color var(--dp-fast, .1s) var(--dp-ease, ease);
+      }
+      .dp-wait-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
+      .dp-wait-row:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: -2px; }
+      .dp-wait-state { display: inline-flex; margin-top: 2px; color: var(--dsw-alias-state-business-primary); flex: 0 0 auto; }
+      .dp-wait-row.is-done .dp-wait-state { color: var(--dsw-alias-state-success-primary); }
+      .dp-wait-row.is-timeout .dp-wait-state { color: var(--dsw-alias-state-warn-primary); }
+      .dp-wait-row.is-error .dp-wait-state { color: var(--dsw-alias-state-error-primary); }
+      .dp-wait-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+      .dp-wait-top { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+      .dp-wait-label {
+        flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; font-size: 12.5px;
+      }
+      .dp-wait-host {
+        flex: 0 0 auto; max-width: 120px; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; font-size: 10.5px; color: var(--dsw-alias-label-tertiary);
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
+      }
+      .dp-wait-elapsed {
+        flex: 0 0 auto; font-size: 11px; color: var(--dsw-alias-label-secondary);
+        font-variant-numeric: tabular-nums;
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
+      }
+      .dp-wait-bar {
+        height: 4px; border-radius: 999px; overflow: hidden;
+        background: var(--dsw-alias-bg-module-platform);
+      }
+      .dp-wait-bar-fill {
+        height: 100%; border-radius: 999px;
+        background: var(--dsw-alias-state-business-primary);
+        transition: width 300ms var(--dp-ease, ease);
+      }
+      .dp-wait-row.is-done .dp-wait-bar-fill { background: var(--dsw-alias-state-success-primary); }
+      .dp-wait-row.is-timeout .dp-wait-bar-fill { background: var(--dsw-alias-state-warn-primary); }
+      .dp-wait-row.is-error .dp-wait-bar-fill { background: var(--dsw-alias-state-error-primary); }
+      .dp-wait-meta {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        font-size: 10.5px; color: var(--dsw-alias-label-secondary);
+      }
+      .dp-wait-progress {
+        font-variant-numeric: tabular-nums;
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
+      }
+      .dp-wait-progress.is-muted { color: var(--dsw-alias-label-tertiary); }
+      .dp-wait-eta { color: var(--dsw-alias-label-tertiary); }
+      .dp-wait-state-label { margin-left: auto; color: var(--dsw-alias-label-tertiary); }
+      .dp-wait-line {
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
+        font-size: 10.5px; line-height: 14px; color: var(--dsw-alias-label-tertiary);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .dp-wait-foot {
+        flex: 0 0 auto; padding: 6px 10px 7px;
+        border-top: 1px solid var(--dsw-alias-border-l2);
+        font-size: 10.5px; color: var(--dsw-alias-label-tertiary);
+      }
+      .dp-wait-error {
+        flex: 0 0 auto; margin: 6px 8px 0; padding: 6px 8px;
+        border-radius: 6px; font-size: 10.5px; overflow-wrap: anywhere;
+        color: var(--dsw-alias-state-error-primary);
+        background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent);
+      }
+      .dp-wait-detail {
+        flex: 1 1 auto; min-height: 0; overflow: auto;
+        padding: 6px 10px 8px; display: flex; flex-direction: column; gap: 4px;
+      }
+      .dp-wait-kv { display: flex; gap: 8px; font-size: 11.5px; line-height: 16px; }
+      .dp-wait-k { flex: 0 0 64px; color: var(--dsw-alias-label-tertiary); }
+      .dp-wait-v {
+        flex: 1; min-width: 0; overflow-wrap: anywhere;
+        font-family: var(--ds-font-family-code, ui-monospace, monospace); font-size: 11px;
+      }
+      .dp-wait-sub { margin-top: 4px; font-size: 10.5px; color: var(--dsw-alias-label-tertiary); }
+      .dp-wait-samples {
+        display: flex; flex-direction: column; gap: 1px;
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
+        font-size: 10.5px; color: var(--dsw-alias-label-secondary);
+      }
+      .dp-wait-sample { display: flex; justify-content: space-between; gap: 8px; }
+      .dp-wait-monoline {
+        margin: 0; padding: 6px 8px; border-radius: 6px;
+        background: var(--dsw-alias-bg-module-platform);
+        font-family: var(--ds-font-family-code, ui-monospace, monospace);
+        font-size: 10.5px; line-height: 14px;
+        white-space: pre-wrap; word-break: break-word;
+        max-height: 80px; overflow: auto;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .dp-wait-pill, .dp-wait-card, .dp-wait-row, .dp-wait-bar-fill { transition: none; animation: none; }
+      }
 `;
     function ensureStyles() {
       if (typeof document === 'undefined' || document.getElementById(STYLE_ID)) return;
@@ -1686,6 +2288,7 @@ export function createApp({ React, ReactDOM }) {
       power: ['M12 3v9', 'M6.4 6.4a8 8 0 1 0 11.2 0'],
       music: ['M9 17V5l10-2v12', 'M9 17a3 3 0 1 1-6 0a3 3 0 0 1 6 0z', 'M19 15a3 3 0 1 1-6 0a3 3 0 0 1 6 0z'],
       more: ['M5 12h.01', 'M12 12h.01', 'M19 12h.01'],
+      clock: ['M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0-18z', 'M12 7v5l3 2'],
     };
 
     function Icon({ name, size = 16, style }) {
@@ -4573,14 +5176,31 @@ export function createApp({ React, ReactDOM }) {
         PromptDialog,
         DiffModal,
         TailModal,
+        // 0.21 wait dock: components for render smoke plus the pure wait helpers
+        // (also exported from ./waits-ui.js for scripts/wait-ui-probe.mjs).
+        WaitDock,
+        WaitDockRow,
+        WaitDockDetail,
+        waitStateInfo,
+        computeEta,
+        dockPresentation,
+        normalizeWaitsPayload,
+        formatElapsed,
+        formatDurationShort,
+        reduceSamples,
+        pillLabelText,
+        progressRatio,
       },
       inject: ['slots'],
       apply(ctx) {
         ensureStyles();
         if (ctx.effect) {
           ctx.effect(() => mountToaster(ReactDOM), 'presence.toasts');
+          // 0.21: the wait dock is global too (chat included), not panel-scoped.
+          ctx.effect(() => mountWaitDock(ReactDOM), 'presence.waitDock');
         } else {
           mountToaster(ReactDOM);
+          mountWaitDock(ReactDOM);
         }
         // C2: one global job watcher per plugin instance. It only polls until
         // it learns the host has no `jobs` field, and is disposed with the ctx.

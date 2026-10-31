@@ -108,13 +108,13 @@ for (const [label, text, phrase] of [
   ['README.md', readme, 'A local session is not bound to a remote workspace'],
   ['README.zh-CN.md', readmeZh, '本地会话不会绑定远端工作区'],
 ]) {
-  check(`${label}: version 0.20.2 in install and development commands`, () => {
+  check(`${label}: version 0.21.0 in install and development commands`, () => {
     const body = flat(text);
-    expect(body.includes('@rjfan/dsh-presence@0.20.2'), 'missing install version @rjfan/dsh-presence@0.20.2');
-    expect(body.includes('-Version 0.20.2'), 'missing package.ps1 -Version 0.20.2');
-    expect(body.includes('presence-plugin-0.20.2.zip'), 'missing dist/presence-plugin-0.20.2.zip');
+    expect(body.includes('@rjfan/dsh-presence@0.21.0'), 'missing install version @rjfan/dsh-presence@0.21.0');
+    expect(body.includes('-Version 0.21.0'), 'missing package.ps1 -Version 0.21.0');
+    expect(body.includes('presence-plugin-0.21.0.zip'), 'missing dist/presence-plugin-0.21.0.zip');
     expect(!body.includes('@rjfan/dsh-presence@0.19.0'), 'stale 0.19.0 install version');
-    return '0.20.2';
+    return '0.21.0';
   });
   check(`${label}: local-vs-remote session warning near the top`, () => {
     const at = flat(text).indexOf(phrase);
@@ -355,6 +355,20 @@ check('docs/RELEASE.md: v0.20.2 export-progress hotfix is the newest section', (
   expect(release.includes('latest.json'), 'missing the live progress note');
   expect(release.includes('skipExisting'), 'missing the resume note');
   return 'newest';
+});
+check('docs/RELEASE.md: v0.21.0 wait-dock is the newest section', () => {
+  const v210 = release.indexOf('## v0.21.0');
+  const v202 = release.indexOf('## v0.20.2');
+  expect(v210 >= 0 && v202 >= 0, 'missing the v0.21.0 section');
+  expect(v210 < v202, 'v0.21.0 is not above v0.20.2');
+  expect(release.includes('wait dock') || release.includes('等待面板'), 'missing the wait-dock note');
+  expect(release.includes('/presence/api/waits'), 'missing the waits endpoint');
+  return 'newest';
+});
+check('README wait-dock anchors', () => {
+  expect(flat(readme).includes('wait dock'), 'README.md missing the wait dock');
+  expect(flat(readmeZh).includes('等待面板'), 'README.zh-CN.md missing 等待面板');
+  return 'ok';
 });
 check('docs/RELEASE.md: v0.20.0 covers hotfix + P1 items', () => {
   const start = release.indexOf('## v0.20.0');

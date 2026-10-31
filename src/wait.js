@@ -299,10 +299,21 @@ async function probeJob(pool, condition) {
  * @param options.timeoutMs - deadline, default 120000, capped at one hour.
  * @param options.pollMs - gap between probes, default 1000.
  * @param options.signal - caller cancellation; an abort returns `met: false`.
+ * @param options.onPoll - optional progress callback, invoked after every
+ *   non-final poll (before sleeping) with `{ observed, polls, elapsedMs, met:false }`.
+ *   A throwing callback is ignored: progress is a nicety, not part of the wait.
  * @returns `{ met, timedOut, elapsedMs, observed, polls, condition }`; never
  *   rejects because of a timeout or an unreachable host.
  */
-export async function waitUntil({ pool = null, connection = null, condition, timeoutMs, pollMs, signal } = {}) {
+export async function waitUntil({
+  pool = null,
+  connection = null,
+  condition,
+  timeoutMs,
+  pollMs,
+  signal,
+  onPoll = null,
+} = {}) {
   const normalized = normalizeWaitCondition(condition);
   const budgetRaw = Number(timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const budget = Number.isFinite(budgetRaw) ? Math.min(MAX_TIMEOUT_MS, Math.max(0, Math.floor(budgetRaw))) : DEFAULT_TIMEOUT_MS;
@@ -343,6 +354,17 @@ export async function waitUntil({ pool = null, connection = null, condition, tim
       // An unreachable host (or a transport hiccup) is not a failed condition:
       // keep the last snapshot, note why this poll failed, and retry.
       observed = { ...(observed ?? {}), error: String(error?.message ?? error).slice(0, 500) };
+    }
+    // Report the poll that is about to sleep, so a UI can show progress while
+    // the wait is still running. The condition did not become true, hence
+    // `met: false`; the final, met poll returns above without calling this.
+    if (typeof onPoll === 'function') {
+      try {
+        const pending = onPoll({ observed, polls, elapsedMs: Date.now() - started, met: false });
+        if (pending && typeof pending.then === 'function') pending.then(undefined, () => {});
+      } catch {
+        /* a progress callback must never break the wait */
+      }
     }
     if (Date.now() >= deadline) {
       return { met: false, timedOut: true, elapsedMs: Date.now() - started, observed, polls, condition: normalized };

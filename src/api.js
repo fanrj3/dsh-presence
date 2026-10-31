@@ -265,6 +265,8 @@ export function presenceRoutes(pool, late = {}) {
     late.tunnelStore && typeof late.tunnelStore.list === 'function' ? late.tunnelStore : null;
   const getPortDiscovery = () =>
     late.portDiscovery && typeof late.portDiscovery.scan === 'function' ? late.portDiscovery : null;
+  // 0.21 wait dock: the in-memory registry the wait tools write to.
+  const getWaits = () => (late.waits && typeof late.waits.list === 'function' ? late.waits : null);
   const guarded = (handler) => async (request, response) => {
     if (!isLoopback(request) || !isSameOrigin(request)) {
       send(response, 403, { ok: false, error: 'Presence is reachable from this machine only' });
@@ -319,6 +321,32 @@ export function presenceRoutes(pool, late = {}) {
           jobs = [];
         }
         send(response, 200, { ok: true, hosts, terminals: pool.listTerminals(), jobs });
+      }),
+    },
+    {
+      // 0.21 wait dock: running/finished waits with live progress. `?active=1`
+      // narrows to running entries; the client polls this while it shows the
+      // dock, so an absent registry answers empty rather than failing.
+      kind: 'exact',
+      path: '/presence/api/waits',
+      handler: guarded(async (request, response) => {
+        if (request.method !== 'GET') {
+          send(response, 405, { ok: false, error: 'use GET' });
+          return;
+        }
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        const requested = String(url.searchParams.get('active') ?? '').toLowerCase();
+        const activeOnly = requested === '1' || requested === 'true' || requested === 'yes';
+        const registry = getWaits();
+        let waits = [];
+        if (registry) {
+          try {
+            waits = registry.list({ activeOnly });
+          } catch {
+            waits = [];
+          }
+        }
+        send(response, 200, { ok: true, now: Date.now(), waits: Array.isArray(waits) ? waits : [] });
       }),
     },
     {

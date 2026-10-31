@@ -350,6 +350,71 @@ async function readRemoteTail(connection, logPath, lines = 20) {
   }
 }
 
+/** Last non-empty line of a log tail, clipped for the wait dock (300 chars). */
+function lastNonEmptyLine(text, cap = 300) {
+  const rows = String(text ?? '').split(/\r?\n/);
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const line = rows[index].replace(/\s+$/, '');
+    if (line.trim() === '') continue;
+    return line.length > cap ? `${line.slice(0, cap)}...` : line;
+  }
+  return '';
+}
+
+/**
+ * Compile the agent's optional `progressPattern` once, before a long wait.
+ * Two capture groups (done, total) are required: a malformed hint must fail at
+ * once instead of after a two-minute wait with no progress shown.
+ */
+function compileProgressPattern(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw new Error('progressPattern must be a string regular expression');
+  let regex;
+  try {
+    regex = new RegExp(value);
+  } catch (error) {
+    throw new Error(`progressPattern is not a valid regular expression: ${error?.message ?? String(error)}`);
+  }
+  // Wrapping in a non-capturing group plus an empty alternative preserves the
+  // caller's group numbering while letting us count the groups without data.
+  const probe = new RegExp(`(?:${value})|`);
+  const groups = probe.exec('')?.length ?? 1;
+  if (groups < 3) {
+    throw new Error(
+      'progressPattern needs two capture groups: done,total (e.g. "Epoch\\\\s+(\\\\d+)/(\\\\d+)"); ' +
+        'one group cannot be shown as a progress bar',
+    );
+  }
+  return regex;
+}
+
+/** The last tail line matching `progressPattern`, as `{done,total}`, or null. */
+function parseProgressFromTail(text, regex) {
+  if (!regex) return null;
+  let found = null;
+  for (const row of String(text ?? '').split(/\r?\n/)) {
+    const match = regex.exec(row);
+    if (!match) continue;
+    const done = Number(match[1]);
+    const total = Number(match[2]);
+    if (!Number.isFinite(done) || !Number.isFinite(total)) continue;
+    found = { done: Math.max(0, Math.trunc(done)), total: Math.max(0, Math.trunc(total)) };
+  }
+  return found;
+}
+
+/** A short human label for a presence_wait condition when the caller passes none. */
+function defaultWaitLabel(condition) {
+  const kind = condition?.kind ?? 'wait';
+  let target = '';
+  if (condition?.path) target = condition.path;
+  else if (condition?.jobId) target = condition.jobId;
+  else if (condition?.pid) target = `pid ${condition.pid}`;
+  else if (condition?.pattern) target = condition.pattern;
+  else if (condition?.port) target = `port ${condition.port}`;
+  return `wait ${kind}${target ? ` ${target}` : ''}`.slice(0, 120);
+}
+
 /** Last-resort port probe for a connection without `probePort`. */
 async function probePortWithShell(connection, port) {
   try {
@@ -1121,9 +1186,36 @@ function tool(definition) {
   });
 }
 
-export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
+export function definePresenceTools(pool, settings, { cwdOf, observe, waits } = {}) {
   const ensureWritable = () => {
     if (settings.readOnly) throw new Error('this Presence profile is read-only; ask the user to allow writes');
+  };
+  // The wait dock registry (0.21) is optional: probes and older hosts call
+  // definePresenceTools without it, and a missing registry must change nothing.
+  const waitRegistry = waits && typeof waits.begin === 'function' ? waits : null;
+  /** Begin a wait-dock entry; null when no registry is wired. */
+  const beginWait = (input) => {
+    try {
+      return waitRegistry ? waitRegistry.begin(input) : null;
+    } catch {
+      return null;
+    }
+  };
+  const updateWait = (entry, patch) => {
+    if (!entry || !entry.id) return;
+    try {
+      waitRegistry.update(entry.id, patch);
+    } catch {
+      /* the dock is a nicety; never break the wait */
+    }
+  };
+  const endWait = (entry, patch) => {
+    if (!entry || !entry.id) return;
+    try {
+      waitRegistry.end(entry.id, patch);
+    } catch {
+      /* the dock is a nicety; never break the wait */
+    }
   };
   /** Best effort: let the harness read-before-edit policy know the file was seen. */
   const markObserved = async (exec, path) => {
@@ -1740,7 +1832,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_wait',
       description:
-        'Wait for one remote condition instead of a sleep+tail loop. Exactly one condition: file {path, exists?=true, minBytes?, mtimeAfter?}, grep {path, pattern, count?=1}, process {pid?|pattern, alive?=true}, port {port, state:"open"|"closed"}, or job {jobId}. Polls every pollMs (default 1000) until met or timeoutMs (default 120000, max 3600000) expires. A timeout is data — the tool returns met:false and never throws. Returns {met, timedOut, elapsedMs, observed, condition, polls}; format:"json" returns the same object as JSON.',
+        'Wait for one remote condition instead of a sleep+tail loop. Exactly one condition: file {path, exists?=true, minBytes?, mtimeAfter?}, grep {path, pattern, count?=1}, process {pid?|pattern, alive?=true}, port {port, state:"open"|"closed"}, or job {jobId}. Polls every pollMs (default 1000) until met or timeoutMs (default 120000, max 3600000) expires. A timeout is data — the tool returns met:false and never throws. Returns {met, timedOut, elapsedMs, observed, condition, polls}; format:"json" returns the same object as JSON. Optional label/progressTotal/progressUnit feed the Web UI wait dock (a live list of running waits).',
       parameters: {
         host: {
           type: 'string',
@@ -1756,6 +1848,19 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           description: 'Milliseconds between probes. Defaults to 1000 (min 50, max 60000).',
         },
         intervalMs: { type: 'number', description: 'Alias for pollMs.' },
+        label: {
+          type: 'string',
+          description: 'Optional label for the Web UI wait dock; defaults to a short description of the condition.',
+        },
+        progressTotal: {
+          type: 'number',
+          description:
+            'Optional total for the wait dock progress bar. Defaults to file.minBytes (file) or the expected match count (grep).',
+        },
+        progressUnit: {
+          type: 'string',
+          description: 'Optional unit for the progress bar (defaults: bytes for file, matches for grep).',
+        },
         file: {
           type: 'object',
           additionalProperties: false,
@@ -1846,14 +1951,17 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         // ran), so it never opens a connection; everything else needs one.
         let connection = null;
         let condition;
+        let waitHost = null;
         if (kind === 'job') {
           if (typeof spec.jobId !== 'string' || spec.jobId.trim() === '') {
             throw new Error(`presence_wait.job needs a jobId, e.g. ${WAIT_EXAMPLES.job}`);
           }
           condition = { kind: 'job', jobId: spec.jobId.trim() };
         } else {
-          const { host, workspace } = await pickScope(args, exec);
-          connection = await pool.connection(host);
+          const scope = await pickScope(args, exec);
+          waitHost = scope.host;
+          const workspace = scope.workspace;
+          connection = await pool.connection(scope.host);
           if (kind === 'file' || kind === 'grep') {
             const rawPath = pickArg(spec, PATH_ALIASES);
             if (rawPath === undefined || rawPath === '') {
@@ -1910,8 +2018,95 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           }
         }
 
+        // Wait-dock instrumentation (0.21): one registry entry per wait, with
+        // per-kind progress mapped from the probe's observed snapshot.
+        const explicitTotal =
+          Number.isFinite(Number(args.progressTotal)) && Number(args.progressTotal) >= 0
+            ? Math.floor(Number(args.progressTotal))
+            : null;
+        const progressUnit =
+          typeof args.progressUnit === 'string' && args.progressUnit.trim()
+            ? args.progressUnit.trim().slice(0, 40)
+            : kind === 'file'
+              ? 'bytes'
+              : kind === 'grep'
+                ? 'matches'
+                : null;
+        const progressTotal =
+          kind === 'file'
+            ? explicitTotal ?? (condition.minBytes ?? null)
+            : kind === 'grep'
+              ? explicitTotal ?? (condition.count ?? null)
+              : null;
+        const waitLabel =
+          typeof args.label === 'string' && args.label.trim() ? args.label.trim().slice(0, 120) : defaultWaitLabel(condition);
+        const entry = beginWait({
+          kind: 'wait',
+          host: waitHost,
+          label: waitLabel,
+          timeoutMs,
+          meta: {
+            condition: JSON.stringify(condition),
+            ...(kind === 'job' ? { jobId: condition.jobId } : {}),
+          },
+        });
+        /** Numeric progress from one observed snapshot (file bytes / grep matches). */
+        const progressFromObserved = (observed) => {
+          if (!observed || typeof observed !== 'object') return null;
+          if (kind === 'file') {
+            const done = Number.isFinite(Number(observed.size)) ? Number(observed.size) : null;
+            return { done, total: progressTotal, unit: progressUnit };
+          }
+          if (kind === 'grep') {
+            const raw = observed.count !== undefined ? observed.count : observed.matches;
+            const done = Number.isFinite(Number(raw)) ? Number(raw) : null;
+            return { done, total: progressTotal, unit: progressUnit };
+          }
+          return null;
+        };
+        const onPoll = (poll) => {
+          if (!entry || !entry.id) return;
+          const observed = poll?.observed;
+          const patch = {};
+          const progress = progressFromObserved(observed);
+          if (progress) patch.progress = progress;
+          if (kind === 'process' && observed && typeof observed.alive === 'boolean') {
+            patch.lastLine = observed.alive ? 'alive' : 'gone';
+          } else if (kind === 'port' && observed && typeof observed.ready === 'boolean') {
+            patch.lastLine = observed.ready ? 'open' : 'closed';
+          } else if (kind === 'job' && observed && typeof observed.state === 'string') {
+            patch.lastLine = observed.state;
+          }
+          updateWait(entry, patch);
+        };
+
         // waitUntil never throws on timeout: it reports met:false/timedOut:true.
-        const result = await waitUntil({ pool, connection, condition, timeoutMs, pollMs, signal: exec?.signal });
+        let result;
+        try {
+          result = await waitUntil({ pool, connection, condition, timeoutMs, pollMs, signal: exec?.signal, onPoll });
+        } catch (error) {
+          endWait(entry, { state: 'error', error: String(error?.message ?? error).slice(0, 500) });
+          throw error;
+        }
+        if (entry && entry.id) {
+          const finishedObserved = result.observed;
+          const patch = {
+            state: result.aborted ? 'error' : result.met ? 'done' : result.timedOut ? 'timeout' : 'error',
+          };
+          if (result.aborted) patch.error = 'aborted by caller';
+          const finalProgress = progressFromObserved(finishedObserved);
+          if (finalProgress) patch.progress = finalProgress;
+          if (kind === 'process' && finishedObserved && typeof finishedObserved.alive === 'boolean') {
+            patch.lastLine = finishedObserved.alive ? 'alive' : 'gone';
+          } else if (kind === 'port' && finishedObserved && typeof finishedObserved.ready === 'boolean') {
+            patch.lastLine = finishedObserved.ready ? 'open' : 'closed';
+          } else if (kind === 'job' && finishedObserved) {
+            patch.lastLine = String(finishedObserved.state ?? 'unknown');
+            if (finishedObserved.exitCode !== undefined) patch.exitCode = finishedObserved.exitCode ?? null;
+          }
+          endWait(entry, patch);
+        }
+
         const payload = {
           met: result.met === true,
           timedOut: result.timedOut === true,
@@ -3487,7 +3682,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
     tool({
       name: 'presence_jobs',
       description:
-        'List, inspect, wait for, or stop background commands started with presence_exec {background:true}. Jobs are detached process groups on the remote machine, so they survive the SSH connection. list is scoped to this session by default (all:true shows every session); status shows one job\'s state, exit code, pid, label, start time and log; wait follows a job until it exits or the timeout, returning its state, exit code, log size and log tail; stop takes a jobId, or a raw pgid + host when the job id was lost, then verifies whether the pid is still alive and reports the exit summary. format:\'json\' returns structured data for list/status/stop.',
+        'List, inspect, wait for, or stop background commands started with presence_exec {background:true}. Jobs are detached process groups on the remote machine, so they survive the SSH connection. list is scoped to this session by default (all:true shows every session); status shows one job\'s state, exit code, pid, label, start time and log; wait follows a job until it exits or the timeout, returning its state, exit code, log size and log tail; stop takes a jobId, or a raw pgid + host when the job id was lost, then verifies whether the pid is still alive and reports the exit summary. wait also accepts label/progressPattern/progressUnit to show live progress in the Web UI wait dock. format:\'json\' returns structured data for list/status/stop.',
       parameters: {
         action: {
           type: 'string',
@@ -3498,6 +3693,19 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
         jobId: { type: 'string', description: 'For wait/status/stop: the job id returned when it started.' },
         timeoutMs: { type: 'number', description: 'For wait: how long to wait for the job to exit. Defaults to 120000.' },
         tailLines: { type: 'number', description: 'For wait: how many log lines to return, clamped to 1-500 (0 or omitted = 40). Defaults to 40.' },
+        label: {
+          type: 'string',
+          description: 'For wait: label shown in the Web UI wait dock. Defaults to "job <jobId>".',
+        },
+        progressPattern: {
+          type: 'string',
+          description:
+            'For wait: regular expression with two capture groups (done,total) matched against each log-tail line; the last match becomes the dock progress bar, e.g. "Epoch\\\\s+(\\\\d+)/(\\\\d+)".',
+        },
+        progressUnit: {
+          type: 'string',
+          description: 'For wait: unit label for progressPattern. Defaults to "steps".',
+        },
         all: { type: 'boolean', description: 'For list: include jobs from every session, not just this one. Defaults to false.' },
         pgid: { type: 'number', description: 'For stop: a process group id to signal directly, as an alternative to jobId. Requires host.' },
         host: { type: 'string', description: 'For stop with pgid: the ssh alias of the machine that owns the process group.' },
@@ -3593,28 +3801,136 @@ export function definePresenceTools(pool, settings, { cwdOf, observe } = {}) {
           if (!args.jobId) throw new Error('wait requires a jobId');
           const timeoutMs = Math.max(0, Number(args.timeoutMs ?? 120_000) || 0);
           const tailLines = clampTailLines(args.tailLines);
-          const job =
-            typeof pool.waitJob === 'function'
-              ? await pool.waitJob(args.jobId, { timeoutMs, tailLines })
-              : await waitForJobFallback(pool, args.jobId, { timeoutMs, tailLines });
-          // waitJob returns when the deadline passes; `running`/`unknown` is
-          // the only state that means "the wait ended before the job did".
-          const state = job.state ?? 'unknown';
-          const timedOut = state === 'running' || state === 'unknown';
-          if (args.format === 'json') {
-            return jsonText({
-              id: job.id,
-              host: job.host ?? null,
-              state,
-              timedOut,
-              exitCode: job.exitCode ?? null,
-              exitSignal: job.exitSignal ?? null,
-              exitSummary: timedOut ? null : exitSummaryOf(job),
-              logSize: job.logSize ?? null,
-              logTail: job.logTail ?? null,
-            });
+          const progressRegex = compileProgressPattern(args.progressPattern);
+          const progressUnit =
+            typeof args.progressUnit === 'string' && args.progressUnit.trim()
+              ? args.progressUnit.trim().slice(0, 40)
+              : 'steps';
+          const waitLabel =
+            typeof args.label === 'string' && args.label.trim()
+              ? args.label.trim().slice(0, 120)
+              : `job ${args.jobId}`;
+
+          // The 0.20 path is untouched when there is nothing to show: no
+          // registry (probes/older hosts) and no progress pattern.
+          if (!waitRegistry && !progressRegex) {
+            const job =
+              typeof pool.waitJob === 'function'
+                ? await pool.waitJob(args.jobId, { timeoutMs, tailLines })
+                : await waitForJobFallback(pool, args.jobId, { timeoutMs, tailLines });
+            const state = job.state ?? 'unknown';
+            const timedOut = state === 'running' || state === 'unknown';
+            if (args.format === 'json') {
+              return jsonText({
+                id: job.id,
+                host: job.host ?? null,
+                state,
+                timedOut,
+                exitCode: job.exitCode ?? null,
+                exitSignal: job.exitSignal ?? null,
+                exitSummary: timedOut ? null : exitSummaryOf(job),
+                logSize: job.logSize ?? null,
+                logTail: job.logTail ?? null,
+              });
+            }
+            return formatWaitReport(job, { timeoutMs, tailLines, timedOut });
           }
-          return formatWaitReport(job, { timeoutMs, tailLines, timedOut });
+
+          // A live wait-dock entry needs the job's host/log path before the
+          // first slice; the registry row has both.
+          let row = null;
+          try {
+            const rows = await pool.listJobs();
+            row = (Array.isArray(rows) ? rows : []).find((entry) => entry.id === args.jobId) ?? null;
+          } catch {
+            row = null;
+          }
+          const entry = beginWait({
+            kind: 'job',
+            host: row?.host ?? null,
+            label: waitLabel,
+            timeoutMs,
+            meta: { jobId: args.jobId, logPath: row?.logPath ?? null },
+          });
+
+          const started = Date.now();
+          const deadline = started + timeoutMs;
+          const sliceMs = Math.max(250, Math.min(1_000, timeoutMs));
+          let job = null;
+          let lastProgress = null;
+          let aborted = false;
+          try {
+            for (;;) {
+              const iterationStarted = Date.now();
+              const remaining = Math.max(0, deadline - Date.now());
+              const slice = Math.min(sliceMs, remaining);
+              job =
+                typeof pool.waitJob === 'function'
+                  ? await pool.waitJob(args.jobId, { timeoutMs: slice, tailLines })
+                  : await waitForJobFallback(pool, args.jobId, { timeoutMs: slice, tailLines });
+              // Live log tail: three lines are enough for the dock's last line
+              // and for the progress pattern; the final report keeps its own
+              // tailLines budget.
+              let tail = '';
+              try {
+                if (job.host && job.logPath) {
+                  const connection = await pool.connection(job.host);
+                  tail = await readRemoteTail(connection, job.logPath, 3);
+                }
+              } catch {
+                tail = '';
+              }
+              const lastLine = lastNonEmptyLine(tail);
+              const parsed = parseProgressFromTail(tail, progressRegex);
+              if (parsed) lastProgress = parsed;
+              const patch = {};
+              if (lastProgress) patch.progress = { ...lastProgress, unit: progressUnit };
+              if (lastLine) patch.lastLine = lastLine;
+              updateWait(entry, patch);
+              const state = job.state ?? 'unknown';
+              if (state !== 'running' && state !== 'unknown') break;
+              if (exec?.signal?.aborted) {
+                aborted = true;
+                break;
+              }
+              if (Date.now() >= deadline) break;
+              // An unreachable host makes each slice return at once; pace the
+              // loop so a dead machine cannot spin for the whole timeout.
+              const spent = Date.now() - iterationStarted;
+              if (spent < 250) await sleep(250 - spent);
+            }
+            const state = job?.state ?? 'unknown';
+            const timedOut = state === 'running' || state === 'unknown';
+            const finalPatch = aborted
+              ? { state: 'error', error: 'aborted by caller' }
+              : timedOut
+                ? { state: 'timeout' }
+                : { state: (job?.exitCode ?? null) === 0 ? 'done' : 'error', exitCode: job?.exitCode ?? null };
+            if (progressRegex && lastProgress) finalPatch.progress = { ...lastProgress, unit: progressUnit };
+            endWait(entry, finalPatch);
+            if (args.format === 'json') {
+              const payload = {
+                id: job?.id ?? args.jobId,
+                host: job?.host ?? row?.host ?? null,
+                state,
+                timedOut,
+                exitCode: job?.exitCode ?? null,
+                exitSignal: job?.exitSignal ?? null,
+                exitSummary: timedOut ? null : exitSummaryOf(job ?? {}),
+                logSize: job?.logSize ?? null,
+                logTail: job?.logTail ?? null,
+              };
+              if (progressRegex) payload.progress = lastProgress ? { ...lastProgress, unit: progressUnit } : null;
+              return jsonText(payload);
+            }
+            const report = formatWaitReport(job ?? {}, { timeoutMs, tailLines, timedOut });
+            return progressRegex && lastProgress
+              ? `${report}\nprogress: ${lastProgress.done}/${lastProgress.total} ${progressUnit}`
+              : report;
+          } catch (error) {
+            endWait(entry, { state: 'error', error: String(error?.message ?? error).slice(0, 500) });
+            throw error;
+          }
         }
 
         if (action === 'stop') {

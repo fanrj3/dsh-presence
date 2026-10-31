@@ -66,7 +66,7 @@ Presence 让 agent 留在本机，**通过每台机器一条常驻 SSH 连接把
 ### 1. 安装 DSH 插件
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.20.2
+dsh plugin add @rjfan/dsh-presence@0.21.0
 ```
 
 从源码安装：
@@ -169,8 +169,8 @@ DSH 插件提供 25 个工具。在远程工作区会话里，相对路径相对
 | `presence_hosts` | 列出 SSH 主机、连接状态和默认主机（支持 `format:"json"`）；`workspace:true` 标记当前会话的机器，`degraded` 行带最后一次错误。`default` 是会话作用域：当前会话的挂载主机或 `PRESENCE_HOST`，绝不是全局最后激活的工作区。 |
 | `presence_connect` | 建立/复用连接并返回远端身份。 |
 | `presence_exec` | 执行远端命令；`pipefail`、`background`、`waitForPort`、结构化 JSON、`saveStdout`；超时默认 300 秒；`progress` 归一化 `\r` 进度条；超长输出落盘到远端文件并返回路径（`tailLines`）；文本报告以 `host: <alias>  remote cwd: <abs>` 开头；危险命令先 dry-run —— `confirm:true` 执行整条命令，`confirm:"partial"` 只执行安全分段。本地会话必须传 `host`。 |
-| `presence_jobs` | 后台任务：`list`、`status`、`wait`（含 `timedOut`）、`stop`（`alive`/`verified`/`portReleased`）、`purge`。任务持久化到 `~/.dsh/presence/jobs.json`，含 `pid`/`pgid`；`logPath` 是要 tail 的任务日志（当前内核里即命令 stdout/stderr），`commandLogPath` 是命令自己的日志（当前内核里等于 `logPath`，用 `commandLogPath ?? logPath`）。重启后状态为 `unknown` 直到探活成功，退出码可能缺失。`/presence/api/state` 的 job 行还带 `pid`、`pgid`、`commandLogPath`、`persisted`。 |
-| `presence_wait` | 阻塞直到某个远端条件成立（五选一）：`file {path, exists?, minBytes?, mtimeAfter?}`、`grep {path, pattern, count?}`、`process {pid\|pattern, alive?}`、`port {port, state:"open"\|"closed"}`、`job {jobId}`（job 条件不需要 `host`，注册表知道它跑在哪台机器）。返回 `{ met, timedOut, elapsedMs, observed, condition, polls }`；超时是 `met:false`，**不会报错**。`timeoutMs` 默认 120 秒（上限 1 小时），`pollMs`/`intervalMs` 默认 1000 ms。 |
+| `presence_jobs` | 后台任务：`list`、`status`、`wait`（含 `timedOut`）、`stop`（`alive`/`verified`/`portReleased`）、`purge`。任务持久化到 `~/.dsh/presence/jobs.json`，含 `pid`/`pgid`；`logPath` 是要 tail 的任务日志（当前内核里即命令 stdout/stderr），`commandLogPath` 是命令自己的日志（当前内核里等于 `logPath`，用 `commandLogPath ?? logPath`）。重启后状态为 `unknown` 直到探活成功，退出码可能缺失。`/presence/api/state` 的 job 行还带 `pid`、`pgid`、`commandLogPath`、`persisted`。`wait` 支持 `label`、`progressPattern`（两个捕获组 done,total，如 "Epoch\\s+(\\d+)/(\\d+)"）、`progressUnit`；运行中的等待会出现在右下角悬浮**等待面板**，显示已用时间、进度、剩余时间和最后一行日志。 |
+| `presence_wait` | 阻塞直到某个远端条件成立（五选一）：`file {path, exists?, minBytes?, mtimeAfter?}`、`grep {path, pattern, count?}`、`process {pid\|pattern, alive?}`、`port {port, state:"open"\|"closed"}`、`job {jobId}`（job 条件不需要 `host`，注册表知道它跑在哪台机器）。返回 `{ met, timedOut, elapsedMs, observed, condition, polls }`；超时是 `met:false`，**不会报错**。`timeoutMs` 默认 120 秒（上限 1 小时），`pollMs`/`intervalMs` 默认 1000 ms。可选 `label`、`progressTotal`、`progressUnit` 会喂给同一个等待面板（文件字节、grep 命中数、进程/端口状态）。 |
 | `presence_read` | 读远端文件，带行号、`offset`/`limit`，`raw:true` 返回逐字节原样内容。 |
 | `presence_read_many` | 一次读 1–50 个文件，支持每文件字节/行数上限。 |
 | `presence_write` | 原子写；保留 mode；返回真实 mode、字节数和完整 sha256；`ifMatchSha256` 乐观锁；`mode:"append"` 在 EOF 追加，返回追加字节数和总大小（`ifMatchSha256` 仅 overwrite 有效，append 传入会直接报错）；`mode` 也可传八进制字符串（如 `"755"`）设置 overwrite 权限。 |
@@ -237,6 +237,10 @@ presence_write { path: "/data/train.log", mode: "append", content: "epoch 6 done
   （`presence_wait { port: { port: 8000, state: "open" } }`）、等 checkpoint
   （`presence_wait { file: { path: "/data/ckpt.pt", minBytes: 1000000 } }`）、等日志行或等进程。
   超时返回 `met:false`，是正常结果而不是错误。
+- 等待进行中时，聊天右下角会悬浮一个**等待面板**：已用时间、`done/total unit`、按采样速率
+  算出的剩余时间、最后一行日志，点开可看详情（job id、日志路径、采样记录）。它轮询
+  `/presence/api/waits`；旧版 host 会自动隐藏。想要进度条和 ETA 就给 `presence_jobs wait`
+  传 `progressPattern`/`progressUnit`，或给 `presence_wait` 传 `progressTotal`/`progressUnit`。
 - 交互式任务：`presence_terminal { action: "open", session: "train" }`，tmux 会话跨重连存活。
 - **不要**在前台 `presence_exec` 里用 `nohup`、`tmux new-session` 或结尾 `&` 跑长任务：登录节点
   会话结束时，集群可能清理残留进程。`background: true` 本身用 `setsid` 脱离；调度器管理的集群
@@ -283,8 +287,8 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.20.2
-# → dist/presence-plugin-0.20.2.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.21.0
+# → dist/presence-plugin-0.21.0.zip
 ```
 
 DSH 升级后，用 Electron-as-Node 对着真实 Harness 运行时验证插件仍能激活

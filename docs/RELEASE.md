@@ -1,5 +1,27 @@
 # Presence 发布说明（Release）
 
+## v0.21.0 — 等待面板（wait dock）：长等待可视化
+
+`presence_jobs wait` / `presence_wait` 以前只能阻塞，调用方看不到任何进度。0.21 增加：
+
+- **host 端等待注册表**（`src/waits.js`）：每次 wait 注册一条记录，含 label/host/state/已用时间/
+  `progress {done,total,unit,note}`/最后一行日志/采样序列（≤240 条，≥500ms 间隔）；完成记录保留 10 分钟。
+- **`GET /presence/api/waits`**（支持 `?active=1`）：返回 `{ok,now,waits}`，供客户端轮询。
+- **工具侧进度提示**：`presence_jobs wait` 新增 `label`/`progressPattern`（两个捕获组 done,total）/
+  `progressUnit`，每轮轮询 tail 3 行日志并解析进度、记录最后一行；`presence_wait` 新增
+  `label`/`progressTotal`/`progressUnit`（文件字节、grep 命中、进程/端口状态）。wait 结束状态
+  区分 done/timeout/error，取消信号也会结束记录。
+- **客户端悬浮等待面板**：右下角 pill（“N 个等待”）→ 展开卡片：状态、主机、已用时间、
+  进度条、按最近 60 秒采样速率算的 ETA、最后一行日志；点开看详情（jobId/条件/日志路径/退出码/
+  采样）；完成后保留 10 秒。展开时 1.5 秒轮询、收起 5 秒；旧 host（404/405/401）自动隐藏。
+  面板高度通过 `--dp-dock-height` 让 toast 上移，不互相遮挡。
+- 文档：README 工具表与长任务流程补充等待面板用法。
+
+验证：`scripts/wait-dock-probe.mjs` 46/46、`scripts/wait-ui-probe.mjs` 94/94、
+regression 7/7、tool-probe 32/32、p1-tools 50/50、api-probe 27/27、export-progress 7/7、
+host-compat-check ACTIVATED OK（25 tools）。
+
+
 ## v0.20.2 — 大文件导出：进度 / 超时 / 断点续传 + 并行读
 
 问题（真实事件）：`presence_export` 批量导出 21 个 60 MB 的 checkpoint 分片（`h.pjlab...` → 本地），

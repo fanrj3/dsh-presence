@@ -107,7 +107,7 @@ higher median interaction latency.</sub>
 ### 1. Install the DSH plugin
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.20.2
+dsh plugin add @rjfan/dsh-presence@0.21.0
 ```
 
 From a source checkout:
@@ -215,8 +215,8 @@ so an agent's habitual spelling still works.
 | `presence_hosts` | List SSH hosts, connection state and default host (`format:"json"` supported); `workspace:true` marks this session's machine and `degraded` rows carry the last error. `default` is session-scoped: this session's mounted host or `PRESENCE_HOST`, never a global last-active workspace. |
 | `presence_connect` | Open/reuse a host connection and report the remote identity. |
 | `presence_exec` | Run a remote command; `pipefail`, `background`, `waitForPort`, structured JSON, `saveStdout`; timeout defaults to 300 s; `progress` normalizes `\r` progress bars; long output spills to a remote file whose path is returned (`tailLines`); text reports start with `host: <alias>  remote cwd: <abs>`; destructive commands dry-run first — `confirm:true` runs the whole command, `confirm:"partial"` runs only the safe segments. A local session must pass `host`. |
-| `presence_jobs` | Background jobs: `list`, `status`, `wait` (with `timedOut`), `stop` (with `alive`/`verified`/`portReleased`), `purge`. Jobs persist to `~/.dsh/presence/jobs.json` with `pid`/`pgid`; `logPath` is the job log to tail (the command's stdout/stderr on current kernels) and `commandLogPath` the command's own log — equal to `logPath` on current kernels, so use `commandLogPath ?? logPath`. After a restart, state is `unknown` until a liveness probe succeeds and the exit code may be missing. `/presence/api/state` job rows also carry `pid`, `pgid`, `commandLogPath` and `persisted`. |
-| `presence_wait` | Block until exactly one remote condition is true: `file {path, exists?, minBytes?, mtimeAfter?}`, `grep {path, pattern, count?}`, `process {pid\|pattern, alive?}`, `port {port, state:"open"\|"closed"}` or `job {jobId}` (a job condition needs no `host` — the registry knows where it ran). Returns `{ met, timedOut, elapsedMs, observed, condition, polls }`; a timeout is `met:false` and **never an error**. `timeoutMs` default 120 s (cap 1 h), `pollMs`/`intervalMs` default 1000 ms. |
+| `presence_jobs` | Background jobs: `list`, `status`, `wait` (with `timedOut`), `stop` (with `alive`/`verified`/`portReleased`), `purge`. Jobs persist to `~/.dsh/presence/jobs.json` with `pid`/`pgid`; `logPath` is the job log to tail (the command's stdout/stderr on current kernels) and `commandLogPath` the command's own log — equal to `logPath` on current kernels, so use `commandLogPath ?? logPath`. After a restart, state is `unknown` until a liveness probe succeeds and the exit code may be missing. `/presence/api/state` job rows also carry `pid`, `pgid`, `commandLogPath` and `persisted`. `wait` accepts `label`, `progressPattern` (two capture groups, done and total, e.g. "Epoch\\s+(\\d+)/(\\d+)") and `progressUnit`; the running wait appears in the floating **wait dock** with elapsed, progress, ETA and the last log line. |
+| `presence_wait` | Block until exactly one remote condition is true: `file {path, exists?, minBytes?, mtimeAfter?}`, `grep {path, pattern, count?}`, `process {pid\|pattern, alive?}`, `port {port, state:"open"\|"closed"}` or `job {jobId}` (a job condition needs no `host` — the registry knows where it ran). Returns `{ met, timedOut, elapsedMs, observed, condition, polls }`; a timeout is `met:false` and **never an error**. `timeoutMs` default 120 s (cap 1 h), `pollMs`/`intervalMs` default 1000 ms. Optional `label`, `progressTotal` and `progressUnit` feed the same wait dock (file bytes, grep matches, process/port state). |
 | `presence_read` | Read a remote file with line numbers, `offset`/`limit`, or `raw:true` for verbatim content. |
 | `presence_read_many` | Read 1–50 remote files in one call, with per-file byte/line caps. |
 | `presence_write` | Atomic write; preserves mode; returns real mode, size and full sha256; `ifMatchSha256` optimistic lock; `mode:"append"` appends at EOF and reports appended bytes + total size (`ifMatchSha256` is overwrite-only and append rejects it); `mode` also accepts an octal string such as `"755"` to set permissions on an overwrite. |
@@ -287,6 +287,11 @@ build or a server. The recipe:
   (`presence_wait { port: { port: 8000, state: "open" } }`), a checkpoint
   (`presence_wait { file: { path: "/data/ckpt.pt", minBytes: 1000000 } }`), a log line or
   a process. A timeout returns `met:false` — a normal answer, not an error.
+- While a wait runs, the **wait dock** floats at the bottom right of the chat: elapsed time,
+  `done/total unit`, an ETA computed from the sample rate, the last log line, and a
+  click-through detail view (job id, log path, samples). It polls `/presence/api/waits`; an
+  older host simply hides it. Pass `progressPattern`/`progressUnit` to `presence_jobs wait`
+  or `progressTotal`/`progressUnit` to `presence_wait` when you want a bar and an ETA.
 - Interactive work: `presence_terminal { action: "open", session: "train" }` — the
   tmux-backed session survives a reconnect.
 - **Do not** start `nohup`, `tmux new-session` or a trailing `&` inside a foreground
@@ -342,8 +347,8 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.20.2
-# → dist/presence-plugin-0.20.2.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.21.0
+# → dist/presence-plugin-0.21.0.zip
 ```
 
 After a DSH update, prove the plugin still activates against the shipped runtime
