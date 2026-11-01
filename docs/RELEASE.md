@@ -1,5 +1,14 @@
 # Presence 发布说明（Release）
 
+## v0.21.1 — 等待面板细节修复
+
+- **去掉多余的横向滚动条**：dock 在 `.dp-ui` 之外，之前没有继承 `box-sizing` 重置，行宽 100% + padding 撑出横向滚动。现在 dock 子树统一 `box-sizing: border-box`，列表/详情 `overflow-x: hidden`，卡片 `max-width: 100%`。
+- **收起箭头方向**：展开状态的收起按钮从「向上」改为「向下」，与"收起面板"语义一致。
+- **任务说明**：`presence_jobs wait` / `presence_wait` 的 `label` 现在是"任务说明"（也接受 `description`/`task` 别名），工具描述与系统提示都要求 agent 传入实际任务（如「train to epoch 12」「Jupyter on 8888」）。未提供时的默认文案也从 `wait port port 8010` 这类条件回显改成自然句子（`wait for port 8010 to open` / `wait for train.pt`）。
+
+验证：wait-dock 46/46、wait-ui 94/94、tool-probe 32/32、regression 7/7、p1-docs 56/56、host-compat ACTIVATED OK（25 tools）。
+
+
 ## v0.21.0 — 等待面板（wait dock）：长等待可视化
 
 `presence_jobs wait` / `presence_wait` 以前只能阻塞，调用方看不到任何进度。0.21 增加：

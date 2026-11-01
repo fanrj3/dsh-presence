@@ -885,7 +885,7 @@ export function createApp({ React, ReactDOM }) {
               setDetailId(null);
               setExpanded(false);
             },
-          }, h(Icon, { name: 'chevron', size: 14, style: { transform: 'rotate(-90deg)' } })),
+          }, h(Icon, { name: 'chevron', size: 14, style: { transform: 'rotate(90deg)' } })),
         ]),
         error ? h('div', { key: 'error', className: 'dp-wait-error' }, error) : null,
         detail
@@ -1854,6 +1854,7 @@ export function createApp({ React, ReactDOM }) {
         pointer-events: none;
       }
       .dp-wait-dock > * { pointer-events: auto; }
+      .dp-wait-dock, .dp-wait-dock * { box-sizing: border-box; }
       .dp-wait-pill {
         display: inline-flex; align-items: center; gap: 7px;
         max-width: min(420px, calc(100vw - 32px));
@@ -1886,7 +1887,7 @@ export function createApp({ React, ReactDOM }) {
         max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
       .dp-wait-card {
-        width: min(420px, calc(100vw - 32px));
+        width: min(420px, calc(100vw - 32px)); max-width: 100%;
         max-height: min(62vh, 540px);
         display: flex; flex-direction: column; overflow: hidden;
         border: 1px solid var(--dsw-alias-border-l2);
@@ -1916,7 +1917,7 @@ export function createApp({ React, ReactDOM }) {
       }
       .dp-wait-btn:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
       .dp-wait-btn:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 1px; }
-      .dp-wait-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 6px 6px; }
+      .dp-wait-list { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 4px 6px 6px; }
       .dp-wait-row {
         display: flex; align-items: flex-start; gap: 8px; width: 100%;
         padding: 7px; border: 0; border-radius: 8px;
@@ -1986,7 +1987,7 @@ export function createApp({ React, ReactDOM }) {
         background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent);
       }
       .dp-wait-detail {
-        flex: 1 1 auto; min-height: 0; overflow: auto;
+        flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto;
         padding: 6px 10px 8px; display: flex; flex-direction: column; gap: 4px;
       }
       .dp-wait-kv { display: flex; gap: 8px; font-size: 11.5px; line-height: 16px; }

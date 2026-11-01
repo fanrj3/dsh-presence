@@ -243,7 +243,8 @@ export function apply(ctx, config = {}) {
     '- Long jobs: presence_exec {background:true} then presence_jobs {action:"status"|"wait"}, with presence_tail to follow the log. Interactive shells: presence_terminal (tmux sessions survive reconnects). Do not start nohup/tmux new-session/& inside a foreground presence_exec for long work — a login-node session can be cleaned up; background:true already detaches with setsid, and on scheduler-managed clusters use the cluster launcher (rlaunch -d, salloc/sbatch).\n' +
     '- Output: \\r progress bars are normalized by default (progress:"all"/"strip" available); output over the cap is spilled to a remote file whose path is returned — presence_tail it.\n' +
     '- Destructive commands: dry-run first; confirm:true runs the whole command, confirm:"partial" runs only the safe segments; prefer presence_trash.\n' +
-    '- Hosts: transient failures are retried, then a host may show degraded with the last error; presence_hosts marks the current workspace machine.';
+    '- Hosts: transient failures are retried, then a host may show degraded with the last error; presence_hosts marks the current workspace machine.\n' +
+    '- Wait labels: when you start a wait (presence_jobs wait / presence_wait), pass label or description with a short description of the actual task (e.g. "train to epoch 12", "Jupyter on 8888") so the wait dock reads like the task instead of the condition.';
 
   ctx.inject(['systemPrompt'], (scope) => {
     scope.effect(() =>

@@ -404,15 +404,33 @@ function parseProgressFromTail(text, regex) {
 }
 
 /** A short human label for a presence_wait condition when the caller passes none. */
+const WAIT_LABEL_ALIASES = ['label', 'description', 'task'];
+
+/**
+ * Neutral fallback sentence for the wait dock when the agent did not pass a
+ * task summary. It must read naturally: never echo the raw condition.
+ */
 function defaultWaitLabel(condition) {
   const kind = condition?.kind ?? 'wait';
-  let target = '';
-  if (condition?.path) target = condition.path;
-  else if (condition?.jobId) target = condition.jobId;
-  else if (condition?.pid) target = `pid ${condition.pid}`;
-  else if (condition?.pattern) target = condition.pattern;
-  else if (condition?.port) target = `port ${condition.port}`;
-  return `wait ${kind}${target ? ` ${target}` : ''}`.slice(0, 120);
+  const path = typeof condition?.path === 'string' ? condition.path : '';
+  const base = path ? path.split('/').filter(Boolean).pop() : '';
+  if (kind === 'file') return `wait for ${base || path || 'a file'}`;
+  if (kind === 'grep') return `wait for /${condition?.pattern ?? '?'}/ in ${base || path || 'a file'}`;
+  if (kind === 'process') {
+    return condition?.pid ? `wait for pid ${condition.pid}` : `wait for process ${condition?.pattern ?? '?'}`;
+  }
+  if (kind === 'port') return `wait for port ${condition?.port ?? '?'} to ${condition?.state === 'closed' ? 'close' : 'open'}`;
+  if (kind === 'job') return `wait for job ${condition?.jobId ?? '?'}`;
+  return `wait for ${kind}`;
+}
+
+/** Agent-supplied task summary (label/description/task); falls back to the neutral sentence. */
+function waitLabelOf(args, fallbackCondition = null) {
+  for (const key of WAIT_LABEL_ALIASES) {
+    const value = args?.[key];
+    if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 120);
+  }
+  return defaultWaitLabel(fallbackCondition);
 }
 
 /** Last-resort port probe for a connection without `probePort`. */
@@ -1850,7 +1868,8 @@ export function definePresenceTools(pool, settings, { cwdOf, observe, waits } = 
         intervalMs: { type: 'number', description: 'Alias for pollMs.' },
         label: {
           type: 'string',
-          description: 'Optional label for the Web UI wait dock; defaults to a short description of the condition.',
+          description:
+            'Short description of the task this wait is actually for, shown in the Web UI wait dock (e.g. "train to epoch 12", "Jupyter on 8888"). Pass it; description/task are accepted aliases.',
         },
         progressTotal: {
           type: 'number',
@@ -2038,8 +2057,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe, waits } = 
             : kind === 'grep'
               ? explicitTotal ?? (condition.count ?? null)
               : null;
-        const waitLabel =
-          typeof args.label === 'string' && args.label.trim() ? args.label.trim().slice(0, 120) : defaultWaitLabel(condition);
+        const waitLabel = waitLabelOf(args, condition);
         const entry = beginWait({
           kind: 'wait',
           host: waitHost,
@@ -3695,7 +3713,8 @@ export function definePresenceTools(pool, settings, { cwdOf, observe, waits } = 
         tailLines: { type: 'number', description: 'For wait: how many log lines to return, clamped to 1-500 (0 or omitted = 40). Defaults to 40.' },
         label: {
           type: 'string',
-          description: 'For wait: label shown in the Web UI wait dock. Defaults to "job <jobId>".',
+          description:
+            'For wait: short description of what the job is doing, shown in the Web UI wait dock (e.g. "training run epoch 12"). Pass it; description/task are accepted aliases.',
         },
         progressPattern: {
           type: 'string',
@@ -3806,10 +3825,7 @@ export function definePresenceTools(pool, settings, { cwdOf, observe, waits } = 
             typeof args.progressUnit === 'string' && args.progressUnit.trim()
               ? args.progressUnit.trim().slice(0, 40)
               : 'steps';
-          const waitLabel =
-            typeof args.label === 'string' && args.label.trim()
-              ? args.label.trim().slice(0, 120)
-              : `job ${args.jobId}`;
+          const waitLabel = waitLabelOf(args, { kind: 'job', jobId: args.jobId });
 
           // The 0.20 path is untouched when there is nothing to show: no
           // registry (probes/older hosts) and no progress pattern.

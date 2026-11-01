@@ -596,6 +596,17 @@ async function probePresenceWait(waits) {
     JSON.stringify(processEntry ? { state: processEntry.state, lastLine: processEntry.lastLine } : null),
   );
   await pool.stopJob(sleeper.id).catch(() => {});
+
+  // Fallback label: must never echo the condition ("wait port port 65000").
+  await callTool('presence_wait', { port: { port: 65000 }, timeoutMs: 400, pollMs: 100, format: 'json' });
+  const defaultEntry = waits
+    .list()
+    .find((entry) => entry.kind === 'wait' && entry.meta?.condition?.includes('"kind":"port"') && entry.label.startsWith('wait for port'));
+  check(
+    'the fallback label reads naturally instead of echoing the condition',
+    defaultEntry?.label === 'wait for port 65000 to open',
+    defaultEntry?.label ?? 'no port entry',
+  );
 }
 
 // ------------------------------------------------------------------- driver
