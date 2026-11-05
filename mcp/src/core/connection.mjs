@@ -11,7 +11,12 @@ import { readFileSync } from 'node:fs';
 import { connect as connectTcp } from 'node:net';
 import { Client } from 'ssh2';
 import { defaultKeys } from './ssh-config.mjs';
+import { isTransientError, sftpRetries, sftpTimeoutMs } from './retry.js';
 
+// Only idempotent reads are retried automatically at this layer. Writes are
+// retried by the tool that owns them (with a verification after a timeout), so
+// a timed-out rename is never replayed blindly.
+const RETRYABLE_SFTP = new Set(['stat', 'lstat', 'realpath', 'readdir', 'read', 'open', 'close', 'fstat']);
 const KEEPALIVE_MS = 15_000;
 const READY_MS = 25_000;
 // Callers clip what they display; this is what the connection will hold. Past
@@ -1106,14 +1111,43 @@ export class PresenceConnection {
 
   // ------------------------------------------------------------------ sftp
 
+  /**
+   * One SFTP request, bounded by a per-request timeout. Without it a stalled
+   * TCP connection leaves the request pending forever (an edit could hang for
+   * minutes). Read-only requests are retried a couple of times; writes are not
+   * replayed here.
+   */
   async #call(method, ...args) {
     const sftp = await this.sftp;
-    return new Promise((resolve, reject) => {
-      sftp[method](...args, (error, ...results) => {
-        if (error) reject(error);
-        else resolve(results.length > 1 ? results : results[0]);
-      });
-    });
+    const attempts = RETRYABLE_SFTP.has(method) ? sftpRetries() + 1 : 1;
+    let lastError = null;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await new Promise((resolve, reject) => {
+          let settled = false;
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            const error = new Error(`SFTP ${method} timed out after ${sftpTimeoutMs()} ms`);
+            error.code = 'timeout';
+            error.sftpMethod = method;
+            reject(error);
+          }, sftpTimeoutMs());
+          sftp[method](...args, (error, ...results) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (error) reject(error);
+            else resolve(results.length > 1 ? results : results[0]);
+          });
+        });
+      } catch (error) {
+        lastError = error;
+        if (attempt >= attempts || !isTransientError(error)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
+      }
+    }
+    throw lastError;
   }
 
   async realpath(path = '.') {

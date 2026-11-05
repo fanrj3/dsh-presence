@@ -66,7 +66,7 @@ Presence 让 agent 留在本机，**通过每台机器一条常驻 SSH 连接把
 ### 1. 安装 DSH 插件
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.21.1
+dsh plugin add @rjfan/dsh-presence@0.21.2
 ```
 
 从源码安装：
@@ -275,6 +275,8 @@ presence_write { path: "/data/train.log", mode: "append", content: "epoch 6 done
 | `PRESENCE_CONNECT_TIMEOUT_MS` | 25000 | 连接尝试超时。 |
 | `PRESENCE_IDLE_TIMEOUT_MS` | 900000 | 空闲连接回收时间（持终端连接不回收）。 |
 | `PRESENCE_READ_ONLY` | false | 拒绝写入/编辑；读取、搜索、执行不受影响。 |
+| `PRESENCE_SFTP_TIMEOUT_MS` | 30000 | 单次 SFTP 请求超时；连接假死时返回错误而不是一直 pending（1–300 秒）。 |
+| `PRESENCE_SFTP_RETRIES` | 1 | 只读 SFTP 请求遇到瞬时错误的重试次数（0–3）。 |
 
 完整配置与路径/权限矩阵见 [docs/VERIFICATION.md](docs/VERIFICATION.md) 和
 [docs/HANDOFF.md](docs/HANDOFF.md)。
@@ -287,8 +289,8 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.21.1
-# → dist/presence-plugin-0.21.1.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.21.2
+# → dist/presence-plugin-0.21.2.zip
 ```
 
 DSH 升级后，用 Electron-as-Node 对着真实 Harness 运行时验证插件仍能激活
@@ -328,6 +330,10 @@ node scripts/p1-docs-probe.mjs         # README/zh/RELEASE 锚点（不需要真
   `~/.dsh/presence/jobs.json`；DSH 重启后状态是 `unknown` 直到探活成功 —— 不要把持久化记录
   当成还在运行，退出码可能缺失。要 tail 的日志用 `commandLogPath ?? logPath`（当前内核里
   `logPath` 就是命令输出）。
+- 快工具快速失败：每个 SFTP 请求都有超时（默认 30 秒，`PRESENCE_SFTP_TIMEOUT_MS`），只读工具遇到
+  瞬时错误自动重试一次；快工具还有硬超时（stat/chmod/mkdir/tail 30 秒，write/edit/read 60 秒，
+  search/glob 120 秒）。连接假死会变成可重试的错误，而不是无限 pending。后台 `presence_exec`、
+  等待、export/import 保留各自的长任务语义。
 - `presence_export` 单文件上限 64 MiB，批量按顺序执行。运行中进度写到
   `~/.dsh/presence/exports/latest.json`；单次读取 30 秒超时（不会挂死调用）；重跑时会跳过
   导出清单（`~/.dsh/presence/exports/manifest.json`）里远端路径/大小/mtime 仍匹配的文件。

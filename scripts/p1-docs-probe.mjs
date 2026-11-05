@@ -108,13 +108,13 @@ for (const [label, text, phrase] of [
   ['README.md', readme, 'A local session is not bound to a remote workspace'],
   ['README.zh-CN.md', readmeZh, '本地会话不会绑定远端工作区'],
 ]) {
-  check(`${label}: version 0.21.1 in install and development commands`, () => {
+  check(`${label}: version 0.21.2 in install and development commands`, () => {
     const body = flat(text);
-    expect(body.includes('@rjfan/dsh-presence@0.21.1'), 'missing install version @rjfan/dsh-presence@0.21.1');
-    expect(body.includes('-Version 0.21.1'), 'missing package.ps1 -Version 0.21.1');
-    expect(body.includes('presence-plugin-0.21.1.zip'), 'missing dist/presence-plugin-0.21.1.zip');
+    expect(body.includes('@rjfan/dsh-presence@0.21.2'), 'missing install version @rjfan/dsh-presence@0.21.2');
+    expect(body.includes('-Version 0.21.2'), 'missing package.ps1 -Version 0.21.2');
+    expect(body.includes('presence-plugin-0.21.2.zip'), 'missing dist/presence-plugin-0.21.2.zip');
     expect(!body.includes('@rjfan/dsh-presence@0.19.0'), 'stale 0.19.0 install version');
-    return '0.21.1';
+    return '0.21.2';
   });
   check(`${label}: local-vs-remote session warning near the top`, () => {
     const at = flat(text).indexOf(phrase);
@@ -355,6 +355,20 @@ check('docs/RELEASE.md: v0.20.2 export-progress hotfix is the newest section', (
   expect(release.includes('latest.json'), 'missing the live progress note');
   expect(release.includes('skipExisting'), 'missing the resume note');
   return 'newest';
+});
+check('docs/RELEASE.md: v0.21.2 timeout fixes is the newest section', () => {
+  const v212 = release.indexOf('## v0.21.2');
+  const v211 = release.indexOf('## v0.21.1');
+  expect(v212 >= 0 && v211 >= 0, 'missing the v0.21.2 section');
+  expect(v212 < v211, 'v0.21.2 is not above v0.21.1');
+  expect(release.includes('PRESENCE_SFTP_TIMEOUT_MS'), 'missing the SFTP timeout note');
+  expect(release.includes('timeout-probe'), 'missing the timeout probe');
+  return 'newest';
+});
+check('README timeout anchors', () => {
+  expect(flat(readme).includes('PRESENCE_SFTP_TIMEOUT_MS'), 'README.md missing the SFTP timeout knob');
+  expect(flat(readmeZh).includes('PRESENCE_SFTP_TIMEOUT_MS'), 'README.zh-CN.md missing the SFTP timeout knob');
+  return 'ok';
 });
 check('docs/RELEASE.md: v0.21.1 dock-fixes is the newest section', () => {
   const v211 = release.indexOf('## v0.21.1');

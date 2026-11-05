@@ -15,6 +15,7 @@ import { makeDirectory, movePath, copyPath, chmodPath } from './path-ops.js';
 import { diffLines as buildUnifiedDiff } from './diff.js';
 import { tailRemote } from './tail.js';
 import { waitUntil } from './wait.js';
+import { isTransientError, withRetry } from './core/retry.js';
 
 const OUTPUT_CAP = 32 * 1024;
 const EXEC_OUTPUT_CAP = 16 * 1024;
@@ -1193,12 +1194,63 @@ const textOutput = (description) => ({
 });
 
 /** Wrapping one tool keeps the definition list readable and the schema identical. */
+// Fast tools get a hard tool-level timeout: a stuck SFTP request must turn into
+// an error the agent can retry, not an indefinitely pending call. Tools with
+// their own long-running semantics (exec, jobs wait, presence_wait, export,
+// import, terminal) are deliberately absent.
+const TOOL_TIMEOUTS = {
+  presence_hosts: 60_000,
+  presence_connect: 60_000,
+  presence_read: 60_000,
+  presence_read_many: 60_000,
+  presence_write: 60_000,
+  presence_edit: 60_000,
+  presence_stat: 30_000,
+  presence_mkdir: 30_000,
+  presence_move: 60_000,
+  presence_copy: 60_000,
+  presence_chmod: 30_000,
+  presence_trash: 60_000,
+  presence_diff: 60_000,
+  presence_tail: 30_000,
+  presence_search: 120_000,
+  presence_glob: 120_000,
+  presence_forward: 60_000,
+  presence_port_probe: 60_000,
+  presence_http_probe: 90_000,
+};
+
+// Read-only tools are safe to replay once after a transient network failure.
+const RETRYABLE_TOOLS = new Set([
+  'presence_read',
+  'presence_read_many',
+  'presence_stat',
+  'presence_search',
+  'presence_glob',
+  'presence_tail',
+  'presence_diff',
+]);
+
 function tool(definition) {
+  const timeoutMs = definition.timeoutMs ?? TOOL_TIMEOUTS[definition.name];
+  const baseExecute = definition.execute;
+  const execute =
+    RETRYABLE_TOOLS.has(definition.name)
+      ? async (args, exec) => {
+          try {
+            return (await withRetry(() => baseExecute(args, exec), { attempts: 2 })).value;
+          } catch (error) {
+            if (!isTransientError(error)) throw error;
+            throw error;
+          }
+        }
+      : baseExecute;
   return defineTool({
     ...definition,
+    ...(timeoutMs ? { timeoutMs } : {}),
     output: textOutput('Human-readable result.'),
     async execute(args, exec) {
-      const value = await definition.execute(args, exec);
+      const value = await execute(args, exec);
       return typeof value === 'string' ? value : text(JSON.stringify(value));
     },
   });

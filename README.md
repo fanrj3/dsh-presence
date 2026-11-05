@@ -107,7 +107,7 @@ higher median interaction latency.</sub>
 ### 1. Install the DSH plugin
 
 ```sh
-dsh plugin add @rjfan/dsh-presence@0.21.1
+dsh plugin add @rjfan/dsh-presence@0.21.2
 ```
 
 From a source checkout:
@@ -335,6 +335,8 @@ The plugin reads these environment variables on the host process:
 | `PRESENCE_CONNECT_TIMEOUT_MS` | 25000 | Connection attempt timeout. |
 | `PRESENCE_IDLE_TIMEOUT_MS` | 900000 | Idle connection timeout (connections with terminals are kept). |
 | `PRESENCE_READ_ONLY` | false | Refuse writes/edits; reads, search and exec still work. |
+| `PRESENCE_SFTP_TIMEOUT_MS` | 30000 | Per-SFTP-request timeout; a stalled connection becomes an error instead of a pending call (1–300 s). |
+| `PRESENCE_SFTP_RETRIES` | 1 | Extra attempts for read-only SFTP requests on transient failures (0–3). |
 
 Full configuration and the path/permission matrix are in
 [docs/VERIFICATION.md](docs/VERIFICATION.md) and [docs/HANDOFF.md](docs/HANDOFF.md).
@@ -347,8 +349,8 @@ npm install --prefix .dev --ignore-scripts rollup @rollup/plugin-node-resolve \
   @rollup/plugin-commonjs @rollup/plugin-terser codemirror @codemirror/language-data \
   @codemirror/theme-one-dark
 node scripts/build-client.mjs
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.21.1
-# → dist/presence-plugin-0.21.1.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Version 0.21.2
+# → dist/presence-plugin-0.21.2.zip
 ```
 
 After a DSH update, prove the plugin still activates against the shipped runtime
@@ -392,6 +394,11 @@ node scripts/p1-docs-probe.mjs         # README/zh/RELEASE anchors (no host need
   DSH restart their state is `unknown` until a liveness probe succeeds — never assume a
   persisted job is still running, and its exit code may be missing. Tail
   `commandLogPath ?? logPath` (`logPath` holds the command output on current kernels).
+- Fast tools fail fast: every SFTP request is bounded (30 s by default, `PRESENCE_SFTP_TIMEOUT_MS`),
+  read-only tools retry once on a transient error, and the fast tools carry a hard tool timeout
+  (stat/chmod/mkdir/tail 30 s, write/edit/read 60 s, search/glob 120 s). A dead connection thus
+  returns an error the agent can retry instead of an indefinitely pending call. Background
+  `presence_exec`, waits, export and import keep their own long-running semantics.
 - `presence_export` moves at most 64 MiB per file and processes a batch sequentially.
   Progress is written to `~/.dsh/presence/exports/latest.json` while it runs, a stalled
   read fails after 30 s instead of hanging the call, and a re-run skips files recorded in

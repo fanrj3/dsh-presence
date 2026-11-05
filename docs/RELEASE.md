@@ -1,5 +1,26 @@
 # Presence 发布说明（Release）
 
+## v0.21.2 — 快工具快速失败：SFTP 超时 + 只读重试
+
+问题：SFTP 层没有任何超时。连接假死后，一次 `presence_edit` 会一直挂起（不是 300 秒——300 秒是
+`presence_exec` 的默认超时，编辑本身没有；它只是"永远不返回"）。用户只能干等。
+
+修复：
+- **每个 SFTP 请求 30 秒超时**（`PRESENCE_SFTP_TIMEOUT_MS`，范围 1–300 秒）：stat/read/write/rename
+  等任何请求卡住都会变成一个明确的错误，而不是无限 pending。
+- **只读请求自动重试一次**（`PRESENCE_SFTP_RETRIES`，0–3）：stat/lstat/realpath/readdir/read/open/close
+  遇到瞬时错误（超时/重置/网络不可达）自动重试；写操作不在传输层盲目重放。
+- **快工具硬超时**（DSH 工具级 timeout，超时即中止并报错，agent 可重试）：
+  stat/mkdir/chmod/tail 30 秒；write/edit/read/read_many/move/copy/trash/diff/hosts/connect/forward 60 秒；
+  search/glob 120 秒；`presence_exec`/`presence_jobs`/`presence_wait`/`export`/`import`/`terminal`
+  保留各自语义，不设硬超时（避免误杀长任务）。
+- 只读工具（read/read_many/stat/search/glob/tail/diff）在异常失败时整次重试一次。
+- 新 `scripts/timeout-probe.mjs`：24/24（默认/覆盖/上限、瞬时判定、重试与 verify、工具超时映射、真实 stat 往返）。
+
+验证：timeout 24/24、regression 7/7、tool-probe 32/32、p1-tools 50/50、api 27/27、
+export-progress 7/7、wait-dock 47/47、p1-docs 57/57、host-compat ACTIVATED OK（25 tools）。
+
+
 ## v0.21.1 — 等待面板细节修复
 
 - **去掉多余的横向滚动条**：dock 在 `.dp-ui` 之外，之前没有继承 `box-sizing` 重置，行宽 100% + padding 撑出横向滚动。现在 dock 子树统一 `box-sizing: border-box`，列表/详情 `overflow-x: hidden`，卡片 `max-width: 100%`。
